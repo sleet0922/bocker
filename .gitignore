@@ -1,0 +1,7 @@
+dist/
+bocker
+bocker.exe
+bocker-check.exe
+bocker-linux-*
+*.test
+*.tar.gz

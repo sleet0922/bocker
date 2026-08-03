@@ -1,0 +1,835 @@
+package main
+
+import (
+	"bytes"
+	"fmt"
+	"os"
+	"path"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
+)
+
+// CmdBuild 从 Incusfile 构建镜像 (类似 docker build)。
+// 构建完成后用 'bocker create' 启动容器。
+//
+// 用法:
+//
+//	bocker build [Incusfile]              构建镜像 (默认 ./Incusfile)
+//	bocker build --name <name> [Incusfile] 覆盖镜像别名
+//	bocker build --help                   显示帮助
+func CmdBuild(args []string) error {
+	networkOverride := hasNetworkOverride(args)
+	networkMode, args, err := networkModeFromArgs(args)
+	if err != nil {
+		return err
+	}
+	// 子命令: bocker build show - 列出可用于 FROM 的基础镜像
+	if len(args) > 0 && (args[0] == "show" || args[0] == "list" || args[0] == "images") {
+		return showBuildBaseImages()
+	}
+
+	overrideName := ""
+	incusfilePath := ""
+
+	i := 0
+	for i < len(args) {
+		arg := args[i]
+		switch arg {
+		case "--image-only", "--no-run":
+			// 兼容旧参数: build 现在始终只构建镜像，这两个标志已无意义，静默接受
+			i++
+		case "--name", "-n":
+			if i+1 >= len(args) {
+				return fmt.Errorf("--name 需要参数")
+			}
+			overrideName = args[i+1]
+			i += 2
+		case "--help", "-h":
+			fmt.Print(buildUsage())
+			return nil
+		default:
+			if strings.HasPrefix(arg, "--") {
+				return fmt.Errorf("未知参数: %s (使用 --help 查看用法)", arg)
+			}
+			if incusfilePath != "" {
+				return fmt.Errorf("只能指定一个 Incusfile 路径")
+			}
+			incusfilePath = arg
+			i++
+		}
+	}
+
+	f, err := parseIncusfile(incusfilePath)
+	if err != nil {
+		return err
+	}
+	if f.Network != "" && !networkOverride {
+		networkMode, err = ParseNetworkMode(f.Network)
+		if err != nil {
+			return err
+		}
+	}
+	f.Network = string(networkMode)
+	if overrideName != "" {
+		f.Name = overrideName
+	}
+
+	alias := f.Name
+	if alias == "" {
+		alias = defaultNameFromImage(f.From) + "-built"
+	}
+	if err := validateBockerName(alias); err != nil {
+		return fmt.Errorf("目标镜像名称 %q 无效: %w", alias, err)
+	}
+
+	client := NewIncusClient()
+
+	runCount, copyCount, envCount := 0, 0, 0
+	for _, stage := range f.Stages {
+		for _, step := range stage.Steps {
+			switch step.Kind {
+			case "RUN":
+				runCount++
+			case "COPY":
+				copyCount++
+			case "ENV":
+				envCount++
+			}
+		}
+	}
+
+	fmt.Printf("╭─ Incusfile 构建\n")
+	fmt.Printf("│ 文件:     %s\n", f.Path)
+	fmt.Printf("│ 基础镜像: %s\n", f.From)
+	fmt.Printf("│ 目标镜像: %s\n", alias)
+	fmt.Printf("│ 网络模式: %s\n", networkMode)
+	fmt.Printf("│ RUN: %d  COPY: %d  ENV: %d  EXPOSE: %d  步骤: %d\n", runCount, copyCount, envCount, len(f.Exposes), len(f.Steps))
+	if f.Domain != "" {
+		fmt.Printf("│ DOMAIN:   %s\n", f.Domain)
+	}
+	if f.Autostart != nil {
+		fmt.Printf("│ AUTOSTART: %s\n", strconv.FormatBool(*f.Autostart))
+	}
+	fmt.Printf("╰─\n\n")
+
+	if err := buildImage(client, f, alias, networkMode); err != nil {
+		return err
+	}
+
+	fmt.Printf("\n✔ 镜像 %s 构建完成\n", alias)
+	fmt.Printf("  使用 'bocker create' 启动容器\n")
+	return nil
+}
+
+func buildUsage() string {
+	return `bocker build - 从 Incusfile 构建镜像 (支持多阶段构建)
+
+用法:
+  bocker build [Incusfile]                构建镜像 (默认 ./Incusfile)
+  bocker build --name <name> [Incusfile]  覆盖镜像别名
+  bocker build --network <bridge|nat> [Incusfile]  覆盖构建网络
+  bocker build show                       列出可用于 FROM 的基础镜像
+
+构建完成后用 'bocker create' 启动容器。
+
+Incusfile 指令:
+  FROM <image> [AS <name>]   基础镜像，开始新构建阶段 (多阶段)
+  NAME <name>                镜像别名 + 容器名 (全局)
+  NETWORK bridge|nat         网络模式 (bridge=Incus macvlan, nat=Incus bridge)
+  WORKDIR <path>             设置后续 RUN/COPY 的工作目录
+  RUN <command>              在容器内执行 shell 命令
+  COPY [--from=<stage>] <src> <dst>  从宿主机或指定阶段复制
+  ENV <KEY>=<VALUE>          设置环境变量
+  EXPOSE <port>[/<proto>]    声明端口映射
+  DOMAIN <domain>            域名映射
+  AUTOSTART on|off           开机自启动
+  TEMP <name> ... END        临时构建块 (隔离编译工具链, 不进最终镜像)
+
+TEMP 块示例 (单 FROM all-in-one, 编译产物隔离):
+  FROM debian/13
+  NAME my-app
+  RUN apt-get update && apt-get install -y ca-certificates mysql-server
+
+  TEMP builder
+    RUN apt-get update && apt-get install -y golang-go
+    WORKDIR /src
+    COPY ./main.go .
+    RUN go build -o app .
+  END
+
+  COPY --from=builder /src/app /usr/local/bin/app
+  EXPOSE 8080/tcp
+  AUTOSTART on
+
+多阶段构建示例 (分离构建环境与运行时):
+  FROM debian/13 AS builder
+  WORKDIR /src
+  RUN apt-get update && apt-get install -y golang-go
+  COPY ./main.go .
+  RUN go build -o app .
+
+  FROM debian/13
+  RUN apt-get update && apt-get install -y ca-certificates
+  COPY --from=builder /src/app /usr/local/bin/app
+  EXPOSE 8080/tcp
+  DOMAIN myapp.test
+  AUTOSTART on
+
+单阶段示例:
+  FROM debian/12
+  NAME my-nginx
+  RUN apt-get update && apt-get install -y nginx
+  COPY ./index.html /var/www/html/index.html
+  EXPOSE 80/tcp
+  AUTOSTART on
+`
+}
+
+// showBuildBaseImages 列出远程镜像源中可用于 FROM 指令的基础镜像。
+// 输出按发行版分组，每行一个版本，可直接复制到 Incusfile 的 FROM 行。
+func showBuildBaseImages() error {
+	fmt.Println("正在从镜像源获取可用基础镜像 ...")
+	client := NewIncusClient()
+	groups, err := client.ListImages()
+	if err != nil {
+		return err
+	}
+	if len(groups) == 0 {
+		return fmt.Errorf("未找到可用基础镜像")
+	}
+
+	arch := archName()
+	total := 0
+	for _, g := range groups {
+		total += len(g.Versions)
+	}
+	fmt.Printf("╭─ 可用基础镜像 (架构: %s, 共 %d 个发行版 %d 个版本)\n", arch, len(groups), total)
+	fmt.Println("│ 可直接用于 Incusfile 的 FROM 指令")
+	fmt.Println("│")
+	for _, g := range groups {
+		fmt.Printf("│ %s\n", g.Distro)
+		for _, v := range g.Versions {
+			fmt.Printf("│   FROM %s   # %s\n", v.Image, v.Release)
+		}
+	}
+	fmt.Println("│")
+	fmt.Println("│ 提示: FROM 同时接受 debian/12 与 debian:12 两种写法")
+	fmt.Println("╰─")
+	return nil
+}
+
+// autoConfigureAptMirror 检测容器内 apt 官方源连通性，失败则自动换为清华镜像源。
+// 仅对 Debian/Ubuntu 系容器生效；其他发行版 (Alpine/CentOS 等) 跳过。
+// 这样用户无需在 Incusfile 里手动加 sed 换源命令。
+func autoConfigureAptMirror(client *IncusClient, name string) error {
+	// 检测是否为 Debian/Ubuntu
+	osRelease, err := client.ReadFile(name, "/etc/os-release")
+	if err != nil {
+		return nil // 读不到就跳过，不阻塞构建
+	}
+	if !strings.Contains(osRelease, "ID=debian") && !strings.Contains(osRelease, "ID=ubuntu") {
+		return nil // 非 Debian/Ubuntu，跳过
+	}
+
+	// 测试官方源连通性 (8 秒超时，避免阻塞构建)
+	// 优先用 curl；没有 curl 则用 wget；都没有则不换源 (无法确认是否为网络问题)
+	officialHost := "http://deb.debian.org/"
+	if strings.Contains(osRelease, "ID=ubuntu") {
+		officialHost = "http://archive.ubuntu.com/"
+	}
+
+	// 检测工具可用性：必须有 curl 或 wget 之一才能确认网络问题
+	_, hasToolErr := client.execQuiet(name, "sh", "-c", "command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1")
+	if hasToolErr != nil {
+		// curl 和 wget 都没装，无法确认网络问题，跳过自动换源
+		// (用户可在 Incusfile 里 RUN apt-get update 看实际报错)
+		return nil
+	}
+
+	// 用任意一种工具测试官方源连通性
+	testCmd := fmt.Sprintf(`command -v curl >/dev/null 2>&1 && curl -sI --max-time 8 -o /dev/null -w '%%{http_code}' %s 2>/dev/null | grep -qE '^[23][0-9][0-9]$' ||
+command -v wget >/dev/null 2>&1 && wget -q --timeout=8 --spider %s 2>/dev/null ||
+exit 1`, officialHost, officialHost)
+	_, testErr := client.execQuiet(name, "sh", "-c", testCmd)
+	if testErr == nil {
+		return nil // 官方源可访问，不换源
+	}
+
+	// 已确认官方源不可达，自动换为清华镜像源
+	fmt.Printf("  ⚠ 检测到 apt 官方源不可达，自动换为清华镜像源\n")
+
+	// Debian 12+ 使用 deb822 格式 (/etc/apt/sources.list.d/debian.sources)
+	// Debian 11 及更早使用传统格式 (/etc/apt/sources.list)
+	// Ubuntu 使用 /etc/apt/sources.list
+	// 用 sh 一次性处理所有可能的源文件格式
+	sedScript := `set -e
+# Debian deb822 格式 (12+)
+if [ -f /etc/apt/sources.list.d/debian.sources ]; then
+	sed -i 's|http://deb.debian.org|https://mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list.d/debian.sources
+	sed -i 's|http://security.debian.org|https://mirrors.tuna.tsinghua.edu.cn/debian-security|g' /etc/apt/sources.list.d/debian.sources
+fi
+# Debian 传统格式 (<=11) 与 Ubuntu
+if [ -f /etc/apt/sources.list ]; then
+	sed -i 's|http://deb.debian.org|https://mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list
+	sed -i 's|http://security.debian.org|https://mirrors.tuna.tsinghua.edu.cn/debian-security|g' /etc/apt/sources.list
+	sed -i 's|http://archive.ubuntu.com|https://mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list
+	sed -i 's|http://security.ubuntu.com|https://mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list
+fi
+echo "✔ 镜像源已切换为清华源"`
+	if err := client.ExecStreaming(name, sedScript, nil); err != nil {
+		return fmt.Errorf("切换镜像源失败: %w", err)
+	}
+	return nil
+}
+
+// buildImage 执行多阶段构建流程：按顺序构建各阶段，最终阶段发布为镜像。
+// 中间阶段的容器保持运行 (供后续阶段 COPY --from 引用)，最终统一清理。
+// 单阶段 Incusfile (只有一个 FROM) 走相同的代码路径，行为与旧版一致。
+func buildImage(client *IncusClient, f *Incusfile, alias string, networkMode NetworkMode) error {
+	stages := f.Stages
+	contextDir := filepath.Dir(f.Path)
+	stageContainers := make([]string, len(stages))
+	// 确保清理所有阶段容器 (含中间阶段和最终阶段)
+	defer func() {
+		for i := len(stageContainers) - 1; i >= 0; i-- {
+			name := stageContainers[i]
+			if name == "" {
+				continue
+			}
+			fmt.Printf("▶ 清理阶段容器 %s ...\n", name)
+			if err := client.Stop(name); err != nil {
+				_ = client.StopForce(name)
+			}
+			if err := client.Delete(name); err != nil {
+				fmt.Fprintf(os.Stderr, "  ⚠ 删除阶段容器 %s 失败: %v\n", name, err)
+			}
+		}
+	}()
+
+	totalStages := len(stages)
+	for si, stage := range stages {
+		stageContainer := fmt.Sprintf("bocker-build-%d-%d-s%d", os.Getpid(), time.Now().UnixNano(), si)
+		stageContainers[si] = stageContainer
+		stageLabel := stage.Name
+		if stageLabel == "" {
+			stageLabel = fmt.Sprintf("stage %d", si+1)
+		}
+
+		isLast := si == totalStages-1
+		role := "中间阶段"
+		if isLast {
+			role = "最终阶段"
+		}
+		fmt.Printf("\n▶ [%d/%d] %s %q (镜像 %s) ...\n", si+1, totalStages, role, stageLabel, stage.From)
+
+		// 启动阶段容器
+		if err := client.LaunchWithNetwork(stage.From, stageContainer, networkMode); err != nil {
+			return fmt.Errorf("启动阶段 %d 容器失败: %w", si+1, err)
+		}
+
+		// 等待网络就绪
+		ip := waitForIP(client, stageContainer, 30)
+		if ip == "" {
+			fmt.Printf("⚠ 阶段 %d 容器未获取 IPv4，RUN 命令可能因网络问题失败\n", si+1)
+		} else {
+			fmt.Printf("  阶段 %d IPv4: %s\n", si+1, ip)
+		}
+
+		// 自动配置镜像源 (仅 apt 系)
+		if ip != "" {
+			if err := autoConfigureAptMirror(client, stageContainer); err != nil {
+				fmt.Fprintf(os.Stderr, "⚠ 阶段 %d 自动配置镜像源失败: %v\n", si+1, err)
+			}
+		}
+
+		// 执行步骤
+		workdir := "/"
+		runEnv := map[string]string{}
+		var collectedEnvs []EnvSpec
+		total := len(stage.Steps)
+		for i, step := range stage.Steps {
+			switch step.Kind {
+			case "WORKDIR":
+				if path.IsAbs(step.Workdir) {
+					workdir = path.Clean(step.Workdir)
+				} else {
+					workdir = path.Clean(path.Join(workdir, step.Workdir))
+				}
+				fmt.Printf("  [阶段%d %d/%d] WORKDIR %s\n", si+1, i+1, total, workdir)
+				if err := client.ExecStreaming(stageContainer, "mkdir -p "+shellQuote(workdir), nil); err != nil {
+					return fmt.Errorf("WORKDIR 创建目录失败: %w", err)
+				}
+			case "ENV":
+				fmt.Printf("  [阶段%d %d/%d] ENV %s=%s\n", si+1, i+1, total, step.Env.Key, step.Env.Value)
+				runEnv[step.Env.Key] = step.Env.Value
+				collectedEnvs = append(collectedEnvs, step.Env)
+			case "COPY":
+				fromLabel := "宿主机"
+				if step.Copy.From != "" {
+					fromLabel = "阶段 " + step.Copy.From
+				}
+				fmt.Printf("  [阶段%d %d/%d] COPY (from %s) %s -> %s\n", si+1, i+1, total, fromLabel, step.Copy.Src, step.Copy.Dst)
+				dst := resolveContainerPath(workdir, step.Copy.Dst)
+				if step.Copy.From != "" {
+					// 跨容器复制: --from=<stage_name 或 数字索引>
+					srcStageIdx, err := resolvePriorStage(stages, si, step.Copy.From)
+					if err != nil {
+						return err
+					}
+					srcContainer := stageContainers[srcStageIdx]
+					if err := client.CopyBetweenContainers(srcContainer, step.Copy.Src, stageContainer, dst); err != nil {
+						return fmt.Errorf("COPY --from=%s 失败: %w", step.Copy.From, err)
+					}
+				} else {
+					// 从宿主机复制
+					if err := applyCopyDst(client, stageContainer, step.Copy, contextDir, dst); err != nil {
+						return err
+					}
+				}
+			case "RUN":
+				cmd := step.Run
+				if workdir != "/" && workdir != "" {
+					cmd = "cd " + shellQuote(workdir) + " && " + cmd
+				}
+				fmt.Printf("  [阶段%d %d/%d] RUN: %s\n", si+1, i+1, total, step.Run)
+				if err := client.ExecStreaming(stageContainer, cmd, runEnv); err != nil {
+					return fmt.Errorf("阶段 %d RUN 失败: %s\n  %w", si+1, step.Run, err)
+				}
+			}
+		}
+
+		// 持久化 ENV 到容器文件系统 (供镜像运行时使用)
+		if len(collectedEnvs) > 0 {
+			if err := applyEnvs(client, stageContainer, collectedEnvs); err != nil {
+				return err
+			}
+		}
+
+		// 最终阶段：停止并发布镜像
+		if isLast {
+			fmt.Printf("\n▶ [最终阶段] 停止并发布镜像 %s ...\n", alias)
+			if err := client.Stop(stageContainer); err != nil {
+				_ = client.StopForce(stageContainer)
+			}
+			properties := buildImageProperties(f)
+			if err := client.PublishImage(stageContainer, alias, properties); err != nil {
+				return fmt.Errorf("发布镜像失败: %w", err)
+			}
+			fmt.Printf("✔ 镜像已发布: %s\n", alias)
+		} else {
+			fmt.Printf("  ✔ 阶段 %q 完成 (保持运行供后续阶段引用)\n", stageLabel)
+		}
+	}
+	return nil
+}
+
+func resolveContainerPath(workdir, destination string) string {
+	explicitDirectory := strings.HasSuffix(destination, "/")
+	resolved := destination
+	if path.IsAbs(destination) {
+		resolved = path.Clean(destination)
+	} else {
+		resolved = path.Join(workdir, destination)
+	}
+	if explicitDirectory && resolved != "/" {
+		resolved += "/"
+	}
+	return resolved
+}
+
+// stageNames 返回可用阶段名列表 (用于错误提示)
+func stageNames(stages []Stage, before int) []string {
+	var names []string
+	for i := 0; i < before && i < len(stages); i++ {
+		if stages[i].Name != "" {
+			names = append(names, stages[i].Name)
+		} else {
+			names = append(names, fmt.Sprintf("%d", i))
+		}
+	}
+	return names
+}
+
+func resolvePriorStage(stages []Stage, current int, reference string) (int, error) {
+	if index, err := strconv.Atoi(reference); err == nil {
+		if index < 0 || index >= current {
+			return 0, fmt.Errorf("COPY --from=%s: 阶段索引必须指向当前阶段之前的阶段", reference)
+		}
+		return index, nil
+	}
+	for i := 0; i < len(stages); i++ {
+		if !strings.EqualFold(stages[i].Name, reference) {
+			continue
+		}
+		if i >= current {
+			return 0, fmt.Errorf("COPY --from=%s: 只能引用当前阶段之前已完成的阶段", reference)
+		}
+		return i, nil
+	}
+	return 0, fmt.Errorf("COPY --from=%s: 找不到该阶段 (可用: %v)", reference, stageNames(stages, current))
+}
+
+// buildImageProperties 将 Incusfile 的运行时指令编码为镜像属性，供 bocker create 读取。
+func buildImageProperties(f *Incusfile) map[string]string {
+	p := map[string]string{}
+	if f.Name != "" {
+		p["user.bocker.name"] = f.Name
+	}
+	if len(f.Exposes) > 0 {
+		p["user.bocker.expose"] = exposeString(f.Exposes)
+	}
+	if f.Domain != "" {
+		p["user.bocker.domain"] = f.Domain
+	}
+	if f.Autostart != nil {
+		p["user.bocker.autostart"] = strconv.FormatBool(*f.Autostart)
+	}
+	if f.Network != "" {
+		p[containerNetworkConfig] = f.Network
+	}
+	return p
+}
+
+// runFromBuiltImage 从已构建的镜像启动正式容器，并应用 EXPOSE/DOMAIN/AUTOSTART。
+func runFromBuiltImage(client *IncusClient, alias string, f *Incusfile, networkMode NetworkMode) error {
+	name := f.Name
+	if name == "" {
+		name = defaultNameFromImage(alias)
+	}
+	if err := validateBockerName(name); err != nil {
+		return fmt.Errorf("容器名称 %q 无效: %w", name, err)
+	}
+
+	// 检查同名容器是否已存在
+	if existing, _ := client.GetContainer(name); existing != nil {
+		return fmt.Errorf("容器 %s 已存在，请先卸载或使用 --name 指定其他名称", name)
+	}
+
+	fmt.Printf("▶ 启动容器 %s (镜像 %s) ...\n", name, alias)
+	if err := client.LaunchLocalImageWithNetwork(alias, name, networkMode); err != nil {
+		return fmt.Errorf("启动容器失败: %w", err)
+	}
+
+	ip := waitForIP(client, name, 30)
+	if ip != "" {
+		warnAutoHostBridge(AutoConfigureHostBridge(client))
+	} else {
+		fmt.Printf("⚠ 容器未获取 IPv4，端口映射与域名映射将跳过\n")
+	}
+
+	// AUTOSTART
+	if f.Autostart != nil {
+		if err := client.SetBootAutostart(name, *f.Autostart); err != nil {
+			fmt.Printf("⚠ 设置 AUTOSTART 失败: %v\n", err)
+		}
+	}
+
+	// DOMAIN
+	if f.Domain != "" {
+		if err := client.SetDomain(name, f.Domain); err != nil {
+			fmt.Printf("⚠ 设置 DOMAIN 失败: %v\n", err)
+		} else if ip != "" {
+			if err := updateHosts(name, f.Domain, ip); err != nil {
+				fmt.Printf("⚠ 更新 /etc/hosts 失败: %v\n", err)
+			} else {
+				fmt.Printf("✔ 域名映射: %s -> %s\n", f.Domain, ip)
+			}
+		}
+	}
+
+	// EXPOSE -> 端口映射
+	if len(f.Exposes) > 0 && ip != "" {
+		for _, exp := range f.Exposes {
+			if err := client.AddPortMapping(name, exp.Port, exp.Port, exp.Protocol); err != nil {
+				fmt.Printf("⚠ 端口映射 %d/%s 失败: %v\n", exp.Port, exp.Protocol, err)
+			} else {
+				fmt.Printf("✔ 端口映射: %d/%s\n", exp.Port, exp.Protocol)
+			}
+		}
+	}
+
+	return nil
+}
+
+// applyEnvs 将 ENV 指令写入容器的 /etc/environment 和 /etc/profile.d/bocker-env.sh。
+// /etc/environment 由 PAM 在登录会话中加载，profile.d 脚本由 sh 登录 shell 加载。
+// 幂等性：/etc/bocker.env 为覆盖式写入；/etc/environment 先移除 bocker 管理的行再追加，避免重复构建污染。
+func applyEnvs(client *IncusClient, name string, envs []EnvSpec) error {
+	if len(envs) == 0 {
+		return nil
+	}
+	envs = dedupeEnvSpecs(envs)
+	var envBuf bytes.Buffer
+	for _, e := range envs {
+		envBuf.WriteString(fmt.Sprintf("%s=%s\n", e.Key, shellQuote(e.Value)))
+	}
+	if err := client.PushFile(name, "/etc/bocker.env", envBuf.Bytes(), "0644"); err != nil {
+		return fmt.Errorf("写入 /etc/bocker.env 失败: %w", err)
+	}
+
+	// profile.d 脚本: 让登录 shell 自动导出变量
+	profile := "#!/bin/sh\n# Generated by bocker build\n[ -f /etc/bocker.env ] && set -a && . /etc/bocker.env && set +a\n"
+	if err := client.PushFile(name, "/etc/profile.d/bocker-env.sh", []byte(profile), "0755"); err != nil {
+		return fmt.Errorf("写入 /etc/profile.d/bocker-env.sh 失败: %w", err)
+	}
+
+	// /etc/environment (PAM 读取)：移除 bocker 已管理的 KEY= 行（幂等），再追加本次的
+	envKeys := map[string]bool{}
+	for _, e := range envs {
+		envKeys[e.Key] = true
+	}
+	existing, _ := client.ReadFile(name, "/etc/environment")
+	var envFile bytes.Buffer
+	for _, line := range strings.Split(existing, "\n") {
+		trimmed := strings.TrimSpace(line)
+		skip := false
+		if idx := strings.IndexByte(trimmed, '='); idx >= 0 {
+			key := strings.TrimSpace(trimmed[:idx])
+			skip = envKeys[key]
+		}
+		if !skip && trimmed != "" {
+			envFile.WriteString(line + "\n")
+		}
+	}
+	for _, e := range envs {
+		envFile.WriteString(fmt.Sprintf("%s=%s\n", e.Key, quoteEnvironmentValue(e.Value)))
+	}
+	if err := client.PushFile(name, "/etc/environment", envFile.Bytes(), "0644"); err != nil {
+		return fmt.Errorf("更新 /etc/environment 失败: %w", err)
+	}
+	return nil
+}
+
+func dedupeEnvSpecs(envs []EnvSpec) []EnvSpec {
+	seen := make(map[string]bool, len(envs))
+	result := make([]EnvSpec, 0, len(envs))
+	for i := len(envs) - 1; i >= 0; i-- {
+		if seen[envs[i].Key] {
+			continue
+		}
+		seen[envs[i].Key] = true
+		result = append(result, envs[i])
+	}
+	for left, right := 0, len(result)-1; left < right; left, right = left+1, right-1 {
+		result[left], result[right] = result[right], result[left]
+	}
+	return result
+}
+
+func quoteEnvironmentValue(value string) string {
+	value = strings.ReplaceAll(value, `\`, `\\`)
+	value = strings.ReplaceAll(value, `"`, `\"`)
+	return `"` + value + `"`
+}
+
+// applyCopy 执行单条 COPY 指令，src 相对于 Incusfile 所在目录。
+// 安全约束：解析后的 src 必须位于 contextDir 之内，拒绝路径穿越 (如 ../../etc/passwd)。
+func applyCopy(client *IncusClient, name string, cp CopySpec, contextDir string) error {
+	return applyCopyDst(client, name, cp, contextDir, cp.Dst)
+}
+
+// applyCopyDst 与 applyCopy 相同，但使用调用方已解析的 dst (已结合 WORKDIR)。
+// 用于多阶段构建中 WORKDIR 影响目标路径的场景。
+func applyCopyDst(client *IncusClient, name string, cp CopySpec, contextDir, dst string) error {
+	src := cp.Src
+	if !filepath.IsAbs(src) {
+		src = filepath.Join(contextDir, src)
+	}
+	src = filepath.Clean(src)
+	// 路径穿越防护：src 必须位于 contextDir 之内
+	absContext, err := filepath.Abs(contextDir)
+	if err != nil {
+		return fmt.Errorf("解析 contextDir 失败: %w", err)
+	}
+	absSrc, err := filepath.Abs(src)
+	if err != nil {
+		return fmt.Errorf("解析 src 失败: %w", err)
+	}
+	rel, err := filepath.Rel(absContext, absSrc)
+	if err != nil || filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("COPY 源 %q 位于构建上下文之外 (路径穿越被拒绝)", cp.Src)
+	}
+	if err := rejectSymlinkPath(absContext, absSrc); err != nil {
+		return err
+	}
+	return copyToContainer(client, name, absSrc, dst)
+}
+
+func rejectSymlinkPath(contextDir, source string) error {
+	rel, err := filepath.Rel(contextDir, source)
+	if err != nil {
+		return err
+	}
+	current := contextDir
+	if rel == "." {
+		return nil
+	}
+	for _, component := range strings.Split(rel, string(filepath.Separator)) {
+		current = filepath.Join(current, component)
+		info, err := os.Lstat(current)
+		if err != nil {
+			return fmt.Errorf("COPY 源 %s 不存在: %w", current, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("COPY 不支持符号链接路径: %s", current)
+		}
+	}
+	return nil
+}
+
+// copyToContainer 将宿主机文件/目录复制到容器。目录会递归复制。
+// 不跟随符号链接，避免绕过路径穿越校验。
+func copyToContainer(client *IncusClient, name, src, dst string) error {
+	info, err := os.Lstat(src)
+	if err != nil {
+		return fmt.Errorf("源文件 %s 不存在: %w", src, err)
+	}
+	if info.IsDir() {
+		// 先创建目标根目录，保证后续子目录 mkdir -p 有父目录
+		dst = path.Clean(dst)
+		if dst != "/" {
+			if err := client.ExecStreaming(name, "mkdir -p "+shellQuote(dst), nil); err != nil {
+				return fmt.Errorf("创建目标目录 %s 失败: %w", dst, err)
+			}
+		}
+		return filepath.WalkDir(src, func(hostPath string, d os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if d.IsDir() {
+				// 在容器内创建对应子目录，确保后续文件 push 的父目录存在
+				rel, err := filepath.Rel(src, hostPath)
+				if err != nil {
+					return err
+				}
+				targetDir := path.Join(dst, filepath.ToSlash(rel))
+				if err := client.ExecStreaming(name, "mkdir -p "+shellQuote(targetDir), nil); err != nil {
+					return fmt.Errorf("创建目标子目录 %s 失败: %w", targetDir, err)
+				}
+				return nil
+			}
+			// 拒绝符号链接，防止穿越
+			if d.Type()&os.ModeSymlink != 0 {
+				return fmt.Errorf("COPY 不支持符号链接: %s", hostPath)
+			}
+			fi, err := d.Info()
+			if err != nil {
+				return err
+			}
+			rel, err := filepath.Rel(src, hostPath)
+			if err != nil {
+				return err
+			}
+			target := path.Join(dst, filepath.ToSlash(rel))
+			return pushFileToContainer(client, name, hostPath, target, fi.Mode())
+		})
+	}
+	// 源是符号链接则拒绝
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("COPY 不支持符号链接: %s", src)
+	}
+	return pushFileToContainer(client, name, src, dst, info.Mode())
+}
+
+func pushFileToContainer(client *IncusClient, name, srcPath, dstPath string, mode os.FileMode) error {
+	file, err := os.Open(srcPath)
+	if err != nil {
+		return fmt.Errorf("打开 %s 失败: %w", srcPath, err)
+	}
+	defer file.Close()
+	explicitDirectory := strings.HasSuffix(dstPath, "/") || dstPath == "."
+	dstPath = path.Clean(dstPath)
+	// 判断目标是否是目录：
+	// 1. 显式以 / 结尾或为 . → 视为目录
+	// 2. 容器内 test -d 成功 → 是目录
+	// 是目录则追加源文件名作为最终目标
+	if explicitDirectory {
+		dstPath = path.Join(dstPath, filepath.Base(srcPath))
+	} else {
+		// 在容器内检查目标是否是已存在的目录
+		if _, err := client.execQuiet(name, "test", "-d", dstPath); err == nil {
+			dstPath = path.Join(dstPath, filepath.Base(srcPath))
+		}
+	}
+	// 确保目标父目录存在 (与 Docker COPY 行为一致)
+	if parent := path.Dir(dstPath); parent != "" && parent != "/" && parent != "." {
+		if err := client.ExecStreaming(name, "mkdir -p "+shellQuote(parent), nil); err != nil {
+			return fmt.Errorf("创建目标父目录 %s 失败: %w", parent, err)
+		}
+	}
+	modeStr := fmt.Sprintf("%04o", mode.Perm())
+	return client.PushFileReader(name, dstPath, file, modeStr)
+}
+
+func shellQuote(value string) string {
+	if value == "" {
+		return "''"
+	}
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
+}
+
+// CmdCreate 从 ./Incusfile 读取镜像别名并创建+启动容器 (类似 docker run)。
+// 镜像必须已由 'bocker build' 构建完成。EXPOSE/DOMAIN/AUTOSTART 直接取自 Incusfile。
+//
+// 用法:
+//
+//	bocker create [容器名]   从 ./Incusfile 读取镜像名并创建+启动容器
+func CmdCreate(args []string) error {
+	networkOverride := hasNetworkOverride(args)
+	networkMode, args, err := networkModeFromArgs(args)
+	if err != nil {
+		return err
+	}
+	// 从当前目录的 Incusfile 读取
+	f, err := parseIncusfile("")
+	if err != nil {
+		return fmt.Errorf("读取 ./Incusfile 失败: %w\n提示: bocker create 从当前目录的 Incusfile 读取镜像名，请先创建 Incusfile 并用 'bocker build' 构建镜像", err)
+	}
+	if f.Network != "" && !networkOverride {
+		networkMode, err = ParseNetworkMode(f.Network)
+		if err != nil {
+			return err
+		}
+	}
+
+	alias := f.Name
+	if alias == "" {
+		alias = defaultNameFromImage(f.From) + "-built"
+	}
+	if err := validateBockerName(alias); err != nil {
+		return fmt.Errorf("镜像别名 %q 无效: %w", alias, err)
+	}
+	if len(args) > 1 {
+		return fmt.Errorf("create 只接受一个可选容器名")
+	}
+
+	// 可选容器名覆盖 (省略则用 Incusfile 的 NAME，再否则由镜像别名派生)
+	if len(args) >= 1 {
+		if err := validateBockerName(args[0]); err != nil {
+			return fmt.Errorf("容器名称 %q 无效: %w", args[0], err)
+		}
+		f.Name = args[0]
+	}
+	displayName := f.Name
+	if displayName == "" {
+		displayName = defaultNameFromImage(alias)
+	}
+
+	client := NewIncusClient()
+
+	fmt.Printf("▶ 从镜像 %s 启动容器 %s\n", alias, displayName)
+	if len(f.Exposes) > 0 {
+		fmt.Printf("  EXPOSE: %s\n", exposeString(f.Exposes))
+	}
+	if f.Domain != "" {
+		fmt.Printf("  DOMAIN:  %s\n", f.Domain)
+	}
+	if f.Autostart != nil {
+		fmt.Printf("  AUTOSTART: %s\n", strconv.FormatBool(*f.Autostart))
+	}
+	fmt.Println()
+
+	return runFromBuiltImage(client, alias, f, networkMode)
+}
