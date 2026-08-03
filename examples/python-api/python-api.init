@@ -1,0 +1,14 @@
+#!/sbin/openrc-run
+
+name="bocker-python-api"
+command="/opt/venv/bin/gunicorn"
+command_args="--bind [::]:8000 --workers 2 --access-logfile - app:app"
+command_background="yes"
+pidfile="/run/python-api.pid"
+directory="/opt/python-api"
+output_log="/var/log/python-api.log"
+error_log="/var/log/python-api.err"
+
+depend() {
+	need net
+}

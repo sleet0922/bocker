@@ -1,0 +1,12 @@
+#!/sbin/openrc-run
+
+name="bocker-go-api"
+command="/usr/local/bin/go-api"
+command_background="yes"
+pidfile="/run/go-api.pid"
+output_log="/var/log/go-api.log"
+error_log="/var/log/go-api.err"
+
+depend() {
+	need net
+}

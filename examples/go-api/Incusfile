@@ -1,0 +1,27 @@
+FROM alpine/3.24 AS builder
+NETWORK nat
+ENV GOPROXY=https://goproxy.cn,direct
+WORKDIR /src
+RUN sed -i 's#https://dl-cdn.alpinelinux.org/alpine#https://mirrors.aliyun.com/alpine#g' /etc/apk/repositories && apk add --no-cache go git ca-certificates
+COPY go.mod .
+COPY go.sum .
+RUN go mod download
+COPY main.go .
+COPY config.yaml .
+RUN CGO_ENABLED=0 go build -trimpath -ldflags '-s -w' -o /src/go-api .
+
+FROM alpine/3.24
+NETWORK nat
+NAME bocker-go-api
+ENV APP_CONFIG=/etc/go-api/config.yaml
+ENV APP_ENV=production
+ENV APP_MESSAGE=go-api-ready
+RUN sed -i 's#https://dl-cdn.alpinelinux.org/alpine#https://mirrors.aliyun.com/alpine#g' /etc/apk/repositories && apk add --no-cache ca-certificates openrc
+WORKDIR /etc/go-api
+COPY --from=builder /src/go-api /usr/local/bin/go-api
+COPY config.yaml /etc/go-api/config.yaml
+COPY go-api.init /etc/init.d/go-api
+RUN chmod +x /usr/local/bin/go-api /etc/init.d/go-api && rc-update add go-api default
+EXPOSE 8080/tcp
+DOMAIN go-api.test
+AUTOSTART on

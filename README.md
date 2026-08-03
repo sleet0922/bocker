@@ -70,6 +70,25 @@ Incus managed bridge behavior), or `none` to intentionally disable IPv6. The old
 Bocker rejects Incus implementation names such as `macvlan`, `bridged`, and
 `ovn` in its public command and `Incusfile` interfaces.
 
+## Examples
+
+The `examples/` directory contains three independently buildable services:
+
+| Example | Language | Port | Dependency mirror |
+| --- | --- | --- | --- |
+| `go-api` | Go + YAML | 8080 | `goproxy.cn`, Aliyun APK |
+| `python-api` | Flask + Gunicorn + TOML | 8000 | Tsinghua PyPI, Aliyun APK |
+| `node-api` | Node.js + Express + JSON | 3000 | npmmirror, Aliyun APK |
+
+Each directory has an `Incusfile`, a multi-stage build, an OpenRC service, a
+health endpoint, and a dual-stack `EXPOSE` mapping. Build and run one with:
+
+```bash
+cd examples/go-api
+bocker build
+bocker create
+```
+
 ## Incusfile
 
 ```text

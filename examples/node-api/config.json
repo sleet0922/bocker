@@ -1,0 +1,11 @@
+{
+  "service": {
+    "name": "bocker-node-api",
+    "message": "hello-from-node",
+    "version": "1.0.0"
+  },
+  "limits": {
+    "maxBodyBytes": 1048576,
+    "requestTimeoutMs": 2500
+  }
+}

@@ -5,3 +5,5 @@ bocker-check.exe
 bocker-linux-*
 *.test
 *.tar.gz
+examples/node-api/node_modules/
+examples/python-api/__pycache__/
