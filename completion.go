@@ -180,10 +180,13 @@ _bocker_completion() {
         build)
             if (( cword == 2 )); then COMPREPLY=( $(compgen -W "--name --network --help show" -- "$cur") ); fi ;;
         create|run)
-            if (( cword == 2 )); then COMPREPLY=( $(compgen -W "--network" -- "$cur") ); fi
-            if [[ "${COMP_WORDS[cword-1]}" == "--network" ]]; then COMPREPLY=( $(compgen -W "bridge nat" -- "$cur") ); fi ;;
+            if (( cword == 2 )); then COMPREPLY=( $(compgen -W "--network --permission" -- "$cur") ); fi
+            if [[ "${COMP_WORDS[cword-1]}" == "--network" ]]; then COMPREPLY=( $(compgen -W "bridge nat" -- "$cur") ); fi
+            if [[ "${COMP_WORDS[cword-1]}" == "--permission" ]]; then COMPREPLY=( $(compgen -W "normal super" -- "$cur") ); fi ;;
         install|i|import)
-            if [[ "${COMP_WORDS[cword-1]}" == "--network" ]]; then COMPREPLY=( $(compgen -W "bridge nat" -- "$cur") ); fi ;;
+            if (( cword == 2 )); then COMPREPLY=( $(compgen -W "--network --permission" -- "$cur") ); fi
+            if [[ "${COMP_WORDS[cword-1]}" == "--network" ]]; then COMPREPLY=( $(compgen -W "bridge nat" -- "$cur") ); fi
+            if [[ "${COMP_WORDS[cword-1]}" == "--permission" ]]; then COMPREPLY=( $(compgen -W "normal super" -- "$cur") ); fi ;;
         completion)
             if (( cword == 2 )); then COMPREPLY=( $(compgen -W "bash zsh fish install" -- "$cur") ); fi
             if [[ "${COMP_WORDS[2]}" == "install" && $cword -eq 3 ]]; then COMPREPLY=( $(compgen -W "bash zsh fish" -- "$cur") ); fi ;;

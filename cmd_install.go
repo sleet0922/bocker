@@ -8,6 +8,10 @@ import (
 // CmdInstall 两级菜单：先选发行版，再选具体版本，最后安装。
 // 若传入参数：bocker install [镜像名/引用] [容器名] 则跳过菜单直接安装。
 func CmdInstall(args []string) error {
+	permissionMode, args, err := permissionModeFromArgs(args)
+	if err != nil {
+		return err
+	}
 	networkOverride := hasNetworkOverride(args)
 	mode, args, err := networkModeFromArgs(args)
 	if err != nil {
@@ -31,8 +35,8 @@ func CmdInstall(args []string) error {
 		if err := validateBockerName(name); err != nil {
 			return fmt.Errorf("容器名称 %q 无效: %w", name, err)
 		}
-		fmt.Printf("正在安装 %s (名称: %s, 网络: %s) ...\n", imageRef, name, mode)
-		if err := client.LaunchWithNetwork(imageRef, name, mode); err != nil {
+		fmt.Printf("正在安装 %s (名称: %s, 网络: %s, 权限: %s) ...\n", imageRef, name, mode, permissionMode)
+		if err := client.LaunchWithNetworkAndPermission(imageRef, name, mode, permissionMode); err != nil {
 			return err
 		}
 		ip := waitForIP(client, name, 15)
@@ -95,7 +99,7 @@ func CmdInstall(args []string) error {
 	// version.Image 已是 alias 形式（如 debian/12），Launch 内部会处理
 	imageRef := version.Image
 	fmt.Printf("\n正在安装 %s %s (%s, 网络: %s) ...\n", group.Distro, version.Release, imageRef, mode)
-	if err := client.LaunchWithNetwork(imageRef, name, mode); err != nil {
+	if err := client.LaunchWithNetworkAndPermission(imageRef, name, mode, permissionMode); err != nil {
 		return err
 	}
 

@@ -591,7 +591,7 @@ fi`
 }
 
 // runFromBuiltImage 从已构建的镜像启动正式容器，并应用 EXPOSE/DOMAIN/AUTOSTART。
-func runFromBuiltImage(client *IncusClient, alias string, f *Incusfile, networkMode NetworkMode) error {
+func runFromBuiltImage(client *IncusClient, alias string, f *Incusfile, networkMode NetworkMode, permission PermissionMode) error {
 	name := f.Name
 	if name == "" {
 		name = defaultNameFromImage(alias)
@@ -606,7 +606,7 @@ func runFromBuiltImage(client *IncusClient, alias string, f *Incusfile, networkM
 	}
 
 	fmt.Printf("▶ 启动容器 %s (镜像 %s) ...\n", name, alias)
-	if err := client.LaunchLocalImageWithNetwork(alias, name, networkMode); err != nil {
+	if err := client.LaunchLocalImageWithNetworkAndPermission(alias, name, networkMode, permission); err != nil {
 		return fmt.Errorf("启动容器失败: %w", err)
 	}
 
@@ -879,6 +879,10 @@ func shellQuote(value string) string {
 //
 //	bocker create [容器名]   从 ./Incusfile 读取镜像名并创建+启动容器
 func CmdCreate(args []string) error {
+	permissionMode, args, err := permissionModeFromArgs(args)
+	if err != nil {
+		return err
+	}
 	networkOverride := hasNetworkOverride(args)
 	networkMode, args, err := networkModeFromArgs(args)
 	if err != nil {
@@ -933,5 +937,5 @@ func CmdCreate(args []string) error {
 	}
 	fmt.Println()
 
-	return runFromBuiltImage(client, alias, f, networkMode)
+	return runFromBuiltImage(client, alias, f, networkMode, permissionMode)
 }

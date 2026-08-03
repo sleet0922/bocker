@@ -152,7 +152,7 @@ func printUsage() {
 容器管理:
   bocker list                 | 列出已安装容器
   bocker install              | 安装新容器 (交互式选择发行版)
-  bocker install --network <bridge|nat> [镜像] [名称]
+  bocker install --network <bridge|nat> --permission <normal|super> [镜像] [名称]
   bocker remove [container|image] [名] | 删除容器或镜像 (交互式选择)
   bocker uninstall            | 删除容器 (旧别名, 等同 remove container)
   bocker start   [容器名]     | 启动容器
@@ -175,7 +175,7 @@ func printUsage() {
   bocker build [Incusfile]               | 构建镜像 (默认 ./Incusfile)
   bocker build --name <名> [Incusfile]   | 覆盖镜像别名
   bocker build show                      | 列出可用的基础镜像
-  bocker create [容器名]                 | 从 ./Incusfile 读取镜像名并创建+启动容器
+  bocker create [容器名] [--permission normal|super] | 从 ./Incusfile 创建+启动容器
   bocker images                          | 列出本地镜像别名 (build 产物)
   bocker completion bash|zsh|fish        | 输出 Tab 补全脚本
   bocker completion install [shell]      | 安装系统级 Tab 补全

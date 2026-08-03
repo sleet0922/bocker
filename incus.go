@@ -285,7 +285,15 @@ func (c *IncusClient) Start(name string) error {
 	if err != nil {
 		return err
 	}
-	return op.Wait()
+	if err := op.Wait(); err != nil {
+		return err
+	}
+	if full.Config[permissionConfigKey] == string(PermissionSuper) {
+		if err := c.ExecStreaming(name, superRuntimeCompatibility, nil); err != nil {
+			return fmt.Errorf("apply super permission compatibility: %w", err)
+		}
+	}
+	return nil
 }
 
 func randomMAC() (string, error) {
@@ -444,6 +452,10 @@ func (c *IncusClient) Launch(imageRef, name string) error {
 }
 
 func (c *IncusClient) LaunchWithNetwork(imageRef, name string, mode NetworkMode) error {
+	return c.LaunchWithNetworkAndPermission(imageRef, name, mode, PermissionNormal)
+}
+
+func (c *IncusClient) LaunchWithNetworkAndPermission(imageRef, name string, mode NetworkMode, permission PermissionMode) error {
 	if err := c.ready(); err != nil {
 		return err
 	}
@@ -470,14 +482,20 @@ func (c *IncusClient) LaunchWithNetwork(imageRef, name string, mode NetworkMode)
 	}
 	// 规范化镜像引用：debian:12 -> debian/12，与镜像源 alias 一致
 	alias = normalizeImageRef(alias)
+	permission, err = ParsePermissionMode(string(permission))
+	if err != nil {
+		return err
+	}
+	config := map[string]string{
+		"security.privileged":  "true", // 保持原有 Bocker 行为
+		containerNetworkConfig: string(mode),
+	}
+	applyPermissionConfig(config, permission)
 	req := api.InstancesPost{
 		Name: name,
 		Type: api.InstanceTypeContainer,
 		InstancePut: api.InstancePut{
-			Config: map[string]string{
-				"security.privileged":  "true", // 默认高权限：便于 systemd/网络/设备访问
-				containerNetworkConfig: string(mode),
-			},
+			Config:  config,
 			Devices: apiDevices(map[string]map[string]string{defaultNICName: nic}),
 		},
 		Source: api.InstanceSource{
@@ -492,7 +510,10 @@ func (c *IncusClient) LaunchWithNetwork(imageRef, name string, mode NetworkMode)
 	if err := op.Wait(); err != nil {
 		return err
 	}
-	return c.Start(name)
+	if err := c.Start(name); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (c *IncusClient) ListContainers() ([]Container, error) {
@@ -655,6 +676,27 @@ func (c *IncusClient) EnsurePrivileged(name string) error {
 		put.Config = api.ConfigMap{}
 	}
 	put.Config["security.privileged"] = "true"
+	return c.updateInstance(name, etag, put)
+}
+
+func (c *IncusClient) EnsurePermission(name string, mode PermissionMode) error {
+	if err := c.ready(); err != nil {
+		return err
+	}
+	mode, err := ParsePermissionMode(string(mode))
+	if err != nil {
+		return err
+	}
+	full, etag, err := c.server.GetInstanceFull(name)
+	if err != nil {
+		return err
+	}
+	put := writableInstance(full)
+	if put.Config == nil {
+		put.Config = api.ConfigMap{}
+	}
+	put.Config["security.privileged"] = "true"
+	applyPermissionConfig(map[string]string(put.Config), mode)
 	return c.updateInstance(name, etag, put)
 }
 
@@ -870,6 +912,10 @@ func (c *IncusClient) LaunchLocalImage(alias, name string) error {
 }
 
 func (c *IncusClient) LaunchLocalImageWithNetwork(alias, name string, mode NetworkMode) error {
+	return c.LaunchLocalImageWithNetworkAndPermission(alias, name, mode, PermissionNormal)
+}
+
+func (c *IncusClient) LaunchLocalImageWithNetworkAndPermission(alias, name string, mode NetworkMode, permission PermissionMode) error {
 	if err := c.ready(); err != nil {
 		return err
 	}
@@ -883,10 +929,15 @@ func (c *IncusClient) LaunchLocalImageWithNetwork(alias, name string, mode Netwo
 	if err != nil {
 		return err
 	}
+	permission, err = ParsePermissionMode(string(permission))
+	if err != nil {
+		return err
+	}
 	config := map[string]string{
 		"security.privileged":  "true", // 默认高权限：便于 systemd/网络/设备访问
 		containerNetworkConfig: string(mode),
 	}
+	applyPermissionConfig(config, permission)
 	req := api.InstancesPost{
 		Name: name,
 		Type: api.InstanceTypeContainer,
@@ -907,7 +958,10 @@ func (c *IncusClient) LaunchLocalImageWithNetwork(alias, name string, mode Netwo
 	if err := op.Wait(); err != nil {
 		return err
 	}
-	return c.Start(name)
+	if err := c.Start(name); err != nil {
+		return err
+	}
+	return nil
 }
 
 // PushFile 将字节数据写入容器的指定路径 (覆盖模式)。

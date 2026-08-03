@@ -32,7 +32,7 @@ by a default `incus admin init`. The embedded runtime is not installed in
 ## Commands
 
 ```text
-bocker install [--network bridge|nat] [image] [name]
+bocker install [--network bridge|nat] [--permission normal|super] [image] [name]
 bocker list
 bocker start|stop|restart [name]
 bocker in [name]
@@ -42,7 +42,7 @@ bocker export [name]
 bocker import [backup.tar.gz] [name] [--network bridge|nat]
 bocker set <name> port|domain|autostart|network ...
 bocker build [--name name] [--network bridge|nat] [Incusfile]
-bocker create [name] [--network bridge|nat]
+bocker create [name] [--network bridge|nat] [--permission normal|super]
 bocker images
 bocker completion bash|zsh|fish
 bocker completion install [bash|zsh|fish]
@@ -52,6 +52,21 @@ When a container name is omitted, Bocker uses a small interactive selector.
 Running `bocker install` without an image first asks for `Bridge` or `NAT`;
 `bocker set <name> network` also opens this network selector when the mode is
 omitted. The current mode is listed first and is the default choice.
+
+Container permissions are per-instance. `normal` is the default and keeps the
+existing creation behavior. `super` enables privileged/nested LXC operation,
+removes the container's AppArmor and dropped-capability restrictions, and relaxes
+the inner systemd sandbox. It does not change other containers or the host's
+systemd configuration:
+
+```bash
+bocker create --permission normal
+bocker create --permission super
+bocker install --permission super debian:12 redis
+```
+
+Use `super` only for trusted software. The mode is stored in the container's
+LXC configuration and remains in effect across restarts.
 
 ## Shell completion
 
