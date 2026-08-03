@@ -1,8 +1,0 @@
-[service]
-name = "bocker-python-api"
-message = "hello-from-python"
-version = "1.0.0"
-
-[limits]
-request_timeout_ms = 2000
-max_items = 100

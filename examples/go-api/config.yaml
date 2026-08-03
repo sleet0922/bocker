@@ -1,7 +1,0 @@
-service:
-  name: bocker-go-api
-  message: hello-from-go
-  version: "1.0.0"
-limits:
-  request_timeout_ms: 1500
-  max_body_bytes: 1048576
