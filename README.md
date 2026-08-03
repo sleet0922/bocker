@@ -195,7 +195,26 @@ NETWORK bridge
 只写一次 `NETWORK` 即可。没有写时使用全局默认值，默认是 `bridge`，也可
 通过 `BOCKER_NETWORK=nat` 修改。
 
-### 4. 环境变量和工作目录
+### 4. Debian 12 与国内 APT 源
+
+Debian 基础镜像可能使用传统的 `/etc/apt/sources.list`，也可能使用新式的
+`/etc/apt/sources.list.d/debian.sources`。为了同时兼容两种格式，可直接使用：
+
+```text
+FROM debian/12
+NAME debian-demo
+NETWORK nat
+RUN if [ -f /etc/apt/sources.list.d/debian.sources ]; then sed -i 's|http://deb.debian.org|https://mirrors.tuna.tsinghua.edu.cn|g; s|http://security.debian.org/debian-security|https://mirrors.tuna.tsinghua.edu.cn/debian-security|g' /etc/apt/sources.list.d/debian.sources; fi && if [ -f /etc/apt/sources.list ]; then sed -i 's|http://deb.debian.org|https://mirrors.tuna.tsinghua.edu.cn|g; s|http://security.debian.org/debian-security|https://mirrors.tuna.tsinghua.edu.cn/debian-security|g' /etc/apt/sources.list; fi && apt-get update && apt-get install -y --no-install-recommends python3 ca-certificates && rm -rf /var/lib/apt/lists/*
+```
+
+这条命令已在 `debian/12` 上实际构建验证。不要只假定 `debian.sources` 存在，
+否则传统布局会在 `sed` 阶段直接失败。
+
+Debian 的应用服务通常应使用 systemd。把 unit 文件复制到
+`/etc/systemd/system/` 后，执行 `systemctl enable service-name.service`，再通过
+`EXPOSE` 暴露应用端口即可。
+
+### 5. 环境变量和工作目录
 
 ```text
 FROM debian/12
@@ -211,7 +230,7 @@ RUN mkdir -p /var/log/app && printf '%s\\n' "$APP_ENV:$APP_PORT" > /var/log/app/
 每条 `ENV` 只写一个变量。`WORKDIR` 会影响后续的 `RUN` 和相对路径的
 `COPY`；相对 `WORKDIR` 会基于当前目录累加，绝对路径会直接切换。
 
-### 5. 多阶段构建
+### 6. 多阶段构建
 
 编译型语言应把编译器放在中间阶段，最终镜像只保留运行时和产物：
 
@@ -244,7 +263,7 @@ AUTOSTART on
 `TEMP name ... END` 是单个基础 `FROM` 下的临时构建块，适合隔离编译工具；
 需要多个不同基础镜像时应使用上面的 `FROM ... AS ...` 写法，不要混用。
 
-### 6. 行续接和常见错误
+### 7. 行续接和常见错误
 
 `RUN` 支持反斜杠续行：
 
@@ -262,7 +281,7 @@ RUN apk update && \\
 - Python、Node 等服务只监听 `0.0.0.0`：如果需要 IPv6，服务应监听 `[::]` 或同时监听 IPv4/IPv6。
 - `bocker create` 在错误目录运行：它只读取当前目录的 `./Incusfile`。
 
-### 7. 一套完整检查命令
+### 8. 一套完整检查命令
 
 ```bash
 bocker build --name demo Incusfile
