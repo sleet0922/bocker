@@ -176,6 +176,42 @@ func TestNetworkDirectiveRejectsIncusNames(t *testing.T) {
 	}
 }
 
+func TestCommandDirectives(t *testing.T) {
+	content := `FROM debian/12
+ENTRYPOINT ["/usr/local/bin/app", "--listen", "[::]:8080"]
+CMD ["--workers", "2"]
+`
+	p := writeIncusfile(t, "Incusfile", content)
+	f, err := parseIncusfile(p)
+	if err != nil {
+		t.Fatalf("parse CMD/ENTRYPOINT: %v", err)
+	}
+	if got, want := f.Entrypoint, []string{"/usr/local/bin/app", "--listen", "[::]:8080"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("ENTRYPOINT = %#v, want %#v", got, want)
+	}
+	if got, want := f.Cmd, []string{"--workers", "2"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("CMD = %#v, want %#v", got, want)
+	}
+	if got, want := runtimeCommand(f), []string{"/usr/local/bin/app", "--listen", "[::]:8080", "--workers", "2"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("runtimeCommand = %#v, want %#v", got, want)
+	}
+}
+
+func TestCommandDirectiveShellFormAndValidation(t *testing.T) {
+	p := writeIncusfile(t, "Incusfile", "FROM alpine/3.24\nCMD /usr/bin/app --message 'hello world'\n")
+	f, err := parseIncusfile(p)
+	if err != nil {
+		t.Fatalf("parse shell command: %v", err)
+	}
+	if got, want := f.Cmd, []string{"/usr/bin/app", "--message", "hello world"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("CMD = %#v, want %#v", got, want)
+	}
+	p = writeIncusfile(t, "Incusfile", "FROM alpine/3.24\nENTRYPOINT []\n")
+	if _, err := parseIncusfile(p); err == nil {
+		t.Fatal("empty ENTRYPOINT should fail")
+	}
+}
+
 func TestFromPayloadAcceptsWhitespaceAroundAS(t *testing.T) {
 	p := writeIncusfile(t, "Incusfile", "FROM debian:12\tAS\tbase\nRUN echo ok\n")
 	f, err := parseIncusfile(p)

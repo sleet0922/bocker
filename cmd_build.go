@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path"
@@ -111,6 +112,12 @@ func CmdBuild(args []string) error {
 	}
 	if f.Autostart != nil {
 		fmt.Printf("│ AUTOSTART: %s\n", strconv.FormatBool(*f.Autostart))
+	}
+	if len(f.Entrypoint) > 0 {
+		fmt.Printf("│ ENTRYPOINT: %s\n", strings.Join(f.Entrypoint, " "))
+	}
+	if len(f.Cmd) > 0 {
+		fmt.Printf("│ CMD:        %s\n", strings.Join(f.Cmd, " "))
 	}
 	fmt.Printf("╰─\n\n")
 
@@ -406,6 +413,11 @@ func buildImage(client *IncusClient, f *Incusfile, alias string, networkMode Net
 				return err
 			}
 		}
+		if isLast && hasRuntimeCommand(f) {
+			if err := installRuntimeService(client, stageContainer, f); err != nil {
+				return err
+			}
+		}
 
 		// 最终阶段：停止并发布镜像
 		if isLast {
@@ -489,7 +501,93 @@ func buildImageProperties(f *Incusfile) map[string]string {
 	if f.Network != "" {
 		p[containerNetworkConfig] = f.Network
 	}
+	if data, err := json.Marshal(f.Entrypoint); err == nil && len(f.Entrypoint) > 0 {
+		p["user.bocker.entrypoint"] = string(data)
+	}
+	if data, err := json.Marshal(f.Cmd); err == nil && len(f.Cmd) > 0 {
+		p["user.bocker.cmd"] = string(data)
+	}
 	return p
+}
+
+const runtimeEntrypointPath = "/usr/local/lib/bocker-entrypoint"
+
+func hasRuntimeCommand(f *Incusfile) bool {
+	return len(f.Entrypoint) > 0 || len(f.Cmd) > 0
+}
+
+func runtimeCommand(f *Incusfile) []string {
+	if len(f.Entrypoint) == 0 {
+		return append([]string(nil), f.Cmd...)
+	}
+	command := append([]string(nil), f.Entrypoint...)
+	return append(command, f.Cmd...)
+}
+
+// installRuntimeInit adds an application service without replacing the image
+// init process. This keeps normal systemd/OpenRC networking (including DHCP)
+// intact while making CMD/ENTRYPOINT start automatically.
+func installRuntimeService(client *IncusClient, name string, f *Incusfile) error {
+	command := runtimeCommand(f)
+	if len(command) == 0 {
+		return nil
+	}
+	var script strings.Builder
+	script.WriteString("#!/bin/sh\n")
+	script.WriteString("[ -f /etc/bocker.env ] && set -a && . /etc/bocker.env && set +a\n")
+	script.WriteString("exec")
+	for _, arg := range command {
+		script.WriteByte(' ')
+		script.WriteString(shellQuote(arg))
+	}
+	script.WriteByte('\n')
+	if err := client.ExecStreaming(name, "mkdir -p /usr/local/lib /etc/systemd/system /etc/init.d", nil); err != nil {
+		return fmt.Errorf("create runtime service directories: %w", err)
+	}
+	if err := client.PushFile(name, runtimeEntrypointPath, []byte(script.String()), "0755"); err != nil {
+		return fmt.Errorf("write runtime entrypoint: %w", err)
+	}
+
+	// The image keeps its own init as PID 1. Use its native service manager to
+	// start the declared application once boot and networking are available.
+	serviceCmd := `if test -d /run/systemd/system && command -v systemctl >/dev/null 2>&1; then
+  cat > /etc/systemd/system/bocker-entrypoint.service <<'EOF'
+[Unit]
+Description=Bocker application entrypoint
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/bocker.env
+ExecStart=/usr/local/lib/bocker-entrypoint
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl enable bocker-entrypoint.service
+elif test -x /sbin/openrc-run; then
+  cat > /etc/init.d/bocker-entrypoint <<'EOF'
+#!/sbin/openrc-run
+name="bocker-entrypoint"
+command="/usr/local/lib/bocker-entrypoint"
+command_background="yes"
+pidfile="/run/bocker-entrypoint.pid"
+
+depend() {
+  need net
+}
+EOF
+  chmod 0755 /etc/init.d/bocker-entrypoint
+  rc-update add bocker-entrypoint default
+else
+  echo 'Bocker CMD/ENTRYPOINT requires systemd or OpenRC in the base image' >&2
+  exit 1
+fi`
+	if err := client.ExecStreaming(name, serviceCmd, nil); err != nil {
+		return fmt.Errorf("enable CMD/ENTRYPOINT service (base image must use systemd or OpenRC): %w", err)
+	}
+	return nil
 }
 
 // runFromBuiltImage 从已构建的镜像启动正式容器，并应用 EXPOSE/DOMAIN/AUTOSTART。

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"strconv"
@@ -30,24 +31,28 @@ type Incusfile struct {
 	Path   string
 	Stages []Stage
 	// 以下字段从最终阶段同步，保持向后兼容 (buildImageProperties 等函数直接读取)
-	From      string
-	Name      string
-	Network   string
-	Steps     []BuildStep
-	Exposes   []PortSpec
-	Domain    string
-	Autostart *bool
+	From       string
+	Name       string
+	Network    string
+	Steps      []BuildStep
+	Exposes    []PortSpec
+	Domain     string
+	Autostart  *bool
+	Entrypoint []string
+	Cmd        []string
 }
 
 // Stage 表示一个构建阶段 (FROM ... AS ...)。
 // 多阶段构建时，中间阶段的容器在构建完成后清理，最终阶段发布为镜像。
 type Stage struct {
-	Name      string      // AS 后的名字，用于 COPY --from=<name> 引用
-	From      string      // 基础镜像 (已规范化)
-	Steps     []BuildStep // RUN/COPY/ENV/WORKDIR 按出现顺序执行
-	Exposes   []PortSpec  // EXPOSE (运行时指令，通常在最终阶段)
-	Domain    string      // DOMAIN
-	Autostart *bool       // AUTOSTART
+	Name       string      // AS 后的名字，用于 COPY --from=<name> 引用
+	From       string      // 基础镜像 (已规范化)
+	Steps      []BuildStep // RUN/COPY/ENV/WORKDIR 按出现顺序执行
+	Exposes    []PortSpec  // EXPOSE (运行时指令，通常在最终阶段)
+	Domain     string      // DOMAIN
+	Autostart  *bool       // AUTOSTART
+	Entrypoint []string    // ENTRYPOINT executable and fixed arguments
+	Cmd        []string    // CMD executable/arguments or default ENTRYPOINT arguments
 }
 
 // BuildStep 是一个有序的构建步骤 (RUN/COPY/ENV/WORKDIR)。
@@ -325,8 +330,21 @@ func parseIncusfile(path string) (*Incusfile, error) {
 				return nil, fmt.Errorf("line %d: %w", lineNo, err)
 			}
 			targetStage().Autostart = &on
+		case "ENTRYPOINT", "CMD":
+			if targetStage() == nil {
+				return nil, fmt.Errorf("line %d: %s must appear after FROM", lineNo, directive)
+			}
+			command, err := parseCommandPayload(payload)
+			if err != nil {
+				return nil, fmt.Errorf("line %d: %s: %w", lineNo, directive, err)
+			}
+			if directive == "ENTRYPOINT" {
+				targetStage().Entrypoint = command
+			} else {
+				targetStage().Cmd = command
+			}
 		default:
-			return nil, fmt.Errorf("line %d: 未知指令 %s (支持: FROM NAME NETWORK WORKDIR RUN COPY ENV EXPOSE DOMAIN AUTOSTART TEMP END)", lineNo, directive)
+			return nil, fmt.Errorf("line %d: 未知指令 %s (支持: FROM NAME NETWORK WORKDIR RUN COPY ENV EXPOSE DOMAIN AUTOSTART ENTRYPOINT CMD TEMP END)", lineNo, directive)
 		}
 	}
 
@@ -358,7 +376,40 @@ func parseIncusfile(path string) (*Incusfile, error) {
 	f.Exposes = last.Exposes
 	f.Domain = last.Domain
 	f.Autostart = last.Autostart
+	f.Entrypoint = append([]string(nil), last.Entrypoint...)
+	f.Cmd = append([]string(nil), last.Cmd...)
 	return f, nil
+}
+
+// parseCommandPayload accepts Docker-compatible JSON arrays and a shell-like
+// whitespace form. Both forms resolve to an argv array; shell execution is
+// intentionally not implied. Bocker runs the result as an automatic service.
+func parseCommandPayload(payload string) ([]string, error) {
+	payload = strings.TrimSpace(payload)
+	if payload == "" {
+		return nil, fmt.Errorf("command cannot be empty")
+	}
+	var parts []string
+	if strings.HasPrefix(payload, "[") {
+		if err := json.Unmarshal([]byte(payload), &parts); err != nil {
+			return nil, fmt.Errorf("invalid JSON argv: %w", err)
+		}
+	} else {
+		var err error
+		parts, err = shellSplit(payload)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if len(parts) == 0 || strings.TrimSpace(parts[0]) == "" {
+		return nil, fmt.Errorf("command requires an executable")
+	}
+	for _, part := range parts {
+		if strings.IndexByte(part, 0) >= 0 {
+			return nil, fmt.Errorf("command arguments cannot contain NUL")
+		}
+	}
+	return parts, nil
 }
 
 // parseFromPayload 解析 FROM 指令的 payload。

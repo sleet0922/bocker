@@ -44,12 +44,29 @@ bocker set <name> port|domain|autostart|network ...
 bocker build [--name name] [--network bridge|nat] [Incusfile]
 bocker create [name] [--network bridge|nat]
 bocker images
+bocker completion bash|zsh|fish
+bocker completion install [bash|zsh|fish]
 ```
 
 When a container name is omitted, Bocker uses a small interactive selector.
 Running `bocker install` without an image first asks for `Bridge` or `NAT`;
 `bocker set <name> network` also opens this network selector when the mode is
 omitted. The current mode is listed first and is the default choice.
+
+## Shell completion
+
+Print a completion script and load it for the current shell:
+
+```bash
+source <(bocker completion bash)       # Bash
+eval "$(bocker completion zsh)"        # Zsh
+bocker completion fish | source        # Fish
+```
+
+For a system-wide installation (run as root), use
+`bocker completion install bash`, `zsh`, or `fish`. The completion script
+also queries current container and image names through the hidden
+`bocker __complete` endpoint.
 
 ## Network model
 
@@ -76,6 +93,7 @@ Bocker rejects Incus implementation names such as `macvlan`, `bridged`, and
 构建时该目录就是 `COPY` 的上下文目录。Bocker 当前支持的指令只有：
 `FROM`、`NAME`、`NETWORK`、`WORKDIR`、`RUN`、`COPY`、`ENV`、`EXPOSE`、
 `DOMAIN`、`AUTOSTART`，以及用于临时构建阶段的 `TEMP ... END`。
+此外，`ENTRYPOINT` 和 `CMD` 可声明镜像的默认应用命令。
 
 ### 1. 最小可运行容器
 
@@ -117,8 +135,25 @@ bocker exec hello cat /hello.txt
 
 ### 2. 运行一个 HTTP 服务
 
-由于 `Incusfile` 没有 `CMD` 或 `ENTRYPOINT`，应用应通过基础镜像的 init
-系统启动。Alpine 使用 OpenRC，下面是完整的 HTTP 服务模板。
+如果不写 `CMD` 或 `ENTRYPOINT`，应用仍可通过基础镜像自己的 init 系统启动。
+写了这两个指令后，Bocker 会在构建阶段自动生成应用包装器和原生服务：
+Debian/Ubuntu 使用 systemd，Alpine 使用 OpenRC。基础镜像的 init 仍然是
+PID 1，因此 DHCP、IPv4、IPv6 和系统服务不会被覆盖，也不需要用户手写
+unit 或 init 文件。
+
+例如，下面的声明会在容器启动时执行 `/usr/bin/python3 /opt/app.py --port 8080`：
+
+```text
+ENTRYPOINT ["/usr/bin/python3", "/opt/app.py"]
+CMD ["--port", "8080"]
+```
+
+JSON 数组是推荐写法，也支持带引号的 shell-like 写法，例如
+`CMD /usr/bin/python3 /opt/app.py --port 8080`。`ENTRYPOINT` 是固定命令，
+`CMD` 是追加参数；只写其中一个也可以。
+
+下面仍给出一个完全手动管理 OpenRC 服务的模板，适用于不想使用默认命令
+机制、或需要自定义多个服务的镜像。
 
 项目目录：
 
@@ -275,7 +310,7 @@ RUN apk update && \\
 
 常见错误：
 
-- 把 `CMD` 或 `ENTRYPOINT` 写进文件：当前 Bocker 不支持，请使用 OpenRC。
+- `CMD`/`ENTRYPOINT` 的可执行文件必须存在且可执行；Bocker 不会隐式执行 shell 字符串。
 - `COPY` 使用 `../`、绝对宿主机路径或符号链接：构建会拒绝路径穿越和符号链接。
 - `EXPOSE` 写成 `8080` 以外的非法端口，或协议写成 `http`：协议只能是 `tcp` 或 `udp`。
 - Python、Node 等服务只监听 `0.0.0.0`：如果需要 IPv6，服务应监听 `[::]` 或同时监听 IPv4/IPv6。

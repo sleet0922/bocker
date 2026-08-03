@@ -883,14 +883,15 @@ func (c *IncusClient) LaunchLocalImageWithNetwork(alias, name string, mode Netwo
 	if err != nil {
 		return err
 	}
+	config := map[string]string{
+		"security.privileged":  "true", // 默认高权限：便于 systemd/网络/设备访问
+		containerNetworkConfig: string(mode),
+	}
 	req := api.InstancesPost{
 		Name: name,
 		Type: api.InstanceTypeContainer,
 		InstancePut: api.InstancePut{
-			Config: map[string]string{
-				"security.privileged":  "true", // 默认高权限：便于 systemd/网络/设备访问
-				containerNetworkConfig: string(mode),
-			},
+			Config:  config,
 			Devices: apiDevices(map[string]map[string]string{defaultNICName: nic}),
 		},
 		Source: api.InstanceSource{

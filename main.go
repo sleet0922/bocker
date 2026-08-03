@@ -49,7 +49,7 @@ func main() {
 // help/version 等纯本地命令跳过所有启动期副作用，保证即时响应。
 func isLightweightCommand(cmd string) bool {
 	switch cmd {
-	case "help", "-h", "--help", "--version", "-v", "version":
+	case "help", "-h", "--help", "--version", "-v", "version", "completion":
 		return true
 	}
 	return false
@@ -94,6 +94,10 @@ func dispatch(cmd string, args []string) error {
 		return CmdCreate(args)
 	case "images", "image":
 		return CmdImages(args)
+	case "completion":
+		return CmdCompletion(args)
+	case "__complete":
+		return CmdCompletionCandidates(args)
 	case "help", "-h", "--help":
 		printUsage()
 		return nil
@@ -173,12 +177,15 @@ func printUsage() {
   bocker build show                      | 列出可用的基础镜像
   bocker create [容器名]                 | 从 ./Incusfile 读取镜像名并创建+启动容器
   bocker images                          | 列出本地镜像别名 (build 产物)
+  bocker completion bash|zsh|fish        | 输出 Tab 补全脚本
+  bocker completion install [shell]      | 安装系统级 Tab 补全
 
   Incusfile 指令:
     FROM <镜像>   NAME <名称>     RUN <命令>
     COPY <源> <目标>   ENV <K=V>
     NETWORK bridge|nat 网络模式 (bridge=局域网直连, nat=地址转换)
     EXPOSE <端口>   DOMAIN <域名>   AUTOSTART on|off
+    ENTRYPOINT <命令>   CMD <命令/默认参数>
     TEMP <名称> ... END   临时构建块 (隔离编译工具链)
 
 其他:
