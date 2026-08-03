@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"strings"
 
@@ -23,6 +24,8 @@ const (
 	natNetworkName                     = "bocker-nat"
 	natNetworkCIDR                     = "10.0.100.1/24"
 	natNetworkCIDREnv                  = "BOCKER_NAT_CIDR"
+	natNetworkIPv6CIDR                 = "auto"
+	natNetworkIPv6CIDREnv              = "BOCKER_NAT_IPV6_CIDR"
 	containerNetworkConfig             = "user.bocker.network"
 )
 
@@ -155,6 +158,51 @@ func networkDevice(mode NetworkMode, parent, mac string) map[string]string {
 	return device
 }
 
+// configuredNATIPv6CIDR follows Incus' managed bridge default: generate an
+// unused IPv6 ULA subnet and enable IPv6 NAT. An explicit value can be a CIDR
+// or "none"; "auto" asks Incus to generate the subnet on creation.
+func configuredNATIPv6CIDR() (cidr string, explicitlySet bool, err error) {
+	raw, explicitlySet := os.LookupEnv(natNetworkIPv6CIDREnv)
+	if !explicitlySet || strings.TrimSpace(raw) == "" {
+		return natNetworkIPv6CIDR, false, nil
+	}
+	cidr = strings.ToLower(strings.TrimSpace(raw))
+	if err := validateIPv6NetworkSetting(cidr); err != nil {
+		return "", true, fmt.Errorf("%s=%q invalid: %w", natNetworkIPv6CIDREnv, raw, err)
+	}
+	return cidr, true, nil
+}
+
+func validateIPv6NetworkSetting(value string) error {
+	if value == "auto" || value == "none" {
+		return nil
+	}
+	ip, _, err := net.ParseCIDR(value)
+	if err != nil {
+		return err
+	}
+	if ip == nil || ip.To4() != nil {
+		return fmt.Errorf("must be an IPv6 CIDR, auto, or none")
+	}
+	return nil
+}
+
+func applyNATIPv6Config(config api.ConfigMap, cidr string) {
+	config["ipv6.address"] = cidr
+	if cidr == "none" {
+		config["ipv6.nat"] = "false"
+		config["ipv6.dhcp"] = "false"
+		config["ipv6.dhcp.stateful"] = "false"
+		return
+	}
+
+	// Incus defaults to stateless DHCPv6 plus router advertisements on new
+	// managed bridges. Stateful DHCPv6 remains off until static leases exist.
+	config["ipv6.nat"] = "true"
+	config["ipv6.dhcp"] = "true"
+	config["ipv6.dhcp.stateful"] = "false"
+}
+
 func (c *IncusClient) ensureNATNetwork() error {
 	if err := c.ready(); err != nil {
 		return err
@@ -166,13 +214,17 @@ func (c *IncusClient) ensureNATNetwork() error {
 	if err := validateCIDR(cidr); err != nil {
 		return fmt.Errorf("%s=%q 无效: %w", natNetworkCIDREnv, cidr, err)
 	}
+	ipv6CIDR, ipv6Explicit, err := configuredNATIPv6CIDR()
+	if err != nil {
+		return err
+	}
 	network, etag, err := c.server.GetNetwork(natNetworkName)
 	if err != nil {
 		config := api.ConfigMap{
 			"ipv4.address": cidr,
 			"ipv4.nat":     "true",
-			"ipv6.address": "none",
 		}
+		applyNATIPv6Config(config, ipv6CIDR)
 		if err := c.server.CreateNetwork(api.NetworksPost{
 			Name: natNetworkName,
 			Type: "bridge",
@@ -193,11 +245,21 @@ func (c *IncusClient) ensureNATNetwork() error {
 	for key, value := range map[string]string{
 		"ipv4.address": cidr,
 		"ipv4.nat":     "true",
-		"ipv6.address": "none",
 	} {
 		if config[key] != value {
 			config[key] = value
 			changed = true
+		}
+	}
+	// Migrate the IPv4-only Bocker 1.0 network, but retain an already
+	// provisioned IPv6 subnet unless the operator explicitly overrides it.
+	if (ipv6Explicit && ipv6CIDR != "auto") || config["ipv6.address"] == "" || config["ipv6.address"] == "none" {
+		before := cloneConfig(api.ConfigMap(config))
+		applyNATIPv6Config(api.ConfigMap(config), ipv6CIDR)
+		for _, key := range []string{"ipv6.address", "ipv6.nat", "ipv6.dhcp", "ipv6.dhcp.stateful"} {
+			if before[key] != config[key] {
+				changed = true
+			}
 		}
 	}
 	if !changed {

@@ -54,7 +54,11 @@ func CmdStart(name string) error {
 		fmt.Printf("⚠ 容器未获取到 IPv4，跳过 hosts 更新\n")
 		return nil
 	}
-	if err := updateHosts(name, domain, ip); err != nil {
+	addresses := waitForIPAddresses(client, name, 5, true)
+	if len(addresses) == 0 {
+		addresses = []string{ip}
+	}
+	if err := updateHostsAddresses(name, domain, addresses); err != nil {
 		return fmt.Errorf("更新 /etc/hosts 失败: %w", err)
 	}
 	fmt.Printf("✔ 已更新 /etc/hosts: %s -> %s\n", domain, ip)
@@ -127,6 +131,9 @@ func removeContainer(args []string) error {
 		if ip := ct.IPv4(); ip != "" {
 			removeHostBridgeRoute(ip)
 		}
+		for _, ip := range ct.IPv6Addresses() {
+			removeHostBridgeIPv6Route(ip)
+		}
 	}
 	fmt.Printf("✔ 容器 %s 已删除\n", name)
 	return nil
@@ -184,6 +191,9 @@ func CmdStop(name string) error {
 	if ct != nil && ct.UsesBridgeNIC(defaultNICName) {
 		if ip := ct.IPv4(); ip != "" {
 			removeHostBridgeRoute(ip)
+		}
+		for _, ip := range ct.IPv6Addresses() {
+			removeHostBridgeIPv6Route(ip)
 		}
 	}
 	return nil

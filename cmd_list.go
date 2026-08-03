@@ -20,14 +20,15 @@ func CmdList() error {
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "NAME\tSTATUS\tNETWORK\tIPV4\tAUTOSTART\tPORTS")
+	fmt.Fprintln(w, "NAME\tSTATUS\tNETWORK\tIPV4\tIPV6\tAUTOSTART\tPORTS")
 	for i := range cs {
 		c := &cs[i]
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			c.Name,
 			strings.ToLower(c.Status),
 			c.NetworkMode(),
 			c.IPv4(),
+			strings.Join(c.IPv6Addresses(), ","),
 			autostartBadge(c.Autostart()),
 			portSummary(c.PortMappings()),
 		)

@@ -185,7 +185,11 @@ func applyDomain(client *IncusClient, ct *Container, domain string) error {
 			ip = waitForIP(client, ct.Name, 5)
 		}
 		if ip != "" {
-			if err := updateHosts(ct.Name, domain, ip); err != nil {
+			addresses := waitForIPAddresses(client, ct.Name, 5, true)
+			if len(addresses) == 0 {
+				addresses = []string{ip}
+			}
+			if err := updateHostsAddresses(ct.Name, domain, addresses); err != nil {
 				return fmt.Errorf("更新 /etc/hosts 失败: %w", err)
 			}
 			fmt.Printf("✔ 已更新 /etc/hosts: %s -> %s\n", domain, ip)

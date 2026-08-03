@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 )
 
@@ -23,10 +24,19 @@ const (
 // 宿主机上也创建一个 macvlan 子接口，并把容器 IP 路由到该子接口。
 func AutoConfigureHostBridge(client *IncusClient) error {
 	targets := runningBridgeContainers(client)
-	if len(targets) == 0 {
+	ipv6Targets := runningBridgeIPv6Containers(client)
+	if len(targets) == 0 && len(ipv6Targets) == 0 {
 		return nil
 	}
-	return ensureHostBridgeConnectivity(client, targets)
+	if len(targets) > 0 {
+		if err := ensureHostBridgeConnectivity(client, targets); err != nil {
+			return err
+		}
+	}
+	if len(ipv6Targets) > 0 {
+		return ensureHostBridgeIPv6Connectivity(client, ipv6Targets)
+	}
+	return nil
 }
 
 // removeHostBridgeRoute 移除宿主机侧 bocker-br0 上指向指定 IP 的 /32 路由。
@@ -37,6 +47,14 @@ func removeHostBridgeRoute(ip string) {
 	}
 	// 静默执行，路由不存在不算错误
 	_ = exec.Command("ip", "route", "del", ip+"/32", "dev", defaultHostBridgeName).Run()
+}
+
+func removeHostBridgeIPv6Route(ip string) {
+	if ip == "" {
+		return
+	}
+	_ = exec.Command("ip", "-6", "route", "del", ip+"/128", "dev", defaultHostBridgeName).Run()
+	_ = exec.Command("ip", "-6", "neigh", "del", ip, "dev", defaultHostBridgeName).Run()
 }
 
 func warnAutoHostBridge(err error) {
@@ -50,6 +68,12 @@ type bridgeRouteTarget struct {
 	IP    net.IP
 	MAC   string
 	Route string
+}
+
+type bridgeIPv6RouteTarget struct {
+	Name string
+	IP   net.IP
+	MAC  string
 }
 
 func ensureHostBridgeConnectivity(client *IncusClient, targets []bridgeRouteTarget) error {
@@ -128,6 +152,71 @@ func ensureHostBridgeConnectivity(client *IncusClient, targets []bridgeRouteTarg
 		}
 	}
 	return nil
+}
+
+// ensureHostBridgeIPv6Connectivity mirrors the IPv4 macvlan shim behavior.
+// The host keeps its existing IPv6 address on the physical parent and routes
+// each container /128 through bocker-br0, with static NDP entries on both
+// sides. This avoids relying on an additional globally routed shim address.
+func ensureHostBridgeIPv6Connectivity(client *IncusClient, targets []bridgeIPv6RouteTarget) error {
+	if err := ensureCommand("ip"); err != nil {
+		return err
+	}
+	parent, err := detectBridgeParent()
+	if err != nil {
+		return err
+	}
+	hostIP, err := firstGlobalIPv6(parent)
+	if err != nil {
+		return err
+	}
+	if err := ensureHostBridge(parent, defaultHostBridgeName); err != nil {
+		return err
+	}
+	if err := configureHostBridgeIsolation(parent, defaultHostBridgeName); err != nil {
+		return err
+	}
+	if err := linkUp(defaultHostBridgeName); err != nil {
+		return err
+	}
+	shimMAC, _ := linkMAC(defaultHostBridgeName)
+	for _, target := range targets {
+		if target.IP == nil || target.IP.To4() != nil {
+			continue
+		}
+		if err := replaceIPv6Route(target.IP.String()+"/128", defaultHostBridgeName, hostIP.String()); err != nil {
+			return err
+		}
+		if err := replaceStaticNDP(target.IP.String(), target.MAC, defaultHostBridgeName); err != nil {
+			return err
+		}
+		if client != nil && target.Name != "" && shimMAC != "" {
+			if err := replaceContainerStaticNDP(client, target.Name, hostIP.String(), shimMAC, defaultNICName); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func firstGlobalIPv6(parent string) (net.IP, error) {
+	out, err := exec.Command("ip", "-6", "-o", "addr", "show", "dev", parent, "scope", "global").Output()
+	if err != nil {
+		return nil, fmt.Errorf("read IPv6 addresses for %s: %w", parent, err)
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		for i, field := range fields {
+			if field != "inet6" || i+1 >= len(fields) {
+				continue
+			}
+			ip, _, err := net.ParseCIDR(fields[i+1])
+			if err == nil && ip != nil && ip.To4() == nil {
+				return ip, nil
+			}
+		}
+	}
+	return nil, fmt.Errorf("parent %s has no global IPv6 address", parent)
 }
 
 func autoHostShimCIDR(parent string, reserved []net.IP) (string, error) {
@@ -388,11 +477,11 @@ func configureHostBridgeIsolation(parent, ifname string) error {
 		{"/proc/sys/net/ipv4/conf/" + parent + "/arp_announce", "2", parent + " arp_announce"},
 		{"/proc/sys/net/ipv4/conf/" + ifname + "/arp_ignore", "1", ifname + " arp_ignore"},
 		{"/proc/sys/net/ipv4/conf/" + ifname + "/arp_announce", "2", ifname + " arp_announce"},
-		// shim 只承担 IPv4 /32 路由用途，关闭它的 IPv6 RA/自动地址可避免路由器
-		// 把 bocker-br0 当成一台额外 IPv6 终端展示。
+		// Keep link-local IPv6/NDP available for container /128 routes, while
+		// preventing the shim from acquiring a second LAN address via RA.
 		{"/proc/sys/net/ipv6/conf/" + ifname + "/accept_ra", "0", ifname + " accept_ra"},
 		{"/proc/sys/net/ipv6/conf/" + ifname + "/autoconf", "0", ifname + " autoconf"},
-		{"/proc/sys/net/ipv6/conf/" + ifname + "/disable_ipv6", "1", ifname + " disable_ipv6"},
+		{"/proc/sys/net/ipv6/conf/" + ifname + "/disable_ipv6", "0", ifname + " disable_ipv6"},
 	}
 
 	for _, setting := range settings {
@@ -401,8 +490,6 @@ func configureHostBridgeIsolation(parent, ifname string) error {
 		}
 	}
 
-	// 如果 shim 之前已经通过 RA 获得了 IPv6 地址，尽量清掉；失败不影响 IPv4 互通。
-	_ = exec.Command("ip", "-6", "addr", "flush", "dev", ifname).Run()
 	return nil
 }
 
@@ -452,6 +539,18 @@ func replaceRoute(target, ifname, src string) error {
 	return nil
 }
 
+func replaceIPv6Route(target, ifname, src string) error {
+	args := []string{"-6", "route", "replace", target, "dev", ifname}
+	if src != "" {
+		args = append(args, "src", src)
+	}
+	cmd := exec.Command("ip", args...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("configure IPv6 route: %w\n%s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
 func replaceStaticARP(ip, mac, ifname string) error {
 	if strings.TrimSpace(ip) == "" || strings.TrimSpace(mac) == "" {
 		return nil
@@ -463,12 +562,55 @@ func replaceStaticARP(ip, mac, ifname string) error {
 	return nil
 }
 
+func replaceStaticNDP(ip, mac, ifname string) error {
+	if strings.TrimSpace(ip) == "" || strings.TrimSpace(mac) == "" {
+		return nil
+	}
+	cmd := exec.Command("ip", "-6", "neigh", "replace", ip, "lladdr", mac, "nud", "permanent", "dev", ifname)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("configure static NDP: %w\n%s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
 func replaceContainerStaticARP(client *IncusClient, name, ip, mac, nic string) error {
 	if strings.TrimSpace(ip) == "" || strings.TrimSpace(mac) == "" {
 		return nil
 	}
-	_, err := client.execQuiet(name, "ip", "neigh", "replace", ip, "lladdr", mac, "nud", "permanent", "dev", nic)
-	return err
+	return replaceContainerNeighbor(client, name, false, ip, mac, nic)
+}
+
+func replaceContainerStaticNDP(client *IncusClient, name, ip, mac, nic string) error {
+	if strings.TrimSpace(ip) == "" || strings.TrimSpace(mac) == "" {
+		return nil
+	}
+	return replaceContainerNeighbor(client, name, true, ip, mac, nic)
+}
+
+// Use the host's iproute2 through the instance network namespace. Minimal
+// images often provide BusyBox ip, which can inspect but cannot add permanent
+// ARP/NDP entries. This must not depend on packages inside the container.
+func replaceContainerNeighbor(client *IncusClient, name string, ipv6 bool, ip, mac, nic string) error {
+	if client == nil {
+		return fmt.Errorf("nil Incus client")
+	}
+	ct, err := client.GetContainer(name)
+	if err != nil {
+		return err
+	}
+	if ct.State == nil || ct.State.Pid <= 0 {
+		return fmt.Errorf("container %s is not running", name)
+	}
+	args := []string{"-t", strconv.FormatInt(ct.State.Pid, 10), "-n", "ip"}
+	if ipv6 {
+		args = append(args, "-6")
+	}
+	args = append(args, "neigh", "replace", ip, "lladdr", mac, "nud", "permanent", "dev", nic)
+	cmd := exec.Command("nsenter", args...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("configure container neighbor: %w\n%s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 func runningBridgeContainers(client *IncusClient) []bridgeRouteTarget {
@@ -497,6 +639,30 @@ func runningBridgeContainers(client *IncusClient) []bridgeRouteTarget {
 			MAC:   ct.NICMAC(defaultNICName),
 			Route: ip + "/32",
 		})
+	}
+	return targets
+}
+
+func runningBridgeIPv6Containers(client *IncusClient) []bridgeIPv6RouteTarget {
+	cs, err := client.ListContainers()
+	if err != nil {
+		return nil
+	}
+
+	seen := map[string]bool{}
+	targets := []bridgeIPv6RouteTarget{}
+	for _, ct := range cs {
+		if !strings.EqualFold(ct.Status, "Running") || !ct.UsesBridgeNIC(defaultNICName) {
+			continue
+		}
+		for _, address := range ct.IPv6Addresses() {
+			ip := net.ParseIP(address)
+			if ip == nil || ip.To4() != nil || seen[address] {
+				continue
+			}
+			seen[address] = true
+			targets = append(targets, bridgeIPv6RouteTarget{Name: ct.Name, IP: ip, MAC: ct.NICMAC(defaultNICName)})
+		}
 	}
 	return targets
 }

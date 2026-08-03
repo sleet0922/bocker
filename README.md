@@ -22,7 +22,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags '-s -w' -o boc
 ```
 
 The embedded runtime is currently Linux amd64. Bocker must run as root. The
-host needs the normal Linux container utilities (`ip`, `dnsmasq`, `rsync`,
+host needs the normal Linux container utilities (`ip`, `nsenter`, `dnsmasq`, `rsync`,
 `setfattr`, `tar`, `unsquashfs`, and `xz`) but no external Incus installation.
 On first use, Bocker creates `/var/lib/bocker`, starts its private daemon, and
 initializes the same default `dir` storage pool and root-disk profile produced
@@ -58,11 +58,13 @@ Only two public network modes exist:
 | Bocker | Incus implementation | Behavior |
 | --- | --- | --- |
 | `bridge` | `nictype=macvlan` | A LAN address on the detected physical parent |
-| `nat` | managed `bridge` named `bocker-nat` | DHCP on `10.0.100.0/24` with IPv4 masquerading |
+| `nat` | managed `bridge` named `bocker-nat` | Dual-stack DHCP/RA with IPv4 and IPv6 masquerading |
 
 `BOCKER_NETWORK` selects the default mode and defaults to `bridge`. Set
 `BOCKER_BRIDGE_PARENT` when the physical parent cannot be inferred from the
-default route. `BOCKER_NAT_CIDR` changes the NAT subnet. The old
+default route. `BOCKER_NAT_CIDR` changes the IPv4 NAT subnet.
+`BOCKER_NAT_IPV6_CIDR` accepts an IPv6 CIDR, `auto` (the default, matching
+Incus managed bridge behavior), or `none` to intentionally disable IPv6. The old
 `BOCKER_MACVLAN_PARENT` variable is accepted only as a migration alias.
 
 Bocker rejects Incus implementation names such as `macvlan`, `bridged`, and

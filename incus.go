@@ -732,6 +732,47 @@ func (ct *Container) IPv4() string {
 	return ""
 }
 
+// IPv6Addresses returns all global IPv6 addresses assigned to the container.
+// Incus uses the global scope for public and ULA addresses; link-local
+// addresses are intentionally excluded from Bocker's application view.
+func (ct *Container) IPv6Addresses() []string {
+	if ct.State == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	addresses := []string{}
+	for name, nic := range ct.State.Network {
+		if name == "lo" || nic.Type == "loopback" {
+			continue
+		}
+		for _, addr := range nic.Addresses {
+			if addr.Family != "inet6" || addr.Scope != "global" || addr.Address == "" || seen[addr.Address] {
+				continue
+			}
+			seen[addr.Address] = true
+			addresses = append(addresses, addr.Address)
+		}
+	}
+	sort.Strings(addresses)
+	return addresses
+}
+
+func (ct *Container) IPv6() string {
+	addresses := ct.IPv6Addresses()
+	if len(addresses) == 0 {
+		return ""
+	}
+	return addresses[0]
+}
+
+func (ct *Container) IPAddresses() []string {
+	addresses := []string{}
+	if ipv4 := ct.IPv4(); ipv4 != "" {
+		addresses = append(addresses, ipv4)
+	}
+	return append(addresses, ct.IPv6Addresses()...)
+}
+
 func (ct *Container) Autostart() string { return ct.Config["boot.autostart"] }
 func (ct *Container) Domain() string    { return ct.Config["user.bocker.domain"] }
 

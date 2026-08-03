@@ -531,7 +531,11 @@ func runFromBuiltImage(client *IncusClient, alias string, f *Incusfile, networkM
 		if err := client.SetDomain(name, f.Domain); err != nil {
 			fmt.Printf("⚠ 设置 DOMAIN 失败: %v\n", err)
 		} else if ip != "" {
-			if err := updateHosts(name, f.Domain, ip); err != nil {
+			addresses := waitForIPAddresses(client, name, 5, true)
+			if len(addresses) == 0 {
+				addresses = []string{ip}
+			}
+			if err := updateHostsAddresses(name, f.Domain, addresses); err != nil {
 				fmt.Printf("⚠ 更新 /etc/hosts 失败: %v\n", err)
 			} else {
 				fmt.Printf("✔ 域名映射: %s -> %s\n", f.Domain, ip)

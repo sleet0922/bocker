@@ -73,6 +73,47 @@ func updateHosts(name, domain, ip string) error {
 	return atomicWriteHosts([]byte(strings.Join(out, "\n")))
 }
 
+// updateHostsAddresses writes one marked hosts entry per global address so a
+// Bocker domain resolves through both IPv4 and IPv6.
+func updateHostsAddresses(name, domain string, ips []string) error {
+	if err := validateBockerName(name); err != nil {
+		return fmt.Errorf("invalid container name: %w", err)
+	}
+	if err := validateDomainName(domain); err != nil {
+		return fmt.Errorf("invalid domain name: %w", err)
+	}
+
+	validIPs := make([]string, 0, len(ips))
+	seen := map[string]bool{}
+	for _, ip := range ips {
+		ip = strings.TrimSpace(ip)
+		if net.ParseIP(ip) == nil {
+			return fmt.Errorf("invalid IP address %q", ip)
+		}
+		if !seen[ip] {
+			seen[ip] = true
+			validIPs = append(validIPs, ip)
+		}
+	}
+	if len(validIPs) == 0 {
+		return fmt.Errorf("at least one IP address is required")
+	}
+
+	mark := hostsMark(name)
+	data, _ := os.ReadFile("/etc/hosts")
+	lines := strings.Split(string(data), "\n")
+	out := make([]string, 0, len(lines)+len(validIPs))
+	for _, line := range lines {
+		if !strings.HasSuffix(strings.TrimSpace(line), mark) {
+			out = append(out, line)
+		}
+	}
+	for _, ip := range validIPs {
+		out = append(out, fmt.Sprintf("%s\t%s\t%s", ip, domain, mark))
+	}
+	return atomicWriteHosts([]byte(strings.Join(out, "\n")))
+}
+
 // removeHostsLine 从 /etc/hosts 移除该容器的映射行。
 func removeHostsLine(name string) error {
 	if err := validateBockerName(name); err != nil {
@@ -101,4 +142,22 @@ func waitForIP(client *IncusClient, name string, maxWait int) string {
 		time.Sleep(time.Second)
 	}
 	return ""
+}
+
+// waitForIPAddresses waits for IPv4 and, when available, IPv6. IPv6 router
+// advertisements commonly arrive shortly after DHCPv4, so callers that write
+// a dual-stack hosts entry use this instead of capturing only the first IPv4.
+func waitForIPAddresses(client *IncusClient, name string, maxWait int, requireIPv6 bool) []string {
+	var last []string
+	for i := 0; i < maxWait; i++ {
+		ct, err := client.GetContainer(name)
+		if err == nil && ct.IPv4() != "" {
+			last = ct.IPAddresses()
+			if !requireIPv6 || ct.IPv6() != "" {
+				return last
+			}
+		}
+		time.Sleep(time.Second)
+	}
+	return last
 }

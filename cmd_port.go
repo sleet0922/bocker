@@ -15,6 +15,8 @@ type PortMapping struct {
 	ContainerPort int
 	Protocol      string // "tcp" 或 "udp"
 	DeviceName    string
+	IPv4          bool
+	IPv6          bool
 }
 
 // portDevicePrefix bocker 管理的端口映射设备名前缀，便于识别与清理。
@@ -81,25 +83,43 @@ func portDeviceName(hostPort int, protocol string) string {
 	return fmt.Sprintf("%s%d-%s", portDevicePrefix, hostPort, protocol)
 }
 
+func portDeviceNameForFamily(hostPort int, protocol, family string) string {
+	name := portDeviceName(hostPort, protocol)
+	if family == "v6" {
+		return name + "-v6"
+	}
+	return name
+}
+
 // parsePortDeviceName 从设备名解析回宿主端口和协议。
 func parsePortDeviceName(name string) (hostPort int, protocol string, ok bool) {
+	hostPort, protocol, _, ok = parsePortDeviceNameWithFamily(name)
+	return hostPort, protocol, ok
+}
+
+func parsePortDeviceNameWithFamily(name string) (hostPort int, protocol, family string, ok bool) {
+	family = "v4"
+	if strings.HasSuffix(name, "-v6") {
+		family = "v6"
+		name = strings.TrimSuffix(name, "-v6")
+	}
 	if !strings.HasPrefix(name, portDevicePrefix) {
-		return 0, "", false
+		return 0, "", "", false
 	}
 	rest := name[len(portDevicePrefix):]
 	idx := strings.LastIndex(rest, "-")
 	if idx <= 0 || idx+1 >= len(rest) {
-		return 0, "", false
+		return 0, "", "", false
 	}
 	port, err := strconv.Atoi(rest[:idx])
 	if err != nil || port < 1 || port > 65535 {
-		return 0, "", false
+		return 0, "", "", false
 	}
 	proto := rest[idx+1:]
 	if proto != "tcp" && proto != "udp" {
-		return 0, "", false
+		return 0, "", "", false
 	}
-	return port, proto, true
+	return port, proto, family, true
 }
 
 // parseConnectPort 从 connect 字符串解析容器端口。
@@ -121,9 +141,16 @@ func parseConnectPort(connect, proto string) int {
 	return port
 }
 
+func proxyEndpoint(protocol, address string, port int) string {
+	if strings.Contains(address, ":") {
+		return fmt.Sprintf("%s:[%s]:%d", protocol, address, port)
+	}
+	return fmt.Sprintf("%s:%s:%d", protocol, address, port)
+}
+
 // PortMappings 从容器已加载的 Devices 中提取 bocker 管理的端口映射，按 host 端口升序。
 func (ct *Container) PortMappings() []PortMapping {
-	var result []PortMapping
+	byMapping := map[string]*PortMapping{}
 	seen := map[string]bool{}
 	for _, devs := range []map[string]map[string]string{ct.Devices, ct.ExpandedDevices} {
 		for devName, dev := range devs {
@@ -133,7 +160,7 @@ func (ct *Container) PortMappings() []PortMapping {
 			if dev["type"] != "proxy" {
 				continue
 			}
-			hostPort, proto, ok := parsePortDeviceName(devName)
+			hostPort, proto, family, ok := parsePortDeviceNameWithFamily(devName)
 			if !ok {
 				continue
 			}
@@ -142,13 +169,25 @@ func (ct *Container) PortMappings() []PortMapping {
 				continue
 			}
 			seen[devName] = true
-			result = append(result, PortMapping{
-				HostPort:      hostPort,
-				ContainerPort: containerPort,
-				Protocol:      proto,
-				DeviceName:    devName,
-			})
+			key := fmt.Sprintf("%d/%s", hostPort, proto)
+			mapping := byMapping[key]
+			if mapping == nil {
+				mapping = &PortMapping{HostPort: hostPort, ContainerPort: containerPort, Protocol: proto, DeviceName: devName}
+				byMapping[key] = mapping
+			}
+			if strings.Contains(dev["listen"], ":[::]:") {
+				mapping.IPv4 = true
+				mapping.IPv6 = true
+			} else if family == "v6" {
+				mapping.IPv6 = true
+			} else {
+				mapping.IPv4 = true
+			}
 		}
+	}
+	result := make([]PortMapping, 0, len(byMapping))
+	for _, mapping := range byMapping {
+		result = append(result, *mapping)
 	}
 	sort.Slice(result, func(i, j int) bool {
 		if result[i].HostPort != result[j].HostPort {
@@ -166,13 +205,38 @@ func portSummary(mappings []PortMapping) string {
 	}
 	parts := make([]string, 0, len(mappings))
 	for _, m := range mappings {
+		families := []string{}
+		if m.IPv4 {
+			families = append(families, "v4")
+		}
+		if m.IPv6 {
+			families = append(families, "v6")
+		}
+		suffix := ""
+		if len(families) > 0 {
+			suffix = "(" + strings.Join(families, ",") + ")"
+		}
 		if m.HostPort == m.ContainerPort {
-			parts = append(parts, fmt.Sprintf("%d/%s", m.HostPort, m.Protocol))
+			parts = append(parts, fmt.Sprintf("%d/%s%s", m.HostPort, m.Protocol, suffix))
 		} else {
-			parts = append(parts, fmt.Sprintf("%d->%d/%s", m.HostPort, m.ContainerPort, m.Protocol))
+			parts = append(parts, fmt.Sprintf("%d->%d/%s%s", m.HostPort, m.ContainerPort, m.Protocol, suffix))
 		}
 	}
 	return strings.Join(parts, ", ")
+}
+
+func portFamilyLabel(m PortMapping) string {
+	families := []string{}
+	if m.IPv4 {
+		families = append(families, "IPv4")
+	}
+	if m.IPv6 {
+		families = append(families, "IPv6")
+	}
+	if len(families) == 0 {
+		return ""
+	}
+	return " [" + strings.Join(families, "+") + "]"
 }
 
 // AddPortMapping 添加或替换一条端口映射。
@@ -207,6 +271,17 @@ func (c *IncusClient) AddPortMapping(name string, hostPort, containerPort int, p
 		"listen":  fmt.Sprintf("%s:0.0.0.0:%d", protocol, hostPort),
 		"connect": fmt.Sprintf("%s:%s:%d", protocol, ip, containerPort),
 	}
+	if ipv6 := ct.IPv6(); ipv6 != "" {
+		// Incus' proxy implementation binds an IPv6 wildcard as a dual-stack
+		// socket on normal Linux hosts. A second 0.0.0.0 listener would conflict,
+		// so one [::] proxy serves both client families and connects over IPv6.
+		put.Devices[devName] = map[string]string{
+			"type":    "proxy",
+			"listen":  fmt.Sprintf("%s:[::]:%d", protocol, hostPort),
+			"connect": proxyEndpoint(protocol, ipv6, containerPort),
+		}
+	}
+	delete(put.Devices, portDeviceNameForFamily(hostPort, protocol, "v6"))
 	return c.updateInstance(name, etag, put)
 }
 
@@ -222,23 +297,33 @@ func (c *IncusClient) RefreshPortMappings(name string) (int, error) {
 		return 0, fmt.Errorf("获取容器 %q 失败: %w", name, err)
 	}
 	ct := convertContainer(full)
-	ip := ct.IPv4()
-	if ip == "" {
+	ipv4 := ct.IPv4()
+	ipv6 := ct.IPv6()
+	if ipv4 == "" && ipv6 == "" {
 		return 0, nil
 	}
 	changed := false
 	refreshed := 0
 	for devName, dev := range full.Devices {
-		_, _, ok := parsePortDeviceName(devName)
+		hostPort, proto, family, ok := parsePortDeviceNameWithFamily(devName)
 		if !ok || dev["type"] != "proxy" {
 			continue
 		}
-		proto := devName[strings.LastIndex(devName, "-")+1:]
 		port := parseConnectPort(dev["connect"], proto)
 		if port == 0 {
 			continue
 		}
-		newConnect := fmt.Sprintf("%s:%s:%d", proto, ip, port)
+		address := ipv4
+		if ipv6 != "" && family == "v4" && strings.Contains(dev["listen"], ":0.0.0.0:") {
+			dev["listen"] = fmt.Sprintf("%s:[::]:%d", proto, hostPort)
+			address = ipv6
+		} else if family == "v6" || strings.Contains(dev["listen"], ":[::]:") {
+			address = ipv6
+		}
+		if address == "" {
+			continue
+		}
+		newConnect := proxyEndpoint(proto, address, port)
 		if dev["connect"] == newConnect {
 			continue
 		}
@@ -272,6 +357,7 @@ func (c *IncusClient) RemovePortMapping(name string, hostPort int, protocol stri
 		return fmt.Errorf("未找到端口映射 %d/%s", hostPort, protocol)
 	}
 	delete(put.Devices, devName)
+	delete(put.Devices, portDeviceNameForFamily(hostPort, protocol, "v6"))
 	return c.updateInstance(name, etag, put)
 }
 
@@ -384,9 +470,9 @@ func printPortMappings(client *IncusClient, name string) error {
 	fmt.Printf("容器 %s 端口映射:\n", name)
 	for _, m := range mappings {
 		if m.HostPort == m.ContainerPort {
-			fmt.Printf("  %d/%s\n", m.HostPort, m.Protocol)
+			fmt.Printf("  %d/%s%s\n", m.HostPort, m.Protocol, portFamilyLabel(m))
 		} else {
-			fmt.Printf("  %d/%s -> %d\n", m.HostPort, m.Protocol, m.ContainerPort)
+			fmt.Printf("  %d/%s -> %d%s\n", m.HostPort, m.Protocol, m.ContainerPort, portFamilyLabel(m))
 		}
 	}
 	return nil
