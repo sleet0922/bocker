@@ -15,6 +15,14 @@ const MirrorRemote = "mirror-images"
 const MirrorURL = "https://images.linuxcontainers.org/"
 
 func main() {
+	if len(os.Args) >= 2 && os.Args[1] == "__daemon" {
+		if err := runEmbeddedDaemonSupervisor(); err != nil {
+			fmt.Fprintf(os.Stderr, "bocker daemon: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+	ensureCompletionInstalled()
 	if len(os.Args) < 2 {
 		printUsage()
 		os.Exit(0)
@@ -22,13 +30,6 @@ func main() {
 
 	cmd := os.Args[1]
 	args := os.Args[2:]
-	if cmd == "__daemon" {
-		if err := runEmbeddedDaemonSupervisor(); err != nil {
-			fmt.Fprintf(os.Stderr, "bocker daemon: %v\n", err)
-			os.Exit(1)
-		}
-		return
-	}
 
 	// 轻量命令：跳过启动期网络探测，保证 help/version 等即时响应
 	if isLightweightCommand(cmd) {
@@ -147,54 +148,52 @@ func selectContainer(label string) (string, error) {
 }
 
 func printUsage() {
-	fmt.Printf(`bocker - 独立容器管理工具 v%s
+	fmt.Printf("bocker - 独立容器管理工具 v%s\n\n", Version)
+	fmt.Println("用法: bocker <命令> [参数]")
+	printUsageSection("容器", []usageEntry{
+		{"bocker list | ls", "列出容器"},
+		{"bocker install [image] [name]", "安装并启动容器"},
+		{"bocker start|stop|restart [name]", "启动、停止或重启"},
+		{"bocker in [name]", "进入容器 shell"},
+		{"bocker exec <name> <command...>", "执行非交互命令"},
+		{"bocker remove [container|image] [name]", "删除容器或镜像"},
+		{"bocker export|import [file] [name]", "导出或导入容器"},
+	})
+	printUsageSection("设置", []usageEntry{
+		{"bocker set <name> port [spec]", "端口映射，如 8080:80/tcp"},
+		{"bocker set <name> domain <domain>", "配置域名映射"},
+		{"bocker set <name> autostart on|off", "配置开机自启动"},
+		{"bocker set <name> network bridge|nat", "切换网络模式"},
+	})
+	printUsageSection("镜像", []usageEntry{
+		{"bocker build [Incusfile]", "构建镜像"},
+		{"bocker create [name]", "从 Incusfile 创建容器"},
+		{"bocker images", "列出本地镜像"},
+	})
+	printUsageSection("选项", []usageEntry{
+		{"--network bridge|nat", "bridge=局域网直连，nat=地址转换"},
+		{"--permission normal|super", "普通或超级权限，默认 normal"},
+		{"BOCKER_NETWORK=bridge|nat", "设置默认网络模式"},
+	})
+	printUsageSection("补全", []usageEntry{
+		{"bocker completion bash|zsh|fish", "输出补全脚本"},
+		{"bocker completion install [shell]", "强制重写补全文件"},
+		{"bocker (first run)", "自动安装当前 shell 的补全"},
+	})
+	fmt.Println("\nIncusfile: FROM NAME RUN COPY ENV NETWORK EXPOSE DOMAIN AUTOSTART ENTRYPOINT CMD TEMP ... END")
+	fmt.Println("省略容器名时进入交互式选择；使用 bocker help 查看本帮助。")
+}
 
-容器管理:
-  bocker list                 | 列出已安装容器
-  bocker install              | 安装新容器 (交互式选择发行版)
-  bocker install --network <bridge|nat> --permission <normal|super> [镜像] [名称]
-  bocker remove [container|image] [名] | 删除容器或镜像 (交互式选择)
-  bocker uninstall            | 删除容器 (旧别名, 等同 remove container)
-  bocker start   [容器名]     | 启动容器
-  bocker stop    [容器名]     | 停止容器
-  bocker restart [容器名]     | 重启容器
-  bocker in      [容器名]     | 进入容器 shell
-  bocker exec    <容器名> <命令...> | 在容器内执行命令 (非交互)
-  bocker export  [容器名]     | 导出容器为 tar.gz
-  bocker import  [文件] [名]  | 从 tar.gz 导入容器
+type usageEntry struct {
+	command     string
+	description string
+}
 
-容器设置 (bocker set <容器名> ...):
-  bocker set <容器名> port [规格]      | 端口映射 (规格如 8080:80/tcp)
-  bocker set <容器名> port rm <规格>   | 取消端口映射
-  bocker set <容器名> port list        | 查看端口映射
-  bocker set <容器名> domain <域名>    | 域名映射 (写入 /etc/hosts)
-  bocker set <容器名> autostart [on|off] | 开机自启动
-  bocker set <容器名> network [bridge|nat] | 切换网络模式，省略时交互选择 (需停止容器)
-
-镜像构建 (类似 Dockerfile):
-  bocker build [Incusfile]               | 构建镜像 (默认 ./Incusfile)
-  bocker build --name <名> [Incusfile]   | 覆盖镜像别名
-  bocker build show                      | 列出可用的基础镜像
-  bocker create [容器名] [--permission normal|super] | 从 ./Incusfile 创建+启动容器
-  bocker images                          | 列出本地镜像别名 (build 产物)
-  bocker completion bash|zsh|fish        | 输出 Tab 补全脚本
-  bocker completion install [shell]      | 安装系统级 Tab 补全
-
-  Incusfile 指令:
-    FROM <镜像>   NAME <名称>     RUN <命令>
-    COPY <源> <目标>   ENV <K=V>
-    NETWORK bridge|nat 网络模式 (bridge=局域网直连, nat=地址转换)
-    EXPOSE <端口>   DOMAIN <域名>   AUTOSTART on|off
-    ENTRYPOINT <命令>   CMD <命令/默认参数>
-    TEMP <名称> ... END   临时构建块 (隔离编译工具链)
-
-其他:
-  bocker help                 | 显示此帮助
-
-网络模式也可通过 BOCKER_NETWORK=bridge|nat 设置，默认 bridge。
-
-提示: [容器名] 省略时进入交互式选择菜单
-`, Version)
+func printUsageSection(title string, entries []usageEntry) {
+	fmt.Printf("\n%s:\n", title)
+	for _, entry := range entries {
+		fmt.Printf("  %-42s %s\n", entry.command, entry.description)
+	}
 }
 
 // CmdImages 列出本地镜像别名 (bocker build 的产物)。

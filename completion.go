@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 )
@@ -55,8 +56,35 @@ func CmdCompletion(args []string) error {
 	return nil
 }
 
+// ensureCompletionInstalled installs the current shell's completion file on
+// first use. Existing files are left untouched; `completion install` is the
+// explicit overwrite path.
+func ensureCompletionInstalled() {
+	if runtime.GOOS != "linux" {
+		return
+	}
+	shell := detectCompletionShell()
+	path, err := completionInstallPath(shell)
+	if err != nil {
+		return
+	}
+	if _, err := os.Stat(path); err == nil {
+		return
+	}
+	script, err := completionScript(shell)
+	if err != nil {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return
+	}
+	_ = os.WriteFile(path, []byte(script), 0o644)
+}
+
 func completionUsage() string {
 	return `bocker completion - shell tab completion
+
+Completion is installed automatically on the first bocker run.
 
 Usage:
   bocker completion bash|zsh|fish
