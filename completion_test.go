@@ -23,6 +23,12 @@ func TestCompletionScripts(t *testing.T) {
 	if _, err := completionScript("powershell"); err == nil {
 		t.Fatal("unsupported shell should fail")
 	}
+	if !strings.Contains(bashCompletion, "_bocker_completion_refresh_containers") || !strings.Contains(bashCompletion, "_bocker_completion_refresh_images") {
+		t.Fatal("bash completion must use cached, on-demand dynamic candidates")
+	}
+	if !strings.Contains(zshCompletion, "_bocker_refresh_containers") || !strings.Contains(fishCompletion, "__bocker_containers_cache") {
+		t.Fatal("zsh/fish completion must use cached dynamic candidates")
+	}
 }
 
 func TestRuntimeCommand(t *testing.T) {

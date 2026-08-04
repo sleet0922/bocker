@@ -194,16 +194,28 @@ func CmdCompletionCandidates(args []string) error {
 }
 
 const bashCompletion = `# bash completion for bocker
+_bocker_completion_containers=""
+_bocker_completion_images=""
+_bocker_completion_containers_at=-3
+_bocker_completion_images_at=-3
+_bocker_completion_refresh_containers() {
+    if (( SECONDS - _bocker_completion_containers_at >= 2 )); then
+        _bocker_completion_containers="$(bocker __complete containers 2>/dev/null)"
+        _bocker_completion_containers_at=$SECONDS
+    fi
+}
+_bocker_completion_refresh_images() {
+    if (( SECONDS - _bocker_completion_images_at >= 2 )); then
+        _bocker_completion_images="$(bocker __complete images 2>/dev/null)"
+        _bocker_completion_images_at=$SECONDS
+    fi
+}
 _bocker_completion() {
     local cur cmd cword
     cur="${COMP_WORDS[COMP_CWORD]}"
     cmd="${COMP_WORDS[1]}"
     cword="$COMP_CWORD"
     local commands="list ls start stop restart in exec set export import install i remove rm uninstall build create run images image completion help version"
-    local container_commands="start stop restart in exec export"
-    local containers images
-    containers="$(bocker __complete containers 2>/dev/null)"
-    images="$(bocker __complete images 2>/dev/null)"
 
     if (( cword == 1 )); then
         COMPREPLY=( $(compgen -W "$commands" -- "$cur") )
@@ -211,10 +223,11 @@ _bocker_completion() {
     fi
     case "$cmd" in
         start|stop|restart|in|exec|export|uninstall)
-            if (( cword == 2 )); then COMPREPLY=( $(compgen -W "$containers" -- "$cur") ); fi ;;
+            if (( cword == 2 )); then _bocker_completion_refresh_containers; COMPREPLY=( $(compgen -W "$_bocker_completion_containers" -- "$cur") ); fi ;;
         set)
             if (( cword == 2 )); then
-                COMPREPLY=( $(compgen -W "$containers" -- "$cur") )
+                _bocker_completion_refresh_containers
+                COMPREPLY=( $(compgen -W "$_bocker_completion_containers" -- "$cur") )
             elif (( cword == 3 )); then
                 COMPREPLY=( $(compgen -W "port domain host dns autostart network net" -- "$cur") )
             elif [[ "${COMP_WORDS[3]}" == "network" || "${COMP_WORDS[3]}" == "net" ]]; then
@@ -228,9 +241,11 @@ _bocker_completion() {
             if (( cword == 2 )); then
                 COMPREPLY=( $(compgen -W "container image" -- "$cur") )
             elif [[ "${COMP_WORDS[2]}" == "container" ]]; then
-                COMPREPLY=( $(compgen -W "$containers" -- "$cur") )
+                _bocker_completion_refresh_containers
+                COMPREPLY=( $(compgen -W "$_bocker_completion_containers" -- "$cur") )
             elif [[ "${COMP_WORDS[2]}" == "image" ]]; then
-                COMPREPLY=( $(compgen -W "$images" -- "$cur") )
+                _bocker_completion_refresh_images
+                COMPREPLY=( $(compgen -W "$_bocker_completion_images" -- "$cur") )
             fi ;;
         build)
             if (( cword == 2 )); then COMPREPLY=( $(compgen -W "--name --network --help show" -- "$cur") ); fi ;;
@@ -251,8 +266,24 @@ complete -F _bocker_completion bocker
 `
 
 const zshCompletion = `#compdef bocker
+typeset -ga _bocker_cached_containers=()
+typeset -ga _bocker_cached_images=()
+typeset -gi _bocker_containers_at=-3
+typeset -gi _bocker_images_at=-3
+_bocker_refresh_containers() {
+  if (( SECONDS - _bocker_containers_at >= 2 )); then
+    _bocker_cached_containers=("${(@f)$(bocker __complete containers 2>/dev/null)}")
+    _bocker_containers_at=$SECONDS
+  fi
+}
+_bocker_refresh_images() {
+  if (( SECONDS - _bocker_images_at >= 2 )); then
+    _bocker_cached_images=("${(@f)$(bocker __complete images 2>/dev/null)}")
+    _bocker_images_at=$SECONDS
+  fi
+}
 _bocker() {
-  local -a commands containers images
+  local -a commands
   commands=(
     'list:list containers' 'ls:list containers' 'start:start a container' 'stop:stop a container'
     'restart:restart a container' 'in:open a shell' 'exec:run a command' 'set:change settings'
@@ -262,17 +293,16 @@ _bocker() {
     'create:create from Incusfile' 'run:alias for create' 'images:list local images'
     'completion:install or print completion' 'help:show help' 'version:show version'
   )
-  containers=("${(@f)$(bocker __complete containers 2>/dev/null)}")
-  images=("${(@f)$(bocker __complete images 2>/dev/null)}")
   if (( CURRENT == 2 )); then
     _describe -t commands 'bocker command' commands
     return
   fi
   case $words[2] in
-    (start|stop|restart|in|exec|export|uninstall) _describe -t containers container containers ;;
+    (start|stop|restart|in|exec|export|uninstall) _bocker_refresh_containers; _describe -t containers container _bocker_cached_containers ;;
     (set)
       if (( CURRENT == 3 )); then
-        _describe -t containers container containers
+        _bocker_refresh_containers
+        _describe -t containers container _bocker_cached_containers
       elif [[ $words[4] == network || $words[4] == net ]]; then
         _values 'network' bridge nat
       elif [[ $words[4] == autostart ]]; then
@@ -282,7 +312,7 @@ _bocker() {
       else
         _values 'setting' port domain host dns autostart network net
       fi ;;
-    (remove|rm) if (( CURRENT == 3 && $words[3] == container )); then _describe -t containers container containers; elif (( CURRENT == 3 && $words[3] == image )); then _describe -t images image images; else _values 'target type' container image; fi ;;
+    (remove|rm) if (( CURRENT == 3 && $words[3] == container )); then _bocker_refresh_containers; _describe -t containers container _bocker_cached_containers; elif (( CURRENT == 3 && $words[3] == image )); then _bocker_refresh_images; _describe -t images image _bocker_cached_images; else _values 'target type' container image; fi ;;
     (completion) _values 'shell' bash zsh fish install ;;
     (*) _files ;;
   esac
@@ -291,10 +321,20 @@ _bocker "$@"
 `
 
 const fishCompletion = `function __bocker_containers
-    bocker __complete containers 2>/dev/null
+    set -l now (date +%s)
+    if not set -q __bocker_containers_at; or test (math $now - $__bocker_containers_at) -ge 2
+        set -g __bocker_containers_cache (bocker __complete containers 2>/dev/null)
+        set -g __bocker_containers_at $now
+    end
+    printf '%s\\n' $__bocker_containers_cache
 end
 function __bocker_images
-    bocker __complete images 2>/dev/null
+    set -l now (date +%s)
+    if not set -q __bocker_images_at; or test (math $now - $__bocker_images_at) -ge 2
+        set -g __bocker_images_cache (bocker __complete images 2>/dev/null)
+        set -g __bocker_images_at $now
+    end
+    printf '%s\\n' $__bocker_images_cache
 end
 complete -c bocker -f
 complete -c bocker -n '__fish_use_subcommand' -a 'list ls start stop restart in exec set export import install i remove rm uninstall build create run images image completion help version'

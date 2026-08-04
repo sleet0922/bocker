@@ -83,7 +83,8 @@ bocker completion install [shell]      # force-rewrite the installed file
 ```
 
 The completion script also queries current container and image names through
-the hidden `bocker __complete` endpoint.
+the hidden `bocker __complete` endpoint. These dynamic queries are lazy and
+cached briefly, so completing commands and options does not contact the runtime.
 
 ## Network model
 
