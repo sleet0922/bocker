@@ -44,8 +44,6 @@ bocker set <name> port|domain|autostart|network ...
 bocker build [--name name] [--network bridge|nat] [Incusfile]
 bocker create [name] [--network bridge|nat] [--permission normal|super]
 bocker images
-bocker completion bash|zsh|fish
-bocker completion install [bash|zsh|fish]
 ```
 
 When a container name is omitted, Bocker uses a small interactive selector.
@@ -69,22 +67,6 @@ bocker install --permission super debian:12 redis
 
 Use `super` only for trusted software. The mode is stored in the container's
 LXC configuration and remains in effect across restarts.
-
-## Shell completion
-
-On Linux, the first `bocker` run automatically writes the completion file and
-registers it in the current user's shell startup file. Open a new shell once
-after that first run; later sessions need no separate installation command.
-The existing shell process cannot be changed by a child binary.
-
-```bash
-bocker completion bash|zsh|fish        # print a script manually
-bocker completion install [shell]      # force-rewrite the installed file
-```
-
-The completion script also queries current container and image names through
-the hidden `bocker __complete` endpoint. These dynamic queries are lazy and
-cached briefly, so completing commands and options does not contact the runtime.
 
 ## Network model
 

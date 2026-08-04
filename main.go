@@ -22,7 +22,6 @@ func main() {
 		}
 		return
 	}
-	ensureCompletionInstalled()
 	if len(os.Args) < 2 {
 		printUsage()
 		os.Exit(0)
@@ -50,7 +49,7 @@ func main() {
 // help/version 等纯本地命令跳过所有启动期副作用，保证即时响应。
 func isLightweightCommand(cmd string) bool {
 	switch cmd {
-	case "help", "-h", "--help", "--version", "-v", "version", "completion":
+	case "help", "-h", "--help", "--version", "-v", "version":
 		return true
 	}
 	return false
@@ -95,10 +94,6 @@ func dispatch(cmd string, args []string) error {
 		return CmdCreate(args)
 	case "images", "image":
 		return CmdImages(args)
-	case "completion":
-		return CmdCompletion(args)
-	case "__complete":
-		return CmdCompletionCandidates(args)
 	case "help", "-h", "--help":
 		printUsage()
 		return nil
@@ -174,11 +169,6 @@ func printUsage() {
 		{"--network bridge|nat", "bridge=局域网直连，nat=地址转换"},
 		{"--permission normal|super", "普通或超级权限，默认 normal"},
 		{"BOCKER_NETWORK=bridge|nat", "设置默认网络模式"},
-	})
-	printUsageSection("补全", []usageEntry{
-		{"bocker completion bash|zsh|fish", "输出补全脚本"},
-		{"bocker completion install [shell]", "强制重写补全文件"},
-		{"bocker (first run)", "自动安装当前 shell 的补全"},
 	})
 	fmt.Println("\nIncusfile: FROM NAME RUN COPY ENV NETWORK EXPOSE DOMAIN AUTOSTART ENTRYPOINT CMD TEMP ... END")
 	fmt.Println("省略容器名时进入交互式选择；使用 bocker help 查看本帮助。")
