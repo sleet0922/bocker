@@ -19,6 +19,9 @@ func TestCompletionScripts(t *testing.T) {
 		if _, err := completionInstallPath(shell); err != nil {
 			t.Errorf("completionInstallPath(%q): %v", shell, err)
 		}
+		if !strings.Contains(script, completionVersionMarker) {
+			t.Errorf("%s completion is missing version marker", shell)
+		}
 	}
 	if _, err := completionScript("powershell"); err == nil {
 		t.Fatal("unsupported shell should fail")

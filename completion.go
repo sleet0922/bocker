@@ -11,6 +11,8 @@ import (
 
 var completionShells = []string{"bash", "zsh", "fish"}
 
+const completionVersionMarker = "# bocker completion version: 2"
+
 // CmdCompletion prints or installs shell completion. Installation is system
 // wide because Bocker itself runs as root.
 func CmdCompletion(args []string) error {
@@ -68,7 +70,8 @@ func ensureCompletionInstalled() {
 	if err != nil {
 		return
 	}
-	if _, err := os.Stat(path); err != nil {
+	data, readErr := os.ReadFile(path)
+	if readErr != nil || !strings.Contains(string(data), completionVersionMarker) {
 		script, scriptErr := completionScript(shell)
 		if scriptErr == nil {
 			if mkdirErr := os.MkdirAll(filepath.Dir(path), 0o755); mkdirErr == nil {
@@ -148,16 +151,23 @@ func completionInstallPath(shell string) (string, error) {
 }
 
 func completionScript(shell string) (string, error) {
+	var script string
 	switch strings.ToLower(shell) {
 	case "bash":
-		return bashCompletion, nil
+		script = bashCompletion
 	case "zsh":
-		return zshCompletion, nil
+		script = zshCompletion
 	case "fish":
-		return fishCompletion, nil
+		script = fishCompletion
 	default:
 		return "", fmt.Errorf("unsupported shell %q (supported: %s)", shell, strings.Join(completionShells, ", "))
 	}
+	if strings.HasPrefix(script, "#compdef") {
+		if idx := strings.IndexByte(script, '\n'); idx >= 0 {
+			return script[:idx+1] + completionVersionMarker + script[idx+1:], nil
+		}
+	}
+	return completionVersionMarker + "\n" + script, nil
 }
 
 // CmdCompletionCandidates is intentionally undocumented: completion scripts
