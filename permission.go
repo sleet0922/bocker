@@ -65,6 +65,24 @@ func hasPermissionOverride(args []string) bool {
 	return false
 }
 
+func selectPermissionMode(current PermissionMode) (PermissionMode, bool) {
+	options := []string{
+		"普通权限 - 保持默认安全配置",
+		"超级权限 - 放宽容器及内部服务隔离",
+	}
+	if current == PermissionSuper {
+		options[0], options[1] = options[1], options[0]
+	}
+	choice := selectMenu(options, "选择权限模式（当前默认: "+string(current)+"）")
+	if choice < 0 {
+		return "", false
+	}
+	if (current == PermissionSuper && choice == 0) || (current != PermissionSuper && choice == 1) {
+		return PermissionSuper, true
+	}
+	return PermissionNormal, true
+}
+
 func applyPermissionConfig(config map[string]string, mode PermissionMode) {
 	if mode != PermissionSuper {
 		delete(config, "security.nesting")

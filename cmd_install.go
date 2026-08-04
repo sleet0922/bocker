@@ -8,6 +8,7 @@ import (
 // CmdInstall 两级菜单：先选发行版，再选具体版本，最后安装。
 // 若传入参数：bocker install [镜像名/引用] [容器名] 则跳过菜单直接安装。
 func CmdInstall(args []string) error {
+	permissionOverride := hasPermissionOverride(args)
 	permissionMode, args, err := permissionModeFromArgs(args)
 	if err != nil {
 		return err
@@ -53,6 +54,13 @@ func CmdInstall(args []string) error {
 			return nil
 		}
 		mode = selectedMode
+	}
+	if len(args) == 0 && !permissionOverride {
+		selectedPermission, ok := selectPermissionMode(permissionMode)
+		if !ok {
+			return nil
+		}
+		permissionMode = selectedPermission
 	}
 
 	fmt.Println("正在从镜像源获取可用发行版列表 ...")

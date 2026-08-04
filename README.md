@@ -52,6 +52,8 @@ When a container name is omitted, Bocker uses a small interactive selector.
 Running `bocker install` without an image first asks for `Bridge` or `NAT`;
 `bocker set <name> network` also opens this network selector when the mode is
 omitted. The current mode is listed first and is the default choice.
+Interactive `bocker install` also asks for `normal` or `super` permission;
+passing `--permission` skips that prompt.
 
 Container permissions are per-instance. `normal` is the default and keeps the
 existing creation behavior. `super` enables privileged/nested LXC operation,
