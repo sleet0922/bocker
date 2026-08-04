@@ -72,18 +72,18 @@ LXC configuration and remains in effect across restarts.
 
 ## Shell completion
 
-Print a completion script and load it for the current shell:
+On Linux, the first `bocker` run automatically writes the completion file and
+registers it in the current user's shell startup file. Open a new shell once
+after that first run; later sessions need no separate installation command.
+The existing shell process cannot be changed by a child binary.
 
 ```bash
-source <(bocker completion bash)       # Bash
-eval "$(bocker completion zsh)"        # Zsh
-bocker completion fish | source        # Fish
+bocker completion bash|zsh|fish        # print a script manually
+bocker completion install [shell]      # force-rewrite the installed file
 ```
 
-For a system-wide installation (run as root), use
-`bocker completion install bash`, `zsh`, or `fish`. The completion script
-also queries current container and image names through the hidden
-`bocker __complete` endpoint.
+The completion script also queries current container and image names through
+the hidden `bocker __complete` endpoint.
 
 ## Network model
 

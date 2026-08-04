@@ -68,23 +68,50 @@ func ensureCompletionInstalled() {
 	if err != nil {
 		return
 	}
-	if _, err := os.Stat(path); err == nil {
+	if _, err := os.Stat(path); err != nil {
+		script, scriptErr := completionScript(shell)
+		if scriptErr == nil {
+			if mkdirErr := os.MkdirAll(filepath.Dir(path), 0o755); mkdirErr == nil {
+				_ = os.WriteFile(path, []byte(script), 0o644)
+			}
+		}
+	}
+	ensureCompletionStartup(shell, path)
+}
+
+func ensureCompletionStartup(shell, path string) {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
 		return
 	}
-	script, err := completionScript(shell)
+	var rc, block string
+	switch shell {
+	case "bash":
+		rc = filepath.Join(home, ".bashrc")
+		block = fmt.Sprintf("\n# bocker: automatic shell completion\nif [ -r '%s' ]; then . '%s'; fi\n", path, path)
+	case "zsh":
+		rc = filepath.Join(home, ".zshrc")
+		block = fmt.Sprintf("\n# bocker: automatic shell completion\nfpath=(%s $fpath)\nautoload -Uz compinit && compinit\n", filepath.Dir(path))
+	default:
+		return
+	}
+	data, err := os.ReadFile(rc)
+	if err == nil && strings.Contains(string(data), "# bocker: automatic shell completion") {
+		return
+	}
+	f, err := os.OpenFile(rc, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644)
 	if err != nil {
 		return
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return
-	}
-	_ = os.WriteFile(path, []byte(script), 0o644)
+	defer f.Close()
+	_, _ = f.WriteString(block)
 }
 
 func completionUsage() string {
 	return `bocker completion - shell tab completion
 
-Completion is installed automatically on the first bocker run.
+Completion is installed and registered automatically on the first bocker run.
+Open a new shell once after the first run.
 
 Usage:
   bocker completion bash|zsh|fish
