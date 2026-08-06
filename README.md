@@ -1,111 +1,187 @@
 # Bocker
 
-Bocker is a standalone Linux container tool built from the small Incus feature
-set used by the original `sb_lxc` project. The final deliverable is one
-`bocker` executable: it contains the container-only Incus daemon and liblxc
-runtime, starts its own private daemon, and talks to it through a Bocker-owned
-Unix socket. Installing the Incus CLI, daemon, service, or package is not
-required.
+Bocker 是一个面向 Linux 的独立容器工具。它把容器管理需要的 Incus
+守护进程和 LXC 运行时嵌入单个 `bocker` 可执行文件，通过自己的 Unix
+socket 管理容器，不依赖系统安装的 Incus CLI 或 Incus 守护进程。
 
-The public command surface is intentionally narrow: container lifecycle,
-image install/list/remove, export/import, port and domain settings, autostart,
-and Dockerfile-like `Incusfile` builds. Clustering, virtual machines, remote
-servers, storage administration, and all other Incus network drivers are not
-exposed by Bocker.
+Bocker 专注于常用工作流：安装镜像、创建和管理容器、配置网络和端口、
+导入导出备份，以及使用 Dockerfile 风格的 `Incusfile` 构建镜像。
 
-## Build
+## 1. 环境要求
+
+- Linux amd64。当前嵌入式运行时不支持其他架构。
+- 必须以 root 运行。容器运行时需要管理 namespace、cgroup、网络、挂载和宿主机存储。
+- 宿主机需要以下命令：`ip`、`nsenter`、`dnsmasq`、`rsync`、`tar`、`unsquashfs` 和 `xz`。
+- 首次以 root 运行时，如果缺少 `setfattr`，Bocker 会直接执行
+  `apt-get update` 和 `apt-get install -y attr`，不需要 `sudo`。
+- 需要访问 `https://images.linuxcontainers.org/` 下载公开镜像。
+
+Bocker 的状态默认存放在 `/var/lib/bocker`，包括容器、镜像、Unix socket、
+日志和解压后的私有运行时。运行时不会安装到系统 `PATH`。
+
+## 2. 安装
+
+从源码构建（需要 Go 1.25 或更高版本）：
 
 ```bash
 go test ./...
 go vet ./...
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags '-s -w' -o bocker .
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+  go build -trimpath -ldflags '-s -w' -o bocker .
 ```
 
-The embedded runtime is currently Linux amd64. Bocker must run as root. On the
-first root invocation, if `setfattr` is missing, Bocker installs the Debian/Ubuntu
-`attr` package directly with `apt-get` (no `sudo` is needed). The host still needs
-the normal Linux container utilities (`ip`, `nsenter`, `dnsmasq`, `rsync`, `tar`,
-`unsquashfs`, and `xz`) but no external Incus installation.
-On first use, Bocker creates `/var/lib/bocker`, starts its private daemon, and
-initializes the same default `dir` storage pool and root-disk profile produced
-by a default `incus admin init`. The embedded runtime is not installed in
-`PATH`; it remains private implementation data under `/var/lib/bocker`.
+安装到系统：
 
-## Commands
+```bash
+install -m 0755 bocker /usr/local/bin/bocker
+bocker --version
+```
+
+第一次执行需要等待 Bocker 解压运行时、启动 `bocker.service` 并初始化默认
+存储池。服务日志位于 `/var/lib/bocker/logs/`。
+
+## 3. 快速开始
+
+推荐明确指定 NAT 网络和镜像，避免进入交互菜单：
+
+```bash
+bocker install --network nat --permission normal debian:12 debian-12
+bocker list
+bocker exec debian-12 cat /etc/os-release
+bocker in debian-12
+```
+
+也可以运行交互式安装：
+
+```bash
+bocker install
+```
+
+它会依次让你选择网络模式、权限模式、发行版和版本，然后询问容器名。
+省略生命周期命令的容器名时，也会打开交互式选择菜单。
+
+## 4. 命令参考
+
+### 容器和镜像
+
+| 命令 | 作用 |
+| --- | --- |
+| `bocker install [image] [name]` | 下载镜像并创建、启动容器 |
+| `bocker list` / `bocker ls` | 列出容器 |
+| `bocker start [name]` | 启动容器 |
+| `bocker stop [name]` | 停止容器 |
+| `bocker restart [name]` | 重启容器 |
+| `bocker in [name]` | 进入容器 shell |
+| `bocker exec <name> <command...>` | 在容器内执行非交互命令 |
+| `bocker remove container [name]` | 删除容器 |
+| `bocker remove image [alias]` | 删除镜像别名 |
+| `bocker images` | 列出本地镜像别名 |
+| `bocker export [name]` | 导出容器备份 |
+| `bocker import [file] [name]` | 导入容器备份 |
+
+旧别名 `run`（等同于 `create`）和 `uninstall`（等同于删除容器）仍保留兼容。
+
+### 构建和创建
+
+| 命令 | 作用 |
+| --- | --- |
+| `bocker build [Incusfile]` | 构建镜像，默认读取当前目录的 `./Incusfile` |
+| `bocker build --name <name> [Incusfile]` | 覆盖镜像别名 |
+| `bocker build --network bridge\|nat [Incusfile]` | 覆盖构建阶段网络模式 |
+| `bocker build show` | 列出可用于 `FROM` 的远程基础镜像 |
+| `bocker create [name]` | 从当前目录的 `Incusfile` 创建并启动容器 |
+
+典型流程是先 `build` 发布镜像，再用 `create` 启动容器：
+
+```bash
+bocker build Incusfile
+bocker create
+bocker list
+```
+
+### 容器设置
+
+```bash
+bocker set <name> port 8080:80/tcp
+bocker set <name> port list
+bocker set <name> port rm 8080/tcp
+bocker set <name> domain web.test
+bocker set <name> domain --unset
+bocker set <name> autostart on
+bocker set <name> network nat
+```
+
+切换网络前必须先停止容器。省略 `set` 的子命令会进入设置菜单。
+
+### 全局选项和环境变量
 
 ```text
-bocker install [--network bridge|nat] [--permission normal|super] [image] [name]
-bocker list
-bocker start|stop|restart [name]
-bocker in [name]
-bocker exec <name> <command...>
-bocker remove container|image [name]
-bocker export [name]
-bocker import [backup.tar.gz] [name] [--network bridge|nat]
-bocker set <name> port|domain|autostart|network ...
-bocker build [--name name] [--network bridge|nat] [Incusfile]
-bocker create [name] [--network bridge|nat] [--permission normal|super]
-bocker images
+--network bridge|nat
+--permission normal|super
+BOCKER_NETWORK=bridge|nat
+BOCKER_BRIDGE_PARENT=<宿主机物理网卡>
+BOCKER_NAT_CIDR=<IPv4 CIDR>
+BOCKER_NAT_IPV6_CIDR=<IPv6 CIDR|auto|none>
+BOCKER_STATE_DIR=<状态目录>
 ```
 
-When a container name is omitted, Bocker uses a small interactive selector.
-Running `bocker install` without an image first asks for `Bridge` or `NAT`;
-`bocker set <name> network` also opens this network selector when the mode is
-omitted. The current mode is listed first and is the default choice.
-Interactive `bocker install` also asks for `normal` or `super` permission;
-passing `--permission` skips that prompt.
+命令行选项优先于环境变量。`BOCKER_MACVLAN_PARENT` 仍作为旧版本的网卡
+配置别名接受。
 
-Container permissions are per-instance. `normal` is the default and keeps the
-existing creation behavior. `super` enables privileged/nested LXC operation,
-removes the container's AppArmor and dropped-capability restrictions, and relaxes
-the inner systemd sandbox. It does not change other containers or the host's
-systemd configuration:
+## 5. 网络模式
 
-```bash
-bocker create --permission normal
-bocker create --permission super
-bocker install --permission super debian:12 redis
-```
-
-Use `super` only for trusted software. The mode is stored in the container's
-LXC configuration and remains in effect across restarts.
-
-## Network model
-
-Only two public network modes exist:
-
-| Bocker | Incus implementation | Behavior |
+| 模式 | 实现 | 适用场景 |
 | --- | --- | --- |
-| `bridge` | `nictype=macvlan` | A LAN address on the detected physical parent |
-| `nat` | managed `bridge` named `bocker-nat` | Dual-stack DHCP/RA with IPv4 and IPv6 masquerading |
+| `nat` | Bocker 管理的 `bocker-nat` bridge，IPv4/IPv6 NAT | 默认推荐，容器访问外网但不直接暴露在局域网 |
+| `bridge` | Incus macvlan，使用宿主机物理网卡 | 容器需要直接获得局域网地址 |
 
-`BOCKER_NETWORK` selects the default mode and defaults to `bridge`. Set
-`BOCKER_BRIDGE_PARENT` when the physical parent cannot be inferred from the
-default route. `BOCKER_NAT_CIDR` changes the IPv4 NAT subnet.
-`BOCKER_NAT_IPV6_CIDR` accepts an IPv6 CIDR, `auto` (the default, matching
-Incus managed bridge behavior), or `none` to intentionally disable IPv6. The old
-`BOCKER_MACVLAN_PARENT` variable is accepted only as a migration alias.
+默认模式是 `bridge`，可用 `BOCKER_NETWORK=nat` 改为 NAT。Bridge 模式会
+自动探测默认路由的物理网卡；探测失败时设置 `BOCKER_BRIDGE_PARENT`。
 
-Bocker rejects Incus implementation names such as `macvlan`, `bridged`, and
-`ovn` in its public command and `Incusfile` interfaces.
+NAT 默认使用 `10.0.100.0/24`，并自动创建 IPv6 ULA 网络。可用
+`BOCKER_NAT_CIDR` 和 `BOCKER_NAT_IPV6_CIDR` 调整，IPv6 设为 `none` 可关闭。
+Bocker 对外只接受 `bridge` 和 `nat`，不接受底层 Incus 名称如 `macvlan`、
+`bridged` 或 `ovn`。
 
-## Incusfile
+## 6. 容器权限
 
-下面是一份可以直接复制修改的傻瓜式教程。`Incusfile` 放在项目目录根部，
-构建时该目录就是 `COPY` 的上下文目录。Bocker 当前支持的指令只有：
-`FROM`、`NAME`、`NETWORK`、`WORKDIR`、`RUN`、`COPY`、`ENV`、`EXPOSE`、
-`DOMAIN`、`AUTOSTART`，以及用于临时构建阶段的 `TEMP ... END`。
-此外，`ENTRYPOINT` 和 `CMD` 可声明镜像的默认应用命令。
-
-### 1. 最小可运行容器
-
-先创建一个空目录和文件：
+权限按容器保存，默认是 `normal`：
 
 ```bash
-mkdir hello && cd hello
+bocker install --permission normal debian:12 debian-normal
+bocker install --permission super debian:12 debian-super
+bocker create --permission super
 ```
 
-写入下面的 `Incusfile`：
+`super` 会启用嵌套 LXC、移除容器 AppArmor 和 capability 限制，并放宽容器
+内部 systemd 的隔离设置。它不会修改其他容器或宿主机的 systemd 配置，
+但只应对可信软件使用。
+
+## 7. Incusfile
+
+`Incusfile` 是 Bocker 的构建描述文件。`bocker build` 的上下文目录就是
+`Incusfile` 所在目录，`COPY` 不能访问上下文之外的文件或符号链接。
+
+### 指令
+
+| 指令 | 说明 |
+| --- | --- |
+| `FROM <image> [AS <stage>]` | 基础镜像并开始一个构建阶段 |
+| `NAME <name>` | 最终镜像别名和默认容器名 |
+| `NETWORK bridge\|nat` | 构建和创建时的网络模式 |
+| `WORKDIR <path>` | 设置后续 `RUN` 和相对 `COPY` 的工作目录 |
+| `RUN <command>` | 在构建容器内通过 `/bin/sh -c` 执行 |
+| `COPY <src> <dst>` | 从构建上下文复制文件 |
+| `COPY --from=<stage> <src> <dst>` | 从前置构建阶段复制产物 |
+| `ENV KEY=VALUE` | 设置镜像环境变量 |
+| `EXPOSE <port>[/tcp\|udp]` | 创建运行时端口映射 |
+| `DOMAIN <domain>` | 启动时更新宿主机 `/etc/hosts` |
+| `AUTOSTART on\|off` | 设置容器开机自启动 |
+| `ENTRYPOINT [...]` | 设置固定应用命令 |
+| `CMD [...]` | 设置默认命令或参数 |
+| `TEMP <name> ... END` | 在临时阶段安装构建工具并复制产物 |
+
+### 最小示例
 
 ```text
 FROM alpine/3.24
@@ -115,161 +191,37 @@ RUN echo 'hello from bocker' > /hello.txt
 AUTOSTART on
 ```
 
-逐行解释：
-
-- `FROM alpine/3.24`：选择基础镜像。可用 `bocker build show` 查看远程镜像。
-- `NAME hello`：同时作为镜像别名和默认容器名，只能使用字母、数字、点、下划线和短横线。
-- `NETWORK nat`：使用 Bocker 的 NAT 网络。另一个可选值是 `bridge`，它会把容器直接接到宿主机所在局域网。
-- `RUN ...`：在构建阶段容器内执行 `/bin/sh -c` 命令，命令失败就停止构建。
-- `AUTOSTART on`：容器开机自启，不等同于应用进程自启。
-
-构建和启动：
-
 ```bash
 bocker build Incusfile
 bocker create
-bocker list
 bocker exec hello cat /hello.txt
 ```
 
-`bocker create` 必须在包含 `Incusfile` 的目录中执行，并且会读取其中的
-`NAME`、`NETWORK`、`EXPOSE`、`DOMAIN` 和 `AUTOSTART` 设置。
+### 运行应用
 
-### 2. 运行一个 HTTP 服务
-
-如果不写 `CMD` 或 `ENTRYPOINT`，应用仍可通过基础镜像自己的 init 系统启动。
-写了这两个指令后，Bocker 会在构建阶段自动生成应用包装器和原生服务：
-Debian/Ubuntu 使用 systemd，Alpine 使用 OpenRC。基础镜像的 init 仍然是
-PID 1，因此 DHCP、IPv4、IPv6 和系统服务不会被覆盖，也不需要用户手写
-unit 或 init 文件。
-
-例如，下面的声明会在容器启动时执行 `/usr/bin/python3 /opt/app.py --port 8080`：
+定义 `ENTRYPOINT` 或 `CMD` 后，Bocker 会为最终镜像生成原生服务：Debian/Ubuntu
+使用 systemd，Alpine 使用 OpenRC。容器自己的 init 仍是 PID 1。
 
 ```text
-ENTRYPOINT ["/usr/bin/python3", "/opt/app.py"]
-CMD ["--port", "8080"]
-```
-
-JSON 数组是推荐写法，也支持带引号的 shell-like 写法，例如
-`CMD /usr/bin/python3 /opt/app.py --port 8080`。`ENTRYPOINT` 是固定命令，
-`CMD` 是追加参数；只写其中一个也可以。
-
-下面仍给出一个完全手动管理 OpenRC 服务的模板，适用于不想使用默认命令
-机制、或需要自定义多个服务的镜像。
-
-项目目录：
-
-```text
-web/
-  Incusfile
-  server.sh
-  web.init
-```
-
-`server.sh`：
-
-```sh
-#!/bin/sh
-while true; do
-  printf 'HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 12\r\n\r\nhello bocker\n' \\
-    | nc -l -p 8080 -q 1
-done
-```
-
-`web.init`：
-
-```sh
-#!/sbin/openrc-run
-command="/usr/local/bin/server.sh"
-command_background="yes"
-pidfile="/run/web.pid"
-output_log="/var/log/web.log"
-error_log="/var/log/web.err"
-
-depend() {
-  need net
-}
-```
-
-对应的 `Incusfile`：
-
-```text
-FROM alpine/3.24
+FROM debian/12
 NAME web
 NETWORK nat
-ENV APP_ENV=production
-WORKDIR /opt/web
-RUN sed -i 's#https://dl-cdn.alpinelinux.org/alpine#https://mirrors.aliyun.com/alpine#g' /etc/apk/repositories && apk add --no-cache openrc netcat-openbsd
-COPY server.sh /usr/local/bin/server.sh
-COPY web.init /etc/init.d/web
-RUN chmod +x /usr/local/bin/server.sh /etc/init.d/web && rc-update add web default
+RUN apt-get update && apt-get install -y --no-install-recommends python3
+COPY app.py /opt/app.py
+ENTRYPOINT ["/usr/bin/python3", "/opt/app.py"]
+CMD ["--port", "8080"]
 EXPOSE 8080/tcp
 DOMAIN web.test
 AUTOSTART on
 ```
 
-这里的关键点是：`COPY` 把宿主机文件放进镜像，`rc-update add web default`
-把服务加入 Alpine 默认运行级别，`EXPOSE 8080/tcp` 会在 `bocker create`
-时自动创建 IPv4/IPv6 端口映射，`DOMAIN web.test` 会把容器当前的 IPv4
-和 IPv6 都写入宿主机 `/etc/hosts`。
+`ENTRYPOINT` 是固定命令，`CMD` 是追加参数。JSON 数组是推荐写法，也支持
+带引号的 shell-like 写法。应用需要监听 `0.0.0.0`；需要 IPv6 时还应监听
+`[::]`。
 
-### 3. 两种网络怎么选
+### 多阶段构建
 
-```text
-NETWORK nat
-```
-
-适合需要访问外网、但不希望容器直接出现在局域网中的服务。容器通常获得
-`10.0.100.0/24` 和 `fd42:.../64` 地址，IPv4/IPv6 都通过 Bocker NAT 出网。
-
-```text
-NETWORK bridge
-```
-
-适合必须从局域网直接访问的服务。Bocker 对外叫 `bridge`，底层使用 Incus
-的 macvlan 实现；容器会从物理网卡所在局域网获得地址。
-
-只写一次 `NETWORK` 即可。没有写时使用全局默认值，默认是 `bridge`，也可
-通过 `BOCKER_NETWORK=nat` 修改。
-
-### 4. Debian 12 与国内 APT 源
-
-Debian 基础镜像可能使用传统的 `/etc/apt/sources.list`，也可能使用新式的
-`/etc/apt/sources.list.d/debian.sources`。为了同时兼容两种格式，可直接使用：
-
-```text
-FROM debian/12
-NAME debian-demo
-NETWORK nat
-RUN if [ -f /etc/apt/sources.list.d/debian.sources ]; then sed -i 's|http://deb.debian.org|https://mirrors.tuna.tsinghua.edu.cn|g; s|http://security.debian.org/debian-security|https://mirrors.tuna.tsinghua.edu.cn/debian-security|g' /etc/apt/sources.list.d/debian.sources; fi && if [ -f /etc/apt/sources.list ]; then sed -i 's|http://deb.debian.org|https://mirrors.tuna.tsinghua.edu.cn|g; s|http://security.debian.org/debian-security|https://mirrors.tuna.tsinghua.edu.cn/debian-security|g' /etc/apt/sources.list; fi && apt-get update && apt-get install -y --no-install-recommends python3 ca-certificates && rm -rf /var/lib/apt/lists/*
-```
-
-这条命令已在 `debian/12` 上实际构建验证。不要只假定 `debian.sources` 存在，
-否则传统布局会在 `sed` 阶段直接失败。
-
-Debian 的应用服务通常应使用 systemd。把 unit 文件复制到
-`/etc/systemd/system/` 后，执行 `systemctl enable service-name.service`，再通过
-`EXPOSE` 暴露应用端口即可。
-
-### 5. 环境变量和工作目录
-
-```text
-FROM debian/12
-NAME config-demo
-NETWORK nat
-ENV APP_ENV=production
-ENV APP_PORT=8080
-WORKDIR /srv/app
-COPY . .
-RUN mkdir -p /var/log/app && printf '%s\\n' "$APP_ENV:$APP_PORT" > /var/log/app/build.txt
-```
-
-每条 `ENV` 只写一个变量。`WORKDIR` 会影响后续的 `RUN` 和相对路径的
-`COPY`；相对 `WORKDIR` 会基于当前目录累加，绝对路径会直接切换。
-
-### 6. 多阶段构建
-
-编译型语言应把编译器放在中间阶段，最终镜像只保留运行时和产物：
+编译器可以放在前置阶段，最终镜像只复制运行产物：
 
 ```text
 FROM alpine/3.24 AS builder
@@ -277,67 +229,52 @@ NETWORK nat
 RUN apk add --no-cache go
 WORKDIR /src
 COPY go.mod .
-COPY go.sum .
-RUN go mod download
 COPY main.go .
-RUN CGO_ENABLED=0 go build -o /src/app .
+RUN go build -o /src/app .
 
 FROM alpine/3.24
 NAME go-service
 NETWORK nat
-RUN apk add --no-cache ca-certificates openrc
 COPY --from=builder /src/app /usr/local/bin/app
-COPY app.init /etc/init.d/app
-RUN chmod +x /usr/local/bin/app /etc/init.d/app && rc-update add app default
+ENTRYPOINT ["/usr/local/bin/app"]
 EXPOSE 8080/tcp
-AUTOSTART on
 ```
 
-`FROM ... AS builder` 给阶段命名，`COPY --from=builder` 从已完成的前置
-阶段复制文件。也可以写 `COPY --from=0` 使用阶段编号。被引用的阶段必须
-出现在当前阶段之前。
+`COPY --from` 只能引用当前阶段之前的阶段。`TEMP name ... END` 适合单个
+基础镜像下隔离编译工具链，临时阶段不会进入最终镜像。
 
-`TEMP name ... END` 是单个基础 `FROM` 下的临时构建块，适合隔离编译工具；
-需要多个不同基础镜像时应使用上面的 `FROM ... AS ...` 写法，不要混用。
+## 8. 故障排查
 
-### 7. 行续接和常见错误
-
-`RUN` 支持反斜杠续行：
-
-```text
-RUN apk update && \\
-    apk add --no-cache curl \\
-    ca-certificates
-```
-
-常见错误：
-
-- `CMD`/`ENTRYPOINT` 的可执行文件必须存在且可执行；Bocker 不会隐式执行 shell 字符串。
-- `COPY` 使用 `../`、绝对宿主机路径或符号链接：构建会拒绝路径穿越和符号链接。
-- `EXPOSE` 写成 `8080` 以外的非法端口，或协议写成 `http`：协议只能是 `tcp` 或 `udp`。
-- Python、Node 等服务只监听 `0.0.0.0`：如果需要 IPv6，服务应监听 `[::]` 或同时监听 IPv4/IPv6。
-- `bocker create` 在错误目录运行：它只读取当前目录的 `./Incusfile`。
-
-### 8. 一套完整检查命令
+查看版本和帮助：
 
 ```bash
-bocker build --name demo Incusfile
-bocker create
-bocker list
-bocker exec demo rc-status
-bocker set demo port list
-bocker restart demo
-bocker list
-bocker remove container demo
-bocker remove image demo
+bocker --version
+bocker help
 ```
 
-删除镜像是交互操作，确认提示中选择“确认删除”即可。构建上下文和
-`Incusfile` 只用于生成镜像，最终运行只需要 Bocker 自己的单一二进制。
+检查内置服务：
 
-## State
+```bash
+systemctl status bocker.service --no-pager
+journalctl -u bocker.service -n 50 --no-pager
+tail -n 80 /var/lib/bocker/logs/incusd.log
+```
 
-`BOCKER_STATE_DIR` changes the private state root from `/var/lib/bocker`.
-Containers, images, the Unix socket, logs, and the extracted internal runtime
-all live below that directory. Bocker never connects to or requires a system
-Incus daemon.
+常见问题：
+
+- 报 `Bocker must run as root`：切换到 root，或使用 `sudo bocker ...`。
+- 服务因 `setfattr` 退出：确认已安装 `attr`；root 首次运行会自动处理。
+- Bridge 无法创建：设置正确的 `BOCKER_BRIDGE_PARENT`，或改用 `--network nat`。
+- `bocker create` 找不到 `Incusfile`：在包含 `./Incusfile` 的目录执行。
+- 镜像列表获取失败：检查宿主机能否访问 `https://images.linuxcontainers.org/`。
+
+## 9. 状态目录
+
+默认状态目录是 `/var/lib/bocker`，可通过 `BOCKER_STATE_DIR` 修改：
+
+```bash
+BOCKER_STATE_DIR=/srv/bocker bocker list
+```
+
+该目录包含容器、镜像、Unix socket、日志、运行时文件和守护进程状态。
+Bocker 不连接系统 Incus 服务。
