@@ -21,9 +21,11 @@ go vet ./...
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags '-s -w' -o bocker .
 ```
 
-The embedded runtime is currently Linux amd64. Bocker must run as root. The
-host needs the normal Linux container utilities (`ip`, `nsenter`, `dnsmasq`, `rsync`,
-`setfattr`, `tar`, `unsquashfs`, and `xz`) but no external Incus installation.
+The embedded runtime is currently Linux amd64. Bocker must run as root. On the
+first root invocation, if `setfattr` is missing, Bocker installs the Debian/Ubuntu
+`attr` package directly with `apt-get` (no `sudo` is needed). The host still needs
+the normal Linux container utilities (`ip`, `nsenter`, `dnsmasq`, `rsync`, `tar`,
+`unsquashfs`, and `xz`) but no external Incus installation.
 On first use, Bocker creates `/var/lib/bocker`, starts its private daemon, and
 initializes the same default `dir` storage pool and root-disk profile produced
 by a default `incus admin init`. The embedded runtime is not installed in

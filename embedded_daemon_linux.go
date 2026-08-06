@@ -5,6 +5,7 @@ package main
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	_ "embed"
 	"errors"
@@ -26,9 +27,10 @@ import (
 )
 
 const (
-	embeddedIncusVersion = "7.2-container"
-	defaultBockerState   = "/var/lib/bocker"
-	embeddedSocketWait   = 90 * time.Second
+	embeddedIncusVersion  = "7.2-container"
+	defaultBockerState    = "/var/lib/bocker"
+	embeddedSocketWait    = 90 * time.Second
+	hostDependencyTimeout = 5 * time.Minute
 )
 
 // incusRuntimeArchive contains the container-only Incus daemon, liblxc and
@@ -67,6 +69,9 @@ func ensureEmbeddedDaemonOnce() error {
 	if os.Geteuid() != 0 {
 		return errors.New("Bocker must run as root to manage the embedded container runtime")
 	}
+	if err := ensureHostSetfattr(); err != nil {
+		return err
+	}
 
 	paths, err := embeddedRuntimePaths()
 	if err != nil {
@@ -87,6 +92,46 @@ func ensureEmbeddedDaemonOnce() error {
 
 	if err := ensureDefaultIncusConfig(server); err != nil {
 		return fmt.Errorf("initialize Bocker container runtime: %w", err)
+	}
+	return nil
+}
+
+// ensureHostSetfattr installs the host utility required by Incus when it is
+// missing. Bocker has already verified root, so apt-get is invoked directly;
+// sudo would be both redundant and unable to work in the systemd supervisor.
+func ensureHostSetfattr() error {
+	if _, err := exec.LookPath("setfattr"); err == nil {
+		return nil
+	}
+	aptGet, err := exec.LookPath("apt-get")
+	if err != nil {
+		return errors.New("缺少宿主机依赖 setfattr，且系统没有 apt-get；请安装 attr 软件包后重试")
+	}
+
+	fmt.Println("首次启动：缺少 setfattr，正在安装 attr 软件包 ...")
+	ctx, cancel := context.WithTimeout(context.Background(), hostDependencyTimeout)
+	defer cancel()
+	update := exec.CommandContext(ctx, aptGet, "update")
+	update.Stdout = os.Stdout
+	update.Stderr = os.Stderr
+	if err := update.Run(); err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("更新 apt 软件包索引超时: %w", ctx.Err())
+		}
+		return fmt.Errorf("更新 apt 软件包索引失败: %w", err)
+	}
+
+	install := exec.CommandContext(ctx, aptGet, "install", "-y", "attr")
+	install.Stdout = os.Stdout
+	install.Stderr = os.Stderr
+	if err := install.Run(); err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("安装 attr 软件包超时: %w", ctx.Err())
+		}
+		return fmt.Errorf("安装 attr 软件包失败: %w", err)
+	}
+	if _, err := exec.LookPath("setfattr"); err != nil {
+		return errors.New("attr 软件包安装完成，但仍找不到 setfattr")
 	}
 	return nil
 }
