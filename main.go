@@ -6,7 +6,7 @@ import (
 )
 
 // Version 工具版本
-const Version = "1.1.3"
+const Version = "1.1.4"
 
 // MirrorRemote 镜像源在本地的 remote 名称
 const MirrorRemote = "mirror-images"
@@ -18,6 +18,15 @@ func main() {
 	if len(os.Args) >= 2 && os.Args[1] == "__daemon" {
 		if err := runEmbeddedDaemonSupervisor(); err != nil {
 			fmt.Fprintf(os.Stderr, "bocker daemon: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+	// __gui_helper is a private, socket-based privilege bridge for the Flutter
+	// desktop application. It deliberately stays out of the public CLI surface.
+	if len(os.Args) >= 2 && os.Args[1] == "__gui_helper" {
+		if err := runGUIHelper(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "bocker gui helper: %v\n", err)
 			os.Exit(1)
 		}
 		return

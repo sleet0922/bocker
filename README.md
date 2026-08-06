@@ -40,6 +40,27 @@ bocker --version
 第一次执行需要等待 Bocker 解压运行时、启动 `bocker.service` 并初始化默认
 存储池。服务日志位于 `/var/lib/bocker/logs/`。
 
+### Ubuntu 桌面 GUI
+
+`gui/` 提供了基于 Flutter Material 3 的 Ubuntu 桌面界面，覆盖容器、镜像、
+构建和常用设置管理，同时保留所有原有 CLI 用法。GUI 通过 Bocker 的私有本地
+权限代理执行操作：普通桌面用户首次操作授权后，后续操作无需重复输入密码。
+GitHub release 中的 GUI 包包含同版本 `bocker` 二进制，GUI 会优先使用它。
+
+开发运行：
+
+```bash
+cd gui
+BOCKER_BINARY="$PWD/../bocker" flutter run -d linux
+```
+
+构建桌面包：
+
+```bash
+cd gui
+flutter build linux --release
+```
+
 ## 3. 快速开始
 
 推荐明确指定 NAT 网络和镜像，避免进入交互菜单：
