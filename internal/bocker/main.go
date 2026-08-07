@@ -7,7 +7,7 @@ import (
 )
 
 // Version 工具版本
-const Version = "3.0.0"
+const Version = "3.0.1"
 
 // MirrorRemote 镜像源在本地的 remote 名称
 const MirrorRemote = "mirror-images"
@@ -17,13 +17,6 @@ const MirrorURL = "https://images.linuxcontainers.org/"
 
 // Main is the process entry point used by cmd/bocker.
 func Main() {
-	if len(os.Args) >= 2 && os.Args[1] == "__gui_shell" {
-		if err := runGUIShellClient(os.Args[2:]); err != nil {
-			fmt.Fprintf(os.Stderr, "bocker gui shell: %v\n", err)
-			os.Exit(1)
-		}
-		return
-	}
 	if len(os.Args) >= 2 && os.Args[1] == "__daemon" {
 		if err := runEmbeddedDaemonSupervisor(); err != nil {
 			fmt.Fprintf(os.Stderr, "bocker daemon: %v\n", err)
@@ -31,18 +24,20 @@ func Main() {
 		}
 		return
 	}
-	// __gui_helper is a private, socket-based privilege bridge for the Flutter
-	// desktop application. It deliberately stays out of the public CLI surface.
-	if len(os.Args) >= 2 && os.Args[1] == "__gui_helper" {
-		if err := runGUIHelper(os.Args[2:]); err != nil {
-			fmt.Fprintf(os.Stderr, "bocker gui helper: %v\n", err)
-			os.Exit(1)
-		}
-		return
-	}
 	if len(os.Args) < 2 {
 		printUsage()
 		os.Exit(0)
+	}
+	if shouldUsePrivilegedBroker(os.Args[1:]) {
+		exitCode, err := runPrivilegedBrokerCommand(os.Args[1:])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "✘ %v\n", err)
+			os.Exit(1)
+		}
+		if exitCode != 0 {
+			os.Exit(exitCode)
+		}
+		return
 	}
 
 	cmd := os.Args[1]

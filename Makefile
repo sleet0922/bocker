@@ -3,12 +3,12 @@ GOOS ?= linux
 GOARCH ?= amd64
 CGO_ENABLED ?= 0
 LDFLAGS ?= -s -w
-VERSION ?= 3.0.0
+VERSION ?= 3.0.1
 NFPM ?= go run github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
 
 .DEFAULT_GOAL := help
 
-.PHONY: help build build-cli build-gui install-gui test test-completion vet check clean build-cli-deb build-gui-deb release
+.PHONY: help build build-cli build-gui test test-completion vet check clean build-cli-deb build-gui-deb release
 
 help:
 	@echo Targets:
@@ -16,7 +16,6 @@ help:
 	@echo "  make build-gui      Build the GUI bundle with its matching CLI binary"
 	@echo "  make build-cli-deb  Build the CLI deb package using nfpm"
 	@echo "  make build-gui-deb  Build the GUI deb package using nfpm"
-	@echo "  make install-gui    Install the GUI bundle for the current desktop user"
 	@echo "  make build          Alias for build-cli"
 	@echo "  make check          Run go test and go vet"
 	@echo "  make clean          Remove the standalone binary and deb artifacts"
@@ -31,9 +30,6 @@ build-cli: check
 
 build-gui:
 	./gui/build_release.sh
-
-install-gui: build-gui
-	./gui/install_desktop.sh
 
 test:
 	go test ./...

@@ -10,10 +10,12 @@ Bocker 专注于常用工作流：安装镜像、创建和管理容器、配置�
 ## 1. 环境要求
 
 - Linux amd64。当前嵌入式运行时不支持其他架构。
-- 必须以 root 运行。容器运行时需要管理 namespace、cgroup、网络、挂载和宿主机存储。
+- 容器运行时由 `bocker.service` 负责宿主机 namespace、cgroup、网络、挂载和存储；
+  日常 CLI 操作通过 Incus Unix socket 完成，不需要 root 或 `sudo`。使用 CLI 的普通用户
+  需要加入 `lxd` 组并重新登录。
 - 宿主机需要以下命令：`ip`、`nsenter`、`dnsmasq`、`rsync`、`tar`、`unsquashfs` 和 `xz`。
-- 首次以 root 运行时，如果缺少 `setfattr`，Bocker 会直接执行
-  `apt-get update` 和 `apt-get install -y attr`，不需要 `sudo`。
+- 首次部署后台服务时，如果缺少 `setfattr`，管理员需要安装 `attr` 软件包；服务启动后
+  普通用户不需要为任何 Bocker 命令加 `sudo`。
 - 需要访问 `https://images.linuxcontainers.org/` 下载公开镜像。
 
 Bocker 的状态默认存放在 `/var/lib/bocker`，包括容器、镜像、Unix socket、
@@ -37,6 +39,14 @@ install -m 0644 completions/bocker /usr/share/bash-completion/completions/bocker
 bocker --version
 ```
 
+首次部署或升级后台服务需要管理员执行一次安装/启动，并把日常用户加入 `lxd` 组；
+完成后，日常的 `bocker` CLI 和 GUI 操作都直接以普通用户运行，不需要 `sudo`。
+
+Debian 包按标准系统目录安装且不创建额外软链接：CLI 位于 `/usr/bin/bocker`，Bash
+补全位于 `/usr/share/bash-completion/completions/bocker`，GUI 私有运行文件位于
+`/usr/lib/bocker-gui`，桌面入口位于 `/usr/share/applications`，图标位于
+`/usr/share/pixmaps`。源码手工安装的 CLI 使用 `/usr/local/bin/bocker`，两者不混用。
+
 Debian 包会自动安装 Bash 补全文件。重新打开终端后，输入 `bocker ` 并按 Tab
 即可补全 `template`、`image`、`container`、动作和常用选项。
 
@@ -46,8 +56,8 @@ Debian 包会自动安装 Bash 补全文件。重新打开终端后，输入 `bo
 ### Ubuntu 桌面 GUI
 
 `gui/` 提供了基于 Flutter Material 3 的 Ubuntu 桌面界面，覆盖容器、镜像、
-构建和常用设置管理，同时保留所有原有 CLI 用法。GUI 通过 Bocker 的私有本地
-权限代理执行操作：普通桌面用户首次操作授权后，后续操作无需重复输入密码。
+构建和常用设置管理，同时保留所有原有 CLI 用法。GUI 直接调用同捆 CLI；CLI
+通过 `lxd` 组授权的 Bocker 后台 socket 执行需要宿主机权限的操作，不弹出提权提示。
 GUI 包会携带同版本 `bocker` 二进制，并优先使用该副本以避免版本不兼容。
 
 开发运行：
@@ -65,8 +75,8 @@ make build-gui
 
 `make build-cli` 仅构建独立终端版 `bocker`，适合服务器或只使用命令行的环境。
 `make build-gui` 构建 Ubuntu 桌面包，并将相同版本的 `bocker` 放入 GUI bundle。
-`make install-gui` 会将 GUI 安装到当前用户的 `~/.local/opt/bocker-gui`，并注册
-应用菜单和桌面启动器；不要通过 `sudo` 执行此命令。
+GUI bundle 自带 `install_desktop.sh`，直接以当前桌面用户执行即可将 GUI 安装到
+`~/.local/opt/bocker-gui`，并注册应用菜单和桌面启动器；不要通过 `sudo` 执行此脚本。
 从 GitHub 下载 GUI 包时，解压后进入 `bundle/` 执行 `./install_desktop.sh` 即可完成
 同样的桌面安装。
 `make build` 是 `make build-cli` 的简写。
@@ -74,6 +84,54 @@ make build-gui
 源码采用标准 Go 项目布局：`cmd/bocker/` 是精简的可执行入口，
 `internal/bocker/` 包含 CLI 命令、容器运行时适配和对应测试，`gui/` 是独立的
 Flutter 桌面前端。
+
+### 卸载 Debian 包
+
+只移除程序包并保留容器数据：
+
+```bash
+sudo systemctl disable --now bocker.service 2>/dev/null || true
+sudo apt purge bocker bocker-gui
+sudo systemctl daemon-reload
+```
+
+如果确认不再需要容器、镜像和 Bocker 运行时，再执行完整清理。命令只针对
+Bocker 明确创建的路径，不要把 `/opt/incus` 或其他 Incus 数据目录整体删除：
+
+```bash
+sudo rm -f /etc/systemd/system/bocker.service
+sudo rm -f /etc/systemd/system/service.d/90-bocker-super.conf
+sudo rm -f /usr/local/bin/bocker
+sudo rm -f /usr/bin/bocker
+sudo rm -f /usr/share/bash-completion/completions/bocker
+sudo rm -f /usr/share/applications/io.bocker.bocker_gui.desktop
+sudo rm -f /usr/share/pixmaps/io.bocker.bocker_gui.png
+sudo rm -rf --one-file-system /usr/lib/bocker-gui
+sudo rm -rf --one-file-system /var/lib/bocker
+sudo rm -rf --one-file-system /var/lib/incus-lxcfs
+sudo rm -rf --one-file-system /opt/incus/lib/lxc/rootfs
+sudo systemctl daemon-reload
+```
+
+如果曾配置容器域名，先备份 `/etc/hosts`，再删除包含 `# bocker:` 标记的行；
+停止服务后，若仍有 Bocker 专用网络设备，再确认名称后删除 `bocker-br0` 或
+`bocker-nat`，不要删除其他网络设备：
+
+```bash
+sudo cp -a /etc/hosts /etc/hosts.bocker-uninstall-backup
+sudo sed -i '/# bocker:/d' /etc/hosts
+ip link show bocker-br0 2>/dev/null && sudo ip link delete bocker-br0 || true
+ip link show bocker-nat 2>/dev/null && sudo ip link delete bocker-nat || true
+```
+
+如果曾经用 bundle 安装过当前用户 GUI，还要以该用户执行：
+
+```bash
+rm -rf --one-file-system "$HOME/.local/opt/bocker-gui"
+rm -f "$HOME/.local/share/applications/io.bocker.bocker_gui.desktop"
+desktop_dir="$(xdg-user-dir DESKTOP 2>/dev/null || printf '%s/Desktop' "$HOME")"
+rm -f "$desktop_dir/Bocker GUI.desktop"
+```
 
 ## 3. 快速开始
 
@@ -314,7 +372,8 @@ tail -n 80 /var/lib/bocker/logs/incusd.log
 
 常见问题：
 
-- 报 `Bocker must run as root`：切换到 root，或使用 `sudo bocker ...`。
+- 报无法连接 Bocker 后台服务：确认 `bocker.service` 已启动，当前用户在 `lxd` 组中并已
+  重新登录；不要给每条命令加 `sudo`。
 - 服务因 `setfattr` 退出：确认已安装 `attr`；root 首次运行会自动处理。
 - Bridge 无法创建：设置正确的 `BOCKER_BRIDGE_PARENT`，或改用 `--network nat`。
 - `image build` 找不到 `Incusfile`：检查文件路径和当前工作目录。

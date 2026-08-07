@@ -11,9 +11,10 @@ not change the CLI or its state format.
   can be installed and used independently without the GUI.
 - `bocker_gui` is an unprivileged Flutter frontend. It contains no container
   engine and sends the same CLI arguments to the matching bundled `bocker`.
-- On first use, the GUI asks PolicyKit to start a restricted root helper. Later
-  actions use a user-private Unix socket, including the interactive container
-  shell, so the GUI itself remains a normal desktop process.
+- The GUI invokes the bundled CLI directly as the desktop user. The CLI talks
+  to the already-running Bocker service through its `lxd`-group authorized Unix
+  socket, including for the interactive container shell; no PolicyKit prompt
+  or `sudo` helper is used.
 
 The release bundle keeps `bocker_gui`, `bocker`, `lib/`, and `data/` together.
 The CLI can still be copied to `/usr/local/bin/bocker` for independent terminal
@@ -28,10 +29,8 @@ From this directory:
 flutter run -d linux
 ```
 
-The application uses the matching `bocker` executable beside `bocker_gui`. It
-requests authorization once, then starts a root-owned local helper for the
-current desktop session. Later GUI operations use that helper, so they do not
-prompt again.
+The application uses the matching `bocker` executable beside `bocker_gui` and
+expects the Bocker service to be running for the current host.
 
 For an uninstalled development binary, set its path:
 
@@ -55,11 +54,11 @@ or packaging the application.
 
 ## Install for the desktop user
 
-From the project root, build and register the GUI in the current user's
-application menu and desktop:
+From the project root, build the GUI bundle and then run its desktop installer:
 
 ```bash
-make install-gui
+make build-gui
+./gui/install_desktop.sh
 ```
 
 The script copies the bundle to `~/.local/opt/bocker-gui`, creates an

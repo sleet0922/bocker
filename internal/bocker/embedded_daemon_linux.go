@@ -14,8 +14,10 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"os/user"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -29,6 +31,7 @@ import (
 const (
 	embeddedIncusVersion  = "7.2-container"
 	defaultBockerState    = "/var/lib/bocker"
+	defaultSocketGroup    = "lxd"
 	embeddedSocketWait    = 90 * time.Second
 	hostDependencyTimeout = 5 * time.Minute
 	daemonGracefulStop    = 20 * time.Second
@@ -52,6 +55,7 @@ type embeddedPaths struct {
 	incusDir   string
 	runtimeDir string
 	socket     string
+	control    string
 	logDir     string
 	lxcfsDir   string
 }
@@ -69,18 +73,24 @@ func ensureEmbeddedDaemonOnce() error {
 	if runtime.GOARCH != "amd64" {
 		return fmt.Errorf("the embedded Incus runtime currently supports linux/amd64, got linux/%s", runtime.GOARCH)
 	}
-	if os.Geteuid() != 0 {
-		return errors.New("Bocker must run as root to manage the embedded container runtime")
-	}
-	if err := ensureHostSetfattr(); err != nil {
-		return err
-	}
 
 	paths, err := embeddedRuntimePaths()
 	if err != nil {
 		return err
 	}
 	setEmbeddedEnvironment(paths)
+	// The daemon owns the host-level privileges.  Normal users connect to its
+	// group-authorized Unix socket and never need to start a privileged process.
+	if os.Geteuid() != 0 {
+		server, connectErr := connectEmbeddedServer(paths.socket)
+		if connectErr != nil {
+			return fmt.Errorf("无法连接 Bocker 后台服务（普通用户无需 sudo，但需要已启动 bocker.service 且当前用户在 lxd 组）: %w", connectErr)
+		}
+		return ensureDefaultIncusConfig(server)
+	}
+	if err := ensureHostSetfattr(); err != nil {
+		return err
+	}
 
 	managed, err := startSystemdSupervisor(paths)
 	if err != nil {
@@ -164,6 +174,7 @@ func embeddedRuntimePaths() (embeddedPaths, error) {
 		incusDir:   incusDir,
 		runtimeDir: filepath.Join(stateDir, "runtime", embeddedIncusVersion+"-"+runtimeID),
 		socket:     filepath.Join(incusDir, "unix.socket"),
+		control:    filepath.Join(incusDir, "bocker-control.socket"),
 		logDir:     filepath.Join(stateDir, "logs"),
 		lxcfsDir:   "/var/lib/incus-lxcfs",
 	}, nil
@@ -319,6 +330,49 @@ TasksMax=infinity
 [Install]
 WantedBy=multi-user.target
 `, exe, stateDir)
+}
+
+// allowSocketGroup makes only the state directory components needed to reach
+// the API socket traversable by members of the Incus administration group.
+// Container data and logs remain mode 0700.
+func allowSocketGroup(paths embeddedPaths) error {
+	group, err := user.LookupGroup(defaultSocketGroup)
+	if err != nil {
+		return nil
+	}
+	gid, err := strconv.Atoi(group.Gid)
+	if err != nil {
+		return fmt.Errorf("parse %s group id: %w", defaultSocketGroup, err)
+	}
+	for _, dir := range []string{paths.stateDir, paths.incusDir} {
+		if err := os.Chown(dir, 0, gid); err != nil {
+			return fmt.Errorf("set %s group on %s: %w", defaultSocketGroup, dir, err)
+		}
+		if err := os.Chmod(dir, 0o710); err != nil {
+			return fmt.Errorf("set socket traversal permission on %s: %w", dir, err)
+		}
+	}
+	return nil
+}
+
+func ensureSocketGroupWhenReady(paths embeddedPaths) {
+	group, err := user.LookupGroup(defaultSocketGroup)
+	if err != nil {
+		return
+	}
+	gid, err := strconv.Atoi(group.Gid)
+	if err != nil {
+		return
+	}
+	deadline := time.Now().Add(embeddedSocketWait)
+	for time.Now().Before(deadline) {
+		if info, statErr := os.Stat(paths.socket); statErr == nil && info.Mode()&os.ModeSocket != 0 {
+			_ = os.Chown(paths.socket, 0, gid)
+			_ = os.Chmod(paths.socket, 0o660)
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 func writeFileIfChanged(path string, content []byte, mode os.FileMode) (bool, error) {
@@ -570,7 +624,7 @@ func runEmbeddedDaemonSupervisor() error {
 		return fmt.Errorf("embedded runtime does not support linux/%s", runtime.GOARCH)
 	}
 	if os.Geteuid() != 0 {
-		return errors.New("the Bocker daemon must run as root")
+		return errors.New("the Bocker daemon must run as root; use the normal bocker CLI as an unprivileged user")
 	}
 	paths, err := embeddedRuntimePaths()
 	if err != nil {
@@ -584,6 +638,9 @@ func runEmbeddedDaemonSupervisor() error {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return err
 		}
+	}
+	if err := allowSocketGroup(paths); err != nil {
+		return err
 	}
 
 	lock, err := os.OpenFile(filepath.Join(paths.stateDir, "daemon.lock"), os.O_CREATE|os.O_RDWR, 0o600)
@@ -610,7 +667,11 @@ func runEmbeddedDaemonSupervisor() error {
 	defer logFile.Close()
 
 	incusdPath := filepath.Join(paths.runtimeDir, "bin", "incusd")
-	cmd := exec.Command(incusdPath, "--logfile", filepath.Join(paths.logDir, "incusd-internal.log"))
+	cmdArgs := []string{"--logfile", filepath.Join(paths.logDir, "incusd-internal.log")}
+	if _, err := user.LookupGroup(defaultSocketGroup); err == nil {
+		cmdArgs = append(cmdArgs, "--group", defaultSocketGroup)
+	}
+	cmd := exec.Command(incusdPath, cmdArgs...)
 	cmd.Env = os.Environ()
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
@@ -618,6 +679,16 @@ func runEmbeddedDaemonSupervisor() error {
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start embedded incusd: %w", err)
 	}
+	// Incus creates the socket asynchronously.  The --group flag above is the
+	// primary authorization mechanism; this also fixes access when reusing a
+	// socket left by an older daemon.
+	go ensureSocketGroupWhenReady(paths)
+	control, err := startBockerControl(paths)
+	if err != nil {
+		stopProcess(cmd.Process)
+		return err
+	}
+	defer control.Close()
 	if err := os.WriteFile(filepath.Join(paths.stateDir, "daemon.pid"), []byte(fmt.Sprintf("%d\n", cmd.Process.Pid)), 0o600); err != nil {
 		stopProcess(cmd.Process)
 		return err

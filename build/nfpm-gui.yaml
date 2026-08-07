@@ -8,7 +8,7 @@ maintainer: Bocker Maintainers <maintainers@example.com>
 description: Bocker GUI
 contents:
   - src: ./gui/build/linux/x64/release/bundle/
-    dst: /opt/bocker-gui
+    dst: /usr/lib/bocker-gui
     type: tree
   - src: ./gui/bocker_gui.desktop
     dst: /usr/share/applications/io.bocker.bocker_gui.desktop

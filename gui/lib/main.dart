@@ -1330,72 +1330,13 @@ class _StatusChip extends StatelessWidget {
 class BockerCommand {
   BockerCommand();
 
-  static const _socketName = 'bocker-gui-bundled.sock';
-  static const _helperProtocol = 4;
-  Future<bool>? _rootCheck;
-
   Future<CommandResult> run(List<String> arguments) async {
-    if (await _isRoot()) {
-      return _runDirect(arguments);
-    }
-    final runtimeDir = Platform.environment['XDG_RUNTIME_DIR'];
-    if (runtimeDir == null || runtimeDir.isEmpty) {
-      return const CommandResult(false, '无法找到当前桌面会话的运行目录。', -1);
-    }
-    final socketPath = '$runtimeDir/$_socketName';
-    var response = await _send(socketPath, arguments);
-    if (response != null) return response;
-
-    final bootstrap = await _startHelper(socketPath);
-    if (!bootstrap.ok) return bootstrap;
-    for (var attempt = 0; attempt < 30; attempt++) {
-      await Future<void>.delayed(const Duration(milliseconds: 100));
-      response = await _send(socketPath, arguments);
-      if (response != null) return response;
-    }
-    return const CommandResult(false, '权限代理已启动，但无法连接到本地 socket。', -1);
+    return _runDirect(arguments);
   }
 
   Future<CommandResult> openShell(String containerName) async {
     try {
-      final root = await _isRoot();
-      final runtimeDir = Platform.environment['XDG_RUNTIME_DIR'];
-      if (!root && (runtimeDir == null || runtimeDir.isEmpty)) {
-        return const CommandResult(false, '无法找到当前桌面会话的运行目录。', -1);
-      }
-      if (!root) {
-        final socketPath = '$runtimeDir/$_socketName';
-        var helperResponse = await _send(socketPath, [
-          'container',
-          'list',
-          '--json',
-        ]);
-        if (helperResponse == null) {
-          final bootstrap = await _startHelper(socketPath);
-          if (!bootstrap.ok) return bootstrap;
-          for (var attempt = 0; attempt < 30; attempt++) {
-            await Future<void>.delayed(const Duration(milliseconds: 100));
-            helperResponse = await _send(socketPath, [
-              'container',
-              'list',
-              '--json',
-            ]);
-            if (helperResponse != null) break;
-          }
-          if (helperResponse == null) {
-            return const CommandResult(false, '权限代理已启动，但无法连接到本地 socket。', -1);
-          }
-        }
-      }
-      final shellArguments = root
-          ? [_binary, 'container', 'shell', containerName]
-          : [
-              _binary,
-              '__gui_shell',
-              '--socket',
-              '$runtimeDir/$_socketName',
-              containerName,
-            ];
+      final shellArguments = [_binary, 'container', 'shell', containerName];
       final nativeTerminal =
           _findExecutable('ptyxis') ?? _findExecutable('gnome-terminal');
       if (nativeTerminal != null) {
@@ -1443,52 +1384,6 @@ class BockerCommand {
     }
   }
 
-  Future<CommandResult> _startHelper(String socketPath) async {
-    try {
-      final result = await Process.run('pkexec', [
-        _binary,
-        '__gui_helper',
-        '--socket',
-        socketPath,
-      ], runInShell: false);
-      final output = '${result.stdout}${result.stderr}'.trim();
-      return CommandResult(result.exitCode == 0, output, result.exitCode);
-    } on ProcessException catch (error) {
-      return CommandResult(false, '无法启动权限代理: ${error.message}', -1);
-    }
-  }
-
-  Future<CommandResult?> _send(
-    String socketPath,
-    List<String> arguments,
-  ) async {
-    try {
-      final socket = await Socket.connect(
-        InternetAddress(socketPath, type: InternetAddressType.unix),
-        0,
-      ).timeout(const Duration(seconds: 2));
-      socket.write('${jsonEncode({'arguments': arguments})}\n');
-      await socket.flush();
-      final raw = await utf8.decoder.bind(socket).join();
-      socket.destroy();
-      final response = jsonDecode(raw) as Map<String, dynamic>;
-      if (response['protocol'] != _helperProtocol) {
-        return null;
-      }
-      return CommandResult(
-        response['ok'] == true,
-        response['output'] as String? ?? '',
-        response['exitCode'] as int? ?? 1,
-      );
-    } on SocketException {
-      return null;
-    } on TimeoutException {
-      return null;
-    } on FormatException {
-      return const CommandResult(false, '权限代理返回了无效响应。', -1);
-    }
-  }
-
   String get _binary {
     final configured = Platform.environment['BOCKER_BINARY']?.trim();
     if (configured != null && configured.isNotEmpty) {
@@ -1497,18 +1392,6 @@ class BockerCommand {
     return '${File(Platform.resolvedExecutable).parent.path}/bocker';
   }
 
-  Future<bool> _isRoot() {
-    return _rootCheck ??= _readEffectiveUid();
-  }
-
-  Future<bool> _readEffectiveUid() async {
-    try {
-      final result = await Process.run('id', const ['-u'], runInShell: false);
-      return result.exitCode == 0 && result.stdout.toString().trim() == '0';
-    } on ProcessException {
-      return false;
-    }
-  }
 }
 
 class CommandResult {
