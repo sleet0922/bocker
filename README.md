@@ -27,7 +27,7 @@ Bocker 的状态默认存放在 `/var/lib/bocker`，包括容器、镜像、Unix
 go test ./...
 go vet ./...
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-  go build -trimpath -ldflags '-s -w' -o bocker .
+  go build -trimpath -ldflags '-s -w' -o bocker ./cmd/bocker
 ```
 
 安装到系统：
@@ -45,7 +45,7 @@ bocker --version
 `gui/` 提供了基于 Flutter Material 3 的 Ubuntu 桌面界面，覆盖容器、镜像、
 构建和常用设置管理，同时保留所有原有 CLI 用法。GUI 通过 Bocker 的私有本地
 权限代理执行操作：普通桌面用户首次操作授权后，后续操作无需重复输入密码。
-GUI 默认调用系统安装的 `/usr/local/bin/bocker`。
+GUI 包会携带同版本 `bocker` 二进制，并优先使用该副本以避免版本不兼容。
 
 开发运行：
 
@@ -58,8 +58,12 @@ BOCKER_BINARY="$PWD/../bocker" flutter run -d linux
 
 ```bash
 cd gui
-flutter build linux --release
+./build_release.sh
 ```
+
+源码采用标准 Go 项目布局：`cmd/bocker/` 是精简的可执行入口，
+`internal/bocker/` 包含 CLI 命令、容器运行时适配和对应测试，`gui/` 是独立的
+Flutter 桌面前端。
 
 ## 3. 快速开始
 

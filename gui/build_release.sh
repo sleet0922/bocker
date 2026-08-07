@@ -7,8 +7,6 @@ bundle_dir="$gui_dir/build/linux/x64/release/bundle"
 
 (cd "$project_dir" && make build)
 (cd "$gui_dir" && flutter build linux --release)
-if [[ -e "$bundle_dir/bocker" ]]; then
-  unlink "$bundle_dir/bocker"
-fi
+install -m 0755 "$project_dir/bocker" "$bundle_dir/bocker"
 
-echo "Built $bundle_dir/bocker_gui (uses /usr/local/bin/bocker)"
+echo "Built $bundle_dir/bocker_gui with matching bundled $bundle_dir/bocker"

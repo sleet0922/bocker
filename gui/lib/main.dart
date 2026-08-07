@@ -1209,6 +1209,7 @@ class _StatusChip extends StatelessWidget {
 class BockerCommand {
   BockerCommand();
 
+  static const _socketName = 'bocker-gui-bundled.sock';
   Future<bool>? _rootCheck;
 
   Future<CommandResult> run(List<String> arguments) async {
@@ -1219,7 +1220,7 @@ class BockerCommand {
     if (runtimeDir == null || runtimeDir.isEmpty) {
       return const CommandResult(false, '无法找到当前桌面会话的运行目录。', -1);
     }
-    final socketPath = '$runtimeDir/bocker-gui.sock';
+    final socketPath = '$runtimeDir/$_socketName';
     var response = await _send(socketPath, arguments);
     if (response != null) return response;
 
@@ -1246,7 +1247,7 @@ class BockerCommand {
               _binary,
               '__gui_shell',
               '--socket',
-              '$runtimeDir/bocker-gui.sock',
+              '$runtimeDir/$_socketName',
               containerName,
             ];
       await Process.start('x-terminal-emulator', [
@@ -1327,7 +1328,7 @@ class BockerCommand {
     if (configured != null && configured.isNotEmpty) {
       return configured;
     }
-    return '/usr/local/bin/bocker';
+    return '${File(Platform.resolvedExecutable).parent.path}/bocker';
   }
 
   Future<bool> _isRoot() {

@@ -1,4 +1,4 @@
-package main
+package bocker
 
 import (
 	"fmt"
@@ -6,7 +6,7 @@ import (
 )
 
 // Version 工具版本
-const Version = "1.1.5"
+const Version = "1.2.0"
 
 // MirrorRemote 镜像源在本地的 remote 名称
 const MirrorRemote = "mirror-images"
@@ -14,7 +14,8 @@ const MirrorRemote = "mirror-images"
 // MirrorURL LXC 镜像源地址（清华源已失效，改用官方源）
 const MirrorURL = "https://images.linuxcontainers.org/"
 
-func main() {
+// Main is the process entry point used by cmd/bocker.
+func Main() {
 	if len(os.Args) >= 2 && os.Args[1] == "__gui_shell" {
 		if err := runGUIShellClient(os.Args[2:]); err != nil {
 			fmt.Fprintf(os.Stderr, "bocker gui shell: %v\n", err)

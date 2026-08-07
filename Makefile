@@ -16,7 +16,7 @@ help:
 
 build: check
 	CGO_ENABLED=$(CGO_ENABLED) GOOS=$(GOOS) GOARCH=$(GOARCH) \
-		go build -trimpath -ldflags '$(LDFLAGS)' -o '$(BIN_NAME)' .
+		go build -trimpath -ldflags '$(LDFLAGS)' -o '$(BIN_NAME)' ./cmd/bocker
 	@echo "Built ./$(BIN_NAME) for $(GOOS)/$(GOARCH)"
 
 test:

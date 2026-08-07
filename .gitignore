@@ -1,5 +1,5 @@
 dist/
-bocker
+/bocker
 bocker.exe
 bocker-check.exe
 bocker-linux-*
