@@ -18,6 +18,8 @@ Bocker 专注于常用工作流：安装镜像、创建和管理容器、配置�
 
 Bocker 的状态默认存放在 `/var/lib/bocker`，包括容器、镜像、Unix socket、
 日志和解压后的私有运行时。运行时不会安装到系统 `PATH`。
+systemd 使用 `/var/lib/bocker/bin/bocker-daemon` 中的受管副本启动守护进程；
+CLI 或 GUI 升级后会自动同步该副本并迁移服务配置。
 
 ## 2. 安装
 

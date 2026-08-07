@@ -31,6 +31,9 @@ const (
 	defaultBockerState    = "/var/lib/bocker"
 	embeddedSocketWait    = 90 * time.Second
 	hostDependencyTimeout = 5 * time.Minute
+	daemonGracefulStop    = 20 * time.Second
+	daemonTermStop        = 5 * time.Second
+	daemonKillWait        = 2 * time.Second
 )
 
 // incusRuntimeArchive contains the container-only Incus daemon, liblxc and
@@ -79,10 +82,17 @@ func ensureEmbeddedDaemonOnce() error {
 	}
 	setEmbeddedEnvironment(paths)
 
+	managed, err := startSystemdSupervisor(paths)
+	if err != nil {
+		return err
+	}
+
 	server, err := connectEmbeddedServer(paths.socket)
 	if err != nil {
-		if err := spawnEmbeddedSupervisor(paths); err != nil {
-			return err
+		if !managed {
+			if err := spawnEmbeddedSupervisor(paths); err != nil {
+				return err
+			}
 		}
 		server, err = waitForEmbeddedServer(paths, embeddedSocketWait)
 		if err != nil {
@@ -187,9 +197,6 @@ func spawnEmbeddedSupervisor(paths embeddedPaths) error {
 	if err := extractEmbeddedRuntime(paths); err != nil {
 		return err
 	}
-	if managed, err := startSystemdSupervisor(paths); managed {
-		return err
-	}
 
 	exe, err := os.Executable()
 	if err != nil {
@@ -226,11 +233,7 @@ func startSystemdSupervisor(paths embeddedPaths) (bool, error) {
 	if err != nil {
 		return false, nil
 	}
-	exe, err := os.Executable()
-	if err != nil {
-		return true, err
-	}
-	exe, err = filepath.Abs(exe)
+	exe, binaryChanged, err := installSystemdSupervisorBinary(paths)
 	if err != nil {
 		return true, err
 	}
@@ -238,10 +241,67 @@ func startSystemdSupervisor(paths embeddedPaths) (bool, error) {
 		return true, errors.New("Bocker executable and state paths cannot contain quotes or newlines")
 	}
 
-	unit := fmt.Sprintf(`[Unit]
+	unit := embeddedSystemdUnit(exe, paths.stateDir)
+	unitPath := "/etc/systemd/system/bocker.service"
+	unitChanged, err := writeFileIfChanged(unitPath, []byte(unit), 0o644)
+	if err != nil {
+		return true, fmt.Errorf("install bocker.service: %w", err)
+	}
+	if unitChanged {
+		cmd := exec.Command(systemctl, "daemon-reload")
+		if output, err := cmd.CombinedOutput(); err != nil {
+			return true, fmt.Errorf("reload systemd after installing bocker.service: %w: %s", err, strings.TrimSpace(string(output)))
+		}
+	}
+
+	active := exec.Command(systemctl, "is-active", "--quiet", "bocker.service").Run() == nil
+	if active && (binaryChanged || unitChanged) {
+		cmd := exec.Command(systemctl, "restart", "bocker.service")
+		if output, err := cmd.CombinedOutput(); err != nil {
+			return true, fmt.Errorf("restart updated bocker.service: %w: %s", err, strings.TrimSpace(string(output)))
+		}
+		return true, nil
+	}
+	if active {
+		return true, nil
+	}
+
+	_ = exec.Command(systemctl, "reset-failed", "bocker.service").Run()
+	cmd := exec.Command(systemctl, "enable", "--now", "bocker.service")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return true, fmt.Errorf("start bocker.service: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return true, nil
+}
+
+func installSystemdSupervisorBinary(paths embeddedPaths) (string, bool, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return "", false, err
+	}
+	exe, err = filepath.Abs(exe)
+	if err != nil {
+		return "", false, err
+	}
+	content, err := os.ReadFile(exe)
+	if err != nil {
+		return "", false, fmt.Errorf("read Bocker executable: %w", err)
+	}
+	target := filepath.Join(paths.stateDir, "bin", "bocker-daemon")
+	changed, err := writeFileIfChanged(target, content, 0o755)
+	if err != nil {
+		return "", false, fmt.Errorf("install Bocker daemon executable: %w", err)
+	}
+	return target, changed, nil
+}
+
+func embeddedSystemdUnit(exe, stateDir string) string {
+	return fmt.Sprintf(`[Unit]
 Description=Bocker embedded container runtime
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -251,28 +311,14 @@ Restart=on-failure
 RestartSec=2
 Delegate=yes
 KillMode=mixed
+TimeoutStopSec=40
+SendSIGKILL=yes
 LimitNOFILE=1048576
 TasksMax=infinity
 
 [Install]
 WantedBy=multi-user.target
-`, exe, paths.stateDir)
-	unitPath := "/etc/systemd/system/bocker.service"
-	changed, err := writeFileIfChanged(unitPath, []byte(unit), 0o644)
-	if err != nil {
-		return true, fmt.Errorf("install bocker.service: %w", err)
-	}
-	if changed {
-		cmd := exec.Command(systemctl, "daemon-reload")
-		if output, err := cmd.CombinedOutput(); err != nil {
-			return true, fmt.Errorf("reload systemd after installing bocker.service: %w: %s", err, strings.TrimSpace(string(output)))
-		}
-	}
-	cmd := exec.Command(systemctl, "enable", "--now", "bocker.service")
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return true, fmt.Errorf("start bocker.service: %w: %s", err, strings.TrimSpace(string(output)))
-	}
-	return true, nil
+`, exe, stateDir)
 }
 
 func writeFileIfChanged(path string, content []byte, mode os.FileMode) (bool, error) {
@@ -586,13 +632,28 @@ func runEmbeddedDaemonSupervisor() error {
 
 	select {
 	case sig := <-sigCh:
-		_ = cmd.Process.Signal(sig)
+		signalValue, ok := sig.(syscall.Signal)
+		if !ok {
+			signalValue = syscall.SIGTERM
+		}
+		requestEmbeddedDaemonShutdown(paths.socket)
 		select {
 		case err := <-exitCh:
 			return normalizeDaemonExit(err)
-		case <-time.After(30 * time.Second):
-			stopProcess(cmd.Process)
-			return errors.New("embedded incusd did not stop within 30 seconds")
+		case <-time.After(daemonGracefulStop):
+			signalProcessGroup(cmd.Process, signalValue)
+		}
+		select {
+		case err := <-exitCh:
+			return normalizeDaemonExit(err)
+		case <-time.After(daemonTermStop):
+			signalProcessGroup(cmd.Process, syscall.SIGKILL)
+		}
+		select {
+		case err := <-exitCh:
+			return normalizeDaemonExit(err)
+		case <-time.After(daemonKillWait):
+			return errors.New("embedded incusd did not stop after SIGKILL")
 		}
 	case err := <-exitCh:
 		return normalizeDaemonExit(err)
@@ -628,14 +689,33 @@ func stopProcess(process *os.Process) {
 	if process == nil {
 		return
 	}
-	_ = process.Signal(syscall.SIGTERM)
+	signalProcessGroup(process, syscall.SIGTERM)
 	for i := 0; i < 20; i++ {
 		if err := process.Signal(syscall.Signal(0)); err != nil {
 			return
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	_ = process.Kill()
+	signalProcessGroup(process, syscall.SIGKILL)
+}
+
+func requestEmbeddedDaemonShutdown(socket string) {
+	server, err := connectEmbeddedServer(socket)
+	if err != nil {
+		return
+	}
+	go func() {
+		_, _, _ = server.RawQuery("PUT", "/internal/shutdown?force=true", nil, "")
+	}()
+}
+
+func signalProcessGroup(process *os.Process, signal syscall.Signal) {
+	if process == nil || process.Pid <= 0 {
+		return
+	}
+	if err := syscall.Kill(-process.Pid, signal); err != nil && !errors.Is(err, syscall.ESRCH) {
+		_ = process.Signal(signal)
+	}
 }
 
 func stopAndReapProcess(process *os.Process) {
