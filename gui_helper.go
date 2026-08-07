@@ -18,16 +18,19 @@ import (
 const (
 	guiHelperChildEnv = "BOCKER_GUI_HELPER_CHILD"
 	guiHelperMaxInput = 1 << 20
+	guiHelperProtocol = 2
 )
 
 type guiHelperRequest struct {
-	Arguments []string `json:"arguments"`
+	Arguments   []string `json:"arguments"`
+	Interactive bool     `json:"interactive,omitempty"`
 }
 
 type guiHelperResponse struct {
 	OK       bool   `json:"ok"`
 	Output   string `json:"output"`
 	ExitCode int    `json:"exitCode"`
+	Protocol int    `json:"protocol"`
 }
 
 // runGUIHelper starts the GUI's short bootstrap process or the detached root
@@ -139,8 +142,8 @@ func guiSocketOwner(socketPath string) (int, int, error) {
 func handleGUIHelperConnection(connection net.Conn, binary string) {
 	defer connection.Close()
 	_ = connection.SetReadDeadline(time.Now().Add(5 * time.Second))
-	reader := bufio.NewReader(io.LimitReader(connection, guiHelperMaxInput))
-	line, err := reader.ReadBytes('\n')
+	reader := bufio.NewReaderSize(connection, guiHelperMaxInput)
+	line, err := reader.ReadSlice('\n')
 	if err != nil {
 		writeGUIHelperResponse(connection, guiHelperResponse{Output: "读取 GUI 请求失败: " + err.Error(), ExitCode: 1})
 		return
@@ -148,6 +151,11 @@ func handleGUIHelperConnection(connection net.Conn, binary string) {
 	var request guiHelperRequest
 	if err := json.Unmarshal(line, &request); err != nil {
 		writeGUIHelperResponse(connection, guiHelperResponse{Output: "GUI 请求格式无效: " + err.Error(), ExitCode: 1})
+		return
+	}
+	_ = connection.SetReadDeadline(time.Time{})
+	if request.Interactive {
+		handleGUIInteractiveConnection(connection, reader, binary, request.Arguments)
 		return
 	}
 	if err := validateGUIHelperArguments(request.Arguments); err != nil {
@@ -171,6 +179,61 @@ func handleGUIHelperConnection(connection net.Conn, binary string) {
 	writeGUIHelperResponse(connection, response)
 }
 
+func handleGUIInteractiveConnection(connection net.Conn, reader io.Reader, binary string, args []string) {
+	if len(args) != 2 || args[0] != "in" {
+		_, _ = fmt.Fprintln(connection, "GUI 交互终端请求无效")
+		return
+	}
+	if err := validateBockerName(args[1]); err != nil {
+		_, _ = fmt.Fprintf(connection, "容器名称无效: %v\n", err)
+		return
+	}
+	command := exec.Command(binary, args...)
+	command.Stdin = reader
+	command.Stdout = connection
+	command.Stderr = connection
+	if err := command.Run(); err != nil {
+		_, _ = fmt.Fprintf(connection, "\r\n容器终端已断开: %v\r\n", err)
+	}
+}
+
+// runGUIShellClient is the unprivileged half of an interactive GUI terminal.
+// It forwards the local terminal to the already-authorized root helper.
+func runGUIShellClient(args []string) error {
+	if len(args) != 3 || args[0] != "--socket" {
+		return fmt.Errorf("用法: __gui_shell --socket <path> <container>")
+	}
+	socketPath := filepath.Clean(strings.TrimSpace(args[1]))
+	if !filepath.IsAbs(socketPath) {
+		return fmt.Errorf("socket 路径必须是绝对路径")
+	}
+	name := strings.TrimSpace(args[2])
+	if err := validateBockerName(name); err != nil {
+		return fmt.Errorf("容器名称无效: %w", err)
+	}
+	connection, err := net.Dial("unix", socketPath)
+	if err != nil {
+		return fmt.Errorf("连接 GUI 权限代理失败: %w", err)
+	}
+	defer connection.Close()
+	request := guiHelperRequest{Arguments: []string{"in", name}, Interactive: true}
+	if err := json.NewEncoder(connection).Encode(request); err != nil {
+		return fmt.Errorf("发送终端请求失败: %w", err)
+	}
+
+	fd := int(os.Stdin.Fd())
+	if old, err := makeRaw(fd); err == nil {
+		defer restoreTerm(fd, old)
+	}
+	go func() {
+		_, _ = io.Copy(connection, os.Stdin)
+	}()
+	if _, err := io.Copy(os.Stdout, connection); err != nil {
+		return fmt.Errorf("终端连接中断: %w", err)
+	}
+	return nil
+}
+
 func validateGUIHelperArguments(args []string) error {
 	if len(args) == 0 || len(args) > 128 {
 		return fmt.Errorf("GUI 命令参数数量无效")
@@ -189,5 +252,6 @@ func validateGUIHelperArguments(args []string) error {
 }
 
 func writeGUIHelperResponse(connection net.Conn, response guiHelperResponse) {
+	response.Protocol = guiHelperProtocol
 	_ = json.NewEncoder(connection).Encode(response)
 }

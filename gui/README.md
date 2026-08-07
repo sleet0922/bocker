@@ -12,10 +12,10 @@ From this directory:
 flutter run -d linux
 ```
 
-The application requests authorization once, then starts a root-owned local
-helper for the current desktop session. Later GUI operations use that helper,
-so they do not prompt again. The helper is an internal `bocker` command; rebuild
-and install Bocker before using a release GUI with this source version.
+The application uses `/usr/local/bin/bocker`. It requests authorization once,
+then starts a root-owned local helper for the current desktop session. Later
+GUI operations use that helper, so they do not prompt again. Rebuild and install
+Bocker before using a release GUI with this source version.
 
 For an uninstalled development binary, set its path:
 
@@ -29,11 +29,12 @@ by default on standard Ubuntu desktop installations.
 ## Build a release
 
 ```bash
-flutter build linux --release
+./build_release.sh
 ```
 
-The executable is written to
-`build/linux/x64/release/bundle/bocker_gui`.
+The GUI executable is written to
+`build/linux/x64/release/bundle/bocker_gui`. Install the matching CLI separately:
 
-The GitHub release bundle also includes a matching `bocker` executable beside
-`bocker_gui`; the GUI prefers this bundled binary over a system installation.
+```bash
+sudo install -m 0755 ../bocker /usr/local/bin/bocker
+```

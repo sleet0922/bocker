@@ -450,6 +450,22 @@ class _BockerHomeState extends State<BockerHome> {
     );
   }
 
+  Future<void> _openContainerShell(ContainerInfo container) async {
+    final result = await _bocker.openShell(container.name);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          result.ok
+              ? '已在系统终端打开 ${container.name}'
+              : '无法打开终端: ${result.summary}',
+        ),
+        behavior: SnackBarBehavior.floating,
+        backgroundColor: result.ok ? null : Theme.of(context).colorScheme.error,
+      ),
+    );
+  }
+
   Future<void> _settingsDialog(ContainerInfo container) async {
     final domain = TextEditingController();
     final port = TextEditingController();
@@ -666,6 +682,7 @@ class _BockerHomeState extends State<BockerHome> {
             onStop: (item) => _run('停止容器', ['stop', item.name]),
             onRestart: (item) => _run('重启容器', ['restart', item.name]),
             onExport: (item) => _run('导出容器', ['export', item.name]),
+            onOpenShell: _openContainerShell,
             onExec: _execDialog,
             onSettings: _settingsDialog,
             onDelete: _deleteContainer,
@@ -773,6 +790,7 @@ class _ContainersView extends StatelessWidget {
     required this.onStop,
     required this.onRestart,
     required this.onExport,
+    required this.onOpenShell,
     required this.onExec,
     required this.onSettings,
     required this.onDelete,
@@ -788,6 +806,7 @@ class _ContainersView extends StatelessWidget {
   final ValueChanged<ContainerInfo> onStop;
   final ValueChanged<ContainerInfo> onRestart;
   final ValueChanged<ContainerInfo> onExport;
+  final ValueChanged<ContainerInfo> onOpenShell;
   final ValueChanged<ContainerInfo> onExec;
   final ValueChanged<ContainerInfo> onSettings;
   final ValueChanged<ContainerInfo> onDelete;
@@ -840,7 +859,23 @@ class _ContainersView extends StatelessWidget {
                     .map(
                       (item) => DataRow(
                         cells: [
-                          DataCell(Text(item.name)),
+                          DataCell(
+                            InkWell(
+                              onTap: item.isRunning && !loading
+                                  ? () => onOpenShell(item)
+                                  : null,
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text(item.name),
+                                  if (item.isRunning) ...[
+                                    const SizedBox(width: 6),
+                                    const Icon(Icons.terminal, size: 16),
+                                  ],
+                                ],
+                              ),
+                            ),
+                          ),
                           DataCell(
                             _StatusChip(
                               running: item.isRunning,
@@ -874,6 +909,13 @@ class _ContainersView extends StatelessWidget {
                               mainAxisSize: MainAxisSize.min,
                               children: [
                                 if (item.isRunning) ...[
+                                  IconButton(
+                                    tooltip: '进入容器终端',
+                                    onPressed: loading
+                                        ? null
+                                        : () => onOpenShell(item),
+                                    icon: const Icon(Icons.terminal),
+                                  ),
                                   IconButton(
                                     tooltip: '停止',
                                     onPressed: loading
@@ -1191,6 +1233,36 @@ class BockerCommand {
     return const CommandResult(false, '权限代理已启动，但无法连接到本地 socket。', -1);
   }
 
+  Future<CommandResult> openShell(String containerName) async {
+    try {
+      final root = await _isRoot();
+      final runtimeDir = Platform.environment['XDG_RUNTIME_DIR'];
+      if (!root && (runtimeDir == null || runtimeDir.isEmpty)) {
+        return const CommandResult(false, '无法找到当前桌面会话的运行目录。', -1);
+      }
+      final shellArguments = root
+          ? [_binary, 'in', containerName]
+          : [
+              _binary,
+              '__gui_shell',
+              '--socket',
+              '$runtimeDir/bocker-gui.sock',
+              containerName,
+            ];
+      await Process.start('x-terminal-emulator', [
+        '-e',
+        'bash',
+        '-lc',
+        'exec "\$@"',
+        'bocker-container-shell',
+        ...shellArguments,
+      ], mode: ProcessStartMode.detached);
+      return const CommandResult(true, '', 0);
+    } on ProcessException catch (error) {
+      return CommandResult(false, error.message, -1);
+    }
+  }
+
   Future<CommandResult> _runDirect(List<String> arguments) async {
     try {
       final result = await Process.run(_binary, arguments, runInShell: false);
@@ -1233,6 +1305,9 @@ class BockerCommand {
       final raw = await utf8.decoder.bind(socket).join();
       socket.destroy();
       final response = jsonDecode(raw) as Map<String, dynamic>;
+      if (response['protocol'] != 2) {
+        return null;
+      }
       return CommandResult(
         response['ok'] == true,
         response['output'] as String? ?? '',
@@ -1252,16 +1327,7 @@ class BockerCommand {
     if (configured != null && configured.isNotEmpty) {
       return configured;
     }
-    final bundled = File(
-      '${File(Platform.resolvedExecutable).parent.path}/bocker',
-    );
-    if (bundled.existsSync()) {
-      return bundled.path;
-    }
-    if (File('/usr/local/bin/bocker').existsSync()) {
-      return '/usr/local/bin/bocker';
-    }
-    return 'bocker';
+    return '/usr/local/bin/bocker';
   }
 
   Future<bool> _isRoot() {

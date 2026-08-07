@@ -6,7 +6,7 @@ import (
 )
 
 // Version 工具版本
-const Version = "1.1.4"
+const Version = "1.1.5"
 
 // MirrorRemote 镜像源在本地的 remote 名称
 const MirrorRemote = "mirror-images"
@@ -15,6 +15,13 @@ const MirrorRemote = "mirror-images"
 const MirrorURL = "https://images.linuxcontainers.org/"
 
 func main() {
+	if len(os.Args) >= 2 && os.Args[1] == "__gui_shell" {
+		if err := runGUIShellClient(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "bocker gui shell: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) >= 2 && os.Args[1] == "__daemon" {
 		if err := runEmbeddedDaemonSupervisor(); err != nil {
 			fmt.Fprintf(os.Stderr, "bocker daemon: %v\n", err)

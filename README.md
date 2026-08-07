@@ -45,7 +45,7 @@ bocker --version
 `gui/` 提供了基于 Flutter Material 3 的 Ubuntu 桌面界面，覆盖容器、镜像、
 构建和常用设置管理，同时保留所有原有 CLI 用法。GUI 通过 Bocker 的私有本地
 权限代理执行操作：普通桌面用户首次操作授权后，后续操作无需重复输入密码。
-GitHub release 中的 GUI 包包含同版本 `bocker` 二进制，GUI 会优先使用它。
+GUI 默认调用系统安装的 `/usr/local/bin/bocker`。
 
 开发运行：
 
