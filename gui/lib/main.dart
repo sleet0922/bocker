@@ -70,7 +70,9 @@ class _BockerHomeState extends State<BockerHome> {
       _loadError = null;
     });
     final result = await _bocker.run(
-      _section == _Section.containers ? ['list'] : ['images'],
+      _section == _Section.containers
+          ? ['container', 'list', '--json']
+          : ['image', 'list', '--json'],
     );
     if (!mounted) return;
     setState(() {
@@ -122,7 +124,7 @@ class _BockerHomeState extends State<BockerHome> {
 
   Future<List<ImageTemplate>?> _loadImageTemplates() async {
     setState(() => _loading = true);
-    final result = await _bocker.run(['build', 'show']);
+    final result = await _bocker.run(['template', 'list', '--json']);
     if (!mounted) return null;
     setState(() {
       _loading = false;
@@ -273,15 +275,12 @@ class _BockerHomeState extends State<BockerHome> {
       ),
     );
     if (values == null) return;
-    final args = [
-      'install',
-      '--network',
-      values.network,
-      '--permission',
-      values.permission,
-      values.image,
-      if (values.name.isNotEmpty) values.name,
-    ];
+    final args = templateInstallArguments(
+      image: values.image,
+      name: values.name,
+      network: values.network,
+      permission: values.permission,
+    );
     await _run('安装容器', args);
   }
 
@@ -339,12 +338,110 @@ class _BockerHomeState extends State<BockerHome> {
     );
     if (values == null || values.path.isEmpty) return;
     await _run('构建镜像', [
+      'image',
       'build',
       '--network',
       values.network,
       if (values.name.isNotEmpty) ...['--name', values.name],
       values.path,
     ]);
+  }
+
+  Future<void> _runImageDialog(ImageInfo image) async {
+    final defaultName = image.name.length <= 61
+        ? '${image.name}-1'
+        : '${image.name.substring(0, 61)}-1';
+    final name = TextEditingController(text: defaultName);
+    var network = 'default';
+    var permission = 'normal';
+    final values = await showDialog<_RunImageValues>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: Text('运行镜像 ${image.name}'),
+          content: SizedBox(
+            width: 440,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: name,
+                  autofocus: true,
+                  decoration: const InputDecoration(labelText: '容器名称'),
+                ),
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    Expanded(
+                      child: DropdownButtonFormField<String>(
+                        initialValue: network,
+                        decoration: const InputDecoration(labelText: '网络模式'),
+                        items: const [
+                          DropdownMenuItem(
+                            value: 'default',
+                            child: Text('使用镜像设置'),
+                          ),
+                          DropdownMenuItem(value: 'nat', child: Text('NAT')),
+                          DropdownMenuItem(
+                            value: 'bridge',
+                            child: Text('Bridge'),
+                          ),
+                        ],
+                        onChanged: (value) =>
+                            setDialogState(() => network = value!),
+                      ),
+                    ),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: DropdownButtonFormField<String>(
+                        initialValue: permission,
+                        decoration: const InputDecoration(labelText: '容器权限'),
+                        items: const [
+                          DropdownMenuItem(value: 'normal', child: Text('普通')),
+                          DropdownMenuItem(value: 'super', child: Text('超级')),
+                        ],
+                        onChanged: (value) =>
+                            setDialogState(() => permission = value!),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(
+                context,
+                _RunImageValues(name.text.trim(), network, permission),
+              ),
+              child: const Text('创建并启动'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (values == null) return;
+    if (values.name.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('容器名称不能为空。')));
+      return;
+    }
+    await _run(
+      '运行镜像',
+      imageRunArguments(
+        image: image.name,
+        name: values.name,
+        network: values.network,
+        permission: values.permission,
+      ),
+    );
   }
 
   Future<void> _importDialog() async {
@@ -389,6 +486,7 @@ class _BockerHomeState extends State<BockerHome> {
     );
     if (values == null || values.path.isEmpty) return;
     await _run('导入备份', [
+      'container',
       'import',
       values.path,
       if (values.name.isNotEmpty) values.name,
@@ -425,6 +523,7 @@ class _BockerHomeState extends State<BockerHome> {
     );
     if (value == null || value.isEmpty) return;
     final result = await _run('执行命令', [
+      'container',
       'exec',
       container.name,
       value,
@@ -563,6 +662,7 @@ class _BockerHomeState extends State<BockerHome> {
     var ok = true;
     if (values.domain.isNotEmpty) {
       ok = (await _run('保存域名', [
+        'container',
         'set',
         container.name,
         'domain',
@@ -571,6 +671,7 @@ class _BockerHomeState extends State<BockerHome> {
     }
     if (ok && values.port.isNotEmpty) {
       ok = (await _run('添加端口映射', [
+        'container',
         'set',
         container.name,
         'port',
@@ -579,6 +680,7 @@ class _BockerHomeState extends State<BockerHome> {
     }
     if (ok && values.removePort.isNotEmpty) {
       ok = (await _run('删除端口映射', [
+        'container',
         'set',
         container.name,
         'port',
@@ -588,6 +690,7 @@ class _BockerHomeState extends State<BockerHome> {
     }
     if (ok && values.autostart != (container.autostart == 'on')) {
       ok = (await _run('保存自启动', [
+        'container',
         'set',
         container.name,
         'autostart',
@@ -596,6 +699,7 @@ class _BockerHomeState extends State<BockerHome> {
     }
     if (ok && !container.isRunning && values.network != container.network) {
       await _run('保存网络模式', [
+        'container',
         'set',
         container.name,
         'network',
@@ -611,7 +715,9 @@ class _BockerHomeState extends State<BockerHome> {
       '删除 ${container.name} 及其数据？此操作无法撤销。',
       confirmLabel: '删除',
     );
-    if (confirmed) await _run('删除容器', ['remove', 'container', container.name]);
+    if (confirmed) {
+      await _run('删除容器', ['container', 'remove', container.name]);
+    }
   }
 
   Future<void> _deleteImage(ImageInfo image) async {
@@ -620,7 +726,7 @@ class _BockerHomeState extends State<BockerHome> {
       '删除镜像别名 ${image.name}？此操作无法撤销。',
       confirmLabel: '删除',
     );
-    if (confirmed) await _run('删除镜像', ['remove', 'image', image.name]);
+    if (confirmed) await _run('删除镜像', ['image', 'remove', image.name]);
   }
 
   Future<bool> _confirm(
@@ -678,10 +784,12 @@ class _BockerHomeState extends State<BockerHome> {
             onInstall: _installDialog,
             onBuild: _buildDialog,
             onImport: _importDialog,
-            onStart: (item) => _run('启动容器', ['start', item.name]),
-            onStop: (item) => _run('停止容器', ['stop', item.name]),
-            onRestart: (item) => _run('重启容器', ['restart', item.name]),
-            onExport: (item) => _run('导出容器', ['export', item.name]),
+            onStart: (item) => _run('启动容器', ['container', 'start', item.name]),
+            onStop: (item) => _run('停止容器', ['container', 'stop', item.name]),
+            onRestart: (item) =>
+                _run('重启容器', ['container', 'restart', item.name]),
+            onExport: (item) =>
+                _run('导出容器', ['container', 'export', item.name]),
             onOpenShell: _openContainerShell,
             onExec: _execDialog,
             onSettings: _settingsDialog,
@@ -692,6 +800,7 @@ class _BockerHomeState extends State<BockerHome> {
             loading: _loading,
             error: _loadError,
             onBuild: _buildDialog,
+            onRun: _runImageDialog,
             onDelete: _deleteImage,
           );
     final rail = NavigationRail(
@@ -1012,6 +1121,7 @@ class _ImagesView extends StatelessWidget {
     required this.loading,
     required this.error,
     required this.onBuild,
+    required this.onRun,
     required this.onDelete,
   });
 
@@ -1019,6 +1129,7 @@ class _ImagesView extends StatelessWidget {
   final bool loading;
   final String? error;
   final VoidCallback onBuild;
+  final ValueChanged<ImageInfo> onRun;
   final ValueChanged<ImageInfo> onDelete;
 
   @override
@@ -1048,10 +1159,20 @@ class _ImagesView extends StatelessWidget {
               subtitle: Text(
                 '${item.size}  ${item.created}  ${item.fingerprint}',
               ),
-              trailing: IconButton(
-                tooltip: '删除镜像',
-                onPressed: loading ? null : () => onDelete(item),
-                icon: const Icon(Icons.delete_outline),
+              trailing: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  IconButton(
+                    tooltip: '创建并启动容器',
+                    onPressed: loading ? null : () => onRun(item),
+                    icon: const Icon(Icons.play_arrow),
+                  ),
+                  IconButton(
+                    tooltip: '删除镜像',
+                    onPressed: loading ? null : () => onDelete(item),
+                    icon: const Icon(Icons.delete_outline),
+                  ),
+                ],
               ),
             );
           },
@@ -1210,7 +1331,7 @@ class BockerCommand {
   BockerCommand();
 
   static const _socketName = 'bocker-gui-bundled.sock';
-  static const _helperProtocol = 3;
+  static const _helperProtocol = 4;
   Future<bool>? _rootCheck;
 
   Future<CommandResult> run(List<String> arguments) async {
@@ -1244,13 +1365,21 @@ class BockerCommand {
       }
       if (!root) {
         final socketPath = '$runtimeDir/$_socketName';
-        var helperResponse = await _send(socketPath, ['list']);
+        var helperResponse = await _send(socketPath, [
+          'container',
+          'list',
+          '--json',
+        ]);
         if (helperResponse == null) {
           final bootstrap = await _startHelper(socketPath);
           if (!bootstrap.ok) return bootstrap;
           for (var attempt = 0; attempt < 30; attempt++) {
             await Future<void>.delayed(const Duration(milliseconds: 100));
-            helperResponse = await _send(socketPath, ['list']);
+            helperResponse = await _send(socketPath, [
+              'container',
+              'list',
+              '--json',
+            ]);
             if (helperResponse != null) break;
           }
           if (helperResponse == null) {
@@ -1259,7 +1388,7 @@ class BockerCommand {
         }
       }
       final shellArguments = root
-          ? [_binary, 'in', containerName]
+          ? [_binary, 'container', 'shell', containerName]
           : [
               _binary,
               '__gui_shell',
@@ -1440,92 +1569,56 @@ class ImageTemplate {
 }
 
 List<ContainerInfo> parseContainers(String output) {
-  final rows = <ContainerInfo>[];
-  for (final line in output.split('\n')) {
-    if (line.trim().isEmpty || line.trimLeft().startsWith('NAME')) {
-      continue;
-    }
-    var fields = line.contains('\t')
-        ? line.trim().split('\t').map((field) => field.trim()).toList()
-        : line.trim().split(RegExp(r'\s{2,}'));
-    // Tabwriter normally emits two-space column padding. Some launch contexts
-    // preserve tabs or collapse that padding, so fall back to whitespace.
-    if (fields.length < 7) {
-      fields = line.trim().split(RegExp(r'\s+'));
-    }
-    if (fields.length < 7) {
-      continue;
-    }
-    rows.add(
-      ContainerInfo(
-        name: fields[0],
-        status: fields[1],
-        network: fields[2],
-        ipv4: fields[3],
-        ipv6: fields[4],
-        autostart: fields[5],
-        ports: fields.sublist(6).join(' '),
-      ),
-    );
+  try {
+    final decoded = jsonDecode(output);
+    if (decoded is! List) return const [];
+    return decoded.whereType<Map<String, dynamic>>().map((item) {
+      return ContainerInfo(
+        name: item['name'] as String? ?? '',
+        status: item['status'] as String? ?? '',
+        network: item['network'] as String? ?? '',
+        ipv4: item['ipv4'] as String? ?? '',
+        ipv6: item['ipv6'] as String? ?? '',
+        autostart: item['autostart'] as String? ?? '',
+        ports: item['ports'] as String? ?? '',
+      );
+    }).toList();
+  } on FormatException {
+    return const [];
   }
-  return rows;
 }
 
 List<ImageInfo> parseImages(String output) {
-  final images = <ImageInfo>[];
-  for (final line in output.split('\n')) {
-    final clean = line.replaceFirst(RegExp(r'^\s*[│|]\s?'), '').trim();
-    if (clean.isEmpty ||
-        clean.startsWith('别名') ||
-        clean.startsWith('─') ||
-        clean.startsWith('╭') ||
-        clean.startsWith('╰')) {
-      continue;
-    }
-    final fields = clean.split(RegExp(r'\s{2,}'));
-    if (fields.length < 4) {
-      continue;
-    }
-    images.add(
-      ImageInfo(
-        name: fields[0],
-        size: fields[1],
-        created: fields[2],
-        fingerprint: fields.sublist(3).join(' '),
-      ),
-    );
+  try {
+    final decoded = jsonDecode(output);
+    if (decoded is! List) return const [];
+    return decoded.whereType<Map<String, dynamic>>().map((item) {
+      return ImageInfo(
+        name: item['name'] as String? ?? '',
+        size: item['size'] as String? ?? '',
+        created: item['created'] as String? ?? '',
+        fingerprint: item['fingerprint'] as String? ?? '',
+      );
+    }).toList();
+  } on FormatException {
+    return const [];
   }
-  return images;
 }
 
 List<ImageTemplate> parseImageTemplates(String output) {
-  final templates = <ImageTemplate>[];
-  final fromLine = RegExp(r'^\s*[│|]\s+FROM\s+(\S+)\s+#\s+(.+)$');
-  final distroLine = RegExp(r'^\s*[│|] ([^ ].*)$');
-  var distro = '';
-  for (final line in output.split('\n')) {
-    final from = fromLine.firstMatch(line);
-    if (from != null && distro.isNotEmpty) {
-      templates.add(
-        ImageTemplate(
-          distro: distro,
-          image: from.group(1)!,
-          release: from.group(2)!.trim(),
-        ),
+  try {
+    final decoded = jsonDecode(output);
+    if (decoded is! List) return const [];
+    return decoded.whereType<Map<String, dynamic>>().map((item) {
+      return ImageTemplate(
+        distro: item['distro'] as String? ?? '',
+        release: item['release'] as String? ?? '',
+        image: item['image'] as String? ?? '',
       );
-      continue;
-    }
-    final heading = distroLine.firstMatch(line);
-    if (heading == null) continue;
-    final value = heading.group(1)!.trim();
-    if (value.isNotEmpty &&
-        !value.startsWith('可用') &&
-        !value.startsWith('可直接') &&
-        !value.startsWith('提示')) {
-      distro = value;
-    }
+    }).toList();
+  } on FormatException {
+    return const [];
   }
-  return templates;
 }
 
 class _InstallValues {
@@ -1541,6 +1634,49 @@ class _BuildValues {
   final String path;
   final String name;
   final String network;
+}
+
+class _RunImageValues {
+  const _RunImageValues(this.name, this.network, this.permission);
+  final String name;
+  final String network;
+  final String permission;
+}
+
+List<String> templateInstallArguments({
+  required String image,
+  required String name,
+  required String network,
+  required String permission,
+}) {
+  return [
+    'template',
+    'install',
+    image,
+    '--network',
+    network,
+    '--permission',
+    permission,
+    if (name.isNotEmpty) ...['--name', name],
+  ];
+}
+
+List<String> imageRunArguments({
+  required String image,
+  required String name,
+  required String network,
+  required String permission,
+}) {
+  return [
+    'image',
+    'run',
+    image,
+    '--name',
+    name,
+    '--permission',
+    permission,
+    if (network != 'default') ...['--network', network],
+  ];
 }
 
 class _ImportValues {

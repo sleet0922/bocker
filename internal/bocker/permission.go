@@ -18,7 +18,7 @@ func ParsePermissionMode(value string) (PermissionMode, error) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "", string(PermissionNormal):
 		return PermissionNormal, nil
-	case string(PermissionSuper), "privileged", "root":
+	case string(PermissionSuper):
 		return PermissionSuper, nil
 	default:
 		return "", fmt.Errorf("权限 %q 无效，只支持 normal 或 super", value)
@@ -31,7 +31,7 @@ func permissionModeFromArgs(args []string) (PermissionMode, []string, error) {
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch arg {
-		case "--permission", "--privilege", "-P":
+		case "--permission":
 			if i+1 >= len(args) {
 				return "", nil, fmt.Errorf("%s 需要 normal 或 super", arg)
 			}
@@ -41,12 +41,12 @@ func permissionModeFromArgs(args []string) (PermissionMode, []string, error) {
 			}
 			mode = parsed
 			i++
-		case "--permission=normal", "--privilege=normal":
+		case "--permission=normal":
 			mode = PermissionNormal
-		case "--permission=super", "--privilege=super":
+		case "--permission=super":
 			mode = PermissionSuper
 		default:
-			if strings.HasPrefix(arg, "--permission=") || strings.HasPrefix(arg, "--privilege=") {
+			if strings.HasPrefix(arg, "--permission=") {
 				return "", nil, fmt.Errorf("权限模式 %q 无效，只支持 normal 或 super", strings.SplitN(arg, "=", 2)[1])
 			}
 			clean = append(clean, arg)
@@ -57,8 +57,7 @@ func permissionModeFromArgs(args []string) (PermissionMode, []string, error) {
 
 func hasPermissionOverride(args []string) bool {
 	for _, arg := range args {
-		if arg == "--permission" || arg == "--privilege" || arg == "-P" ||
-			strings.HasPrefix(arg, "--permission=") || strings.HasPrefix(arg, "--privilege=") {
+		if arg == "--permission" || strings.HasPrefix(arg, "--permission=") {
 			return true
 		}
 	}

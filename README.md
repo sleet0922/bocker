@@ -33,8 +33,12 @@ make build-cli
 
 ```bash
 install -m 0755 bocker /usr/local/bin/bocker
+install -m 0644 completions/bocker /usr/share/bash-completion/completions/bocker
 bocker --version
 ```
+
+Debian 包会自动安装 Bash 补全文件。重新打开终端后，输入 `bocker ` 并按 Tab
+即可补全 `template`、`image`、`container`、动作和常用选项。
 
 第一次执行需要等待 Bocker 解压运行时、启动 `bocker.service` 并初始化默认
 存储池。服务日志位于 `/var/lib/bocker/logs/`。
@@ -65,7 +69,7 @@ make build-gui
 应用菜单和桌面启动器；不要通过 `sudo` 执行此命令。
 从 GitHub 下载 GUI 包时，解压后进入 `bundle/` 执行 `./install_desktop.sh` 即可完成
 同样的桌面安装。
-`make build` 保留为 `make build-cli` 的兼容别名。
+`make build` 是 `make build-cli` 的简写。
 
 源码采用标准 Go 项目布局：`cmd/bocker/` 是精简的可执行入口，
 `internal/bocker/` 包含 CLI 命令、容器运行时适配和对应测试，`gui/` 是独立的
@@ -76,16 +80,17 @@ Flutter 桌面前端。
 推荐明确指定 NAT 网络和镜像，避免进入交互菜单：
 
 ```bash
-bocker install --network nat --permission normal debian:12 debian-12
-bocker list
-bocker exec debian-12 cat /etc/os-release
-bocker in debian-12
+bocker template list
+bocker template install debian:12 --name debian-12 --network nat --permission normal
+bocker container list
+bocker container exec debian-12 cat /etc/os-release
+bocker container shell debian-12
 ```
 
 也可以运行交互式安装：
 
 ```bash
-bocker install
+bocker template install
 ```
 
 它会依次让你选择网络模式、权限模式、发行版和版本，然后询问容器名。
@@ -93,58 +98,74 @@ bocker install
 
 ## 4. 命令参考
 
-### 容器和镜像
+命令使用统一的 `bocker <资源> <动作>` 结构。三个资源分别是远程模板
+`template`、本地镜像 `image` 和已有容器 `container`。
+
+所有操作都必须使用完整的资源命令，不提供顶层快捷命令。省略模板、镜像或
+容器名时，可交互操作会打开选择菜单。
+
+只输入 `bocker template`、`bocker image` 或 `bocker container` 会打开对应的
+动作菜单。列表命令的 `--json` 用于 GUI 和脚本，它会输出机器可解析的 JSON
+数组；普通终端查看列表时不需要使用。
+
+### 远程模板
 
 | 命令 | 作用 |
 | --- | --- |
-| `bocker install [image] [name]` | 下载镜像并创建、启动容器 |
-| `bocker list` / `bocker ls` | 列出容器 |
-| `bocker start [name]` | 启动容器 |
-| `bocker stop [name]` | 停止容器 |
-| `bocker restart [name]` | 重启容器 |
-| `bocker in [name]` | 进入容器 shell |
-| `bocker exec <name> <command...>` | 在容器内执行非交互命令 |
-| `bocker remove container [name]` | 删除容器 |
-| `bocker remove image [alias]` | 删除镜像别名 |
-| `bocker images` | 列出本地镜像别名 |
-| `bocker export [name]` | 导出容器备份 |
-| `bocker import [file] [name]` | 导入容器备份 |
+| `bocker template` | 打开模板操作菜单 |
+| `bocker template list [--json]` | 列出 Debian、Ubuntu 等可以安装的模板 |
+| `bocker template install [template] [--name <name>]` | 选择或指定模板，创建并启动容器 |
 
-旧别名 `run`（等同于 `create`）和 `uninstall`（等同于删除容器）仍保留兼容。
-
-### 构建和创建
+### 本地镜像
 
 | 命令 | 作用 |
 | --- | --- |
-| `bocker build [Incusfile]` | 构建镜像，默认读取当前目录的 `./Incusfile` |
-| `bocker build --name <name> [Incusfile]` | 覆盖镜像别名 |
-| `bocker build --network bridge\|nat [Incusfile]` | 覆盖构建阶段网络模式 |
-| `bocker build show` | 列出可用于 `FROM` 的远程基础镜像 |
-| `bocker create [name]` | 从当前目录的 `Incusfile` 创建并启动容器 |
+| `bocker image` | 打开镜像操作菜单 |
+| `bocker image build [Incusfile]` | 构建镜像，默认读取当前目录的 `./Incusfile` |
+| `bocker image build --name <name> [Incusfile]` | 覆盖镜像名称 |
+| `bocker image build --network bridge\|nat [Incusfile]` | 覆盖构建阶段网络模式 |
+| `bocker image list [--json]` | 列出本地镜像 |
+| `bocker image run [image] [--name <name>]` | 选择或指定本地镜像，创建并启动容器 |
+| `bocker image remove [image]` | 删除本地镜像 |
 
-典型流程是先 `build` 发布镜像，再用 `create` 启动容器：
+典型流程是先构建本地镜像，再用该镜像启动容器：
 
 ```bash
-bocker build Incusfile
-bocker create
-bocker list
+bocker image build --name hello-image Incusfile
+bocker image run hello-image --name hello
+bocker container list
 ```
+
+### 已有容器
+
+| 命令 | 作用 |
+| --- | --- |
+| `bocker container` | 打开容器操作菜单 |
+| `bocker container list [--json]` | 列出容器 |
+| `bocker container start [name]` | 启动容器 |
+| `bocker container stop [name]` | 停止容器 |
+| `bocker container restart [name]` | 重启容器 |
+| `bocker container shell [name]` | 进入容器 shell |
+| `bocker container exec <name> <command...>` | 在容器内执行非交互命令 |
+| `bocker container remove [name]` | 删除容器 |
+| `bocker container export [name]` | 导出容器备份 |
+| `bocker container import [file] [name]` | 导入容器备份 |
 
 ### 容器设置
 
 ```bash
-bocker set <name> port 8080:80/tcp
-bocker set <name> port list
-bocker set <name> port rm 8080/tcp
-bocker set <name> domain web.test
-bocker set <name> domain --unset
-bocker set <name> autostart on
-bocker set <name> network nat
+bocker container set <name> port 8080:80/tcp
+bocker container set <name> port list
+bocker container set <name> port rm 8080/tcp
+bocker container set <name> domain web.test
+bocker container set <name> domain --unset
+bocker container set <name> autostart on
+bocker container set <name> network nat
 ```
 
-切换网络前必须先停止容器。省略 `set` 的子命令会进入设置菜单。
+切换网络前必须先执行 `bocker container stop <name>`。省略 `set` 的设置项会进入菜单。
 
-### 全局选项和环境变量
+### 网络、权限和环境变量
 
 ```text
 --network bridge|nat
@@ -156,8 +177,8 @@ BOCKER_NAT_IPV6_CIDR=<IPv6 CIDR|auto|none>
 BOCKER_STATE_DIR=<状态目录>
 ```
 
-命令行选项优先于环境变量。`BOCKER_MACVLAN_PARENT` 仍作为旧版本的网卡
-配置别名接受。
+`--network` 用于模板安装、镜像构建/运行和容器导入；`--permission` 用于模板
+安装、镜像运行和容器导入。网络命令行选项优先于 `BOCKER_NETWORK` 环境变量。
 
 ## 5. 网络模式
 
@@ -179,9 +200,9 @@ Bocker 对外只接受 `bridge` 和 `nat`，不接受底层 Incus 名称如 `mac
 权限按容器保存，默认是 `normal`：
 
 ```bash
-bocker install --permission normal debian:12 debian-normal
-bocker install --permission super debian:12 debian-super
-bocker create --permission super
+bocker template install debian:12 --name debian-normal --permission normal
+bocker template install debian:12 --name debian-super --permission super
+bocker image run trusted-image --name trusted --permission super
 ```
 
 `super` 会启用嵌套 LXC、移除容器 AppArmor 和 capability 限制，并放宽容器
@@ -190,7 +211,7 @@ bocker create --permission super
 
 ## 7. Incusfile
 
-`Incusfile` 是 Bocker 的构建描述文件。`bocker build` 的上下文目录就是
+`Incusfile` 是 Bocker 的构建描述文件。`bocker image build` 的上下文目录就是
 `Incusfile` 所在目录，`COPY` 不能访问上下文之外的文件或符号链接。
 
 ### 指令
@@ -223,9 +244,9 @@ AUTOSTART on
 ```
 
 ```bash
-bocker build Incusfile
-bocker create
-bocker exec hello cat /hello.txt
+bocker image build --name hello-image Incusfile
+bocker image run hello-image --name hello
+bocker container exec hello cat /hello.txt
 ```
 
 ### 运行应用
@@ -296,7 +317,7 @@ tail -n 80 /var/lib/bocker/logs/incusd.log
 - 报 `Bocker must run as root`：切换到 root，或使用 `sudo bocker ...`。
 - 服务因 `setfattr` 退出：确认已安装 `attr`；root 首次运行会自动处理。
 - Bridge 无法创建：设置正确的 `BOCKER_BRIDGE_PARENT`，或改用 `--network nat`。
-- `bocker create` 找不到 `Incusfile`：在包含 `./Incusfile` 的目录执行。
+- `image build` 找不到 `Incusfile`：检查文件路径和当前工作目录。
 - 镜像列表获取失败：检查宿主机能否访问 `https://images.linuxcontainers.org/`。
 
 ## 9. 状态目录
@@ -304,7 +325,7 @@ tail -n 80 /var/lib/bocker/logs/incusd.log
 默认状态目录是 `/var/lib/bocker`，可通过 `BOCKER_STATE_DIR` 修改：
 
 ```bash
-BOCKER_STATE_DIR=/srv/bocker bocker list
+BOCKER_STATE_DIR=/srv/bocker bocker container list
 ```
 
 该目录包含容器、镜像、Unix socket、日志、运行时文件和守护进程状态。

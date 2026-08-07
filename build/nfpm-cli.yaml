@@ -9,3 +9,9 @@ description: Bocker CLI
 contents:
   - src: ./bocker
     dst: /usr/bin/bocker
+    file_info:
+      mode: 0755
+  - src: ./completions/bocker
+    dst: /usr/share/bash-completion/completions/bocker
+    file_info:
+      mode: 0644

@@ -65,41 +65,11 @@ func CmdStart(name string) error {
 	return nil
 }
 
-// CmdRemove 删除容器或镜像。
-// 用法:
-//
-//	bocker remove                     # 交互式: 先选容器/镜像, 再选具体项
-//	bocker remove container [名]      # 删容器 (省略名则交互式选择)
-//	bocker remove image [别名]        # 删镜像 (省略别名则交互式选择)
-//	bocker remove [容器名]            # 兼容旧语法 (无子目标时按容器处理)
-//
-// 旧命令 uninstall 作为别名保留, 行为同 remove container。
-func CmdRemove(args []string) error {
-	// 有子目标参数
-	if len(args) >= 1 {
-		sub := strings.ToLower(args[0])
-		switch sub {
-		case "container", "ct", "c":
-			return removeContainer(args[1:])
-		case "image", "img", "i":
-			return removeImage(args[1:])
-		}
-		// 兼容旧语法: 第一个参数像容器名 → 按容器处理
-		return removeContainer(args)
+// CmdRemoveContainer 删除容器，并清理 /etc/hosts 与主机路由残留。
+func CmdRemoveContainer(args []string) error {
+	if len(args) > 1 {
+		return fmt.Errorf("container remove 最多接受一个容器名")
 	}
-	// 无参数: 交互式选容器/镜像
-	choice := selectMenu([]string{"容器 (container)", "镜像 (image)"}, "选择要删除的对象类型 (↑↓ 选择, Enter 确认, q 退出)")
-	if choice < 0 {
-		return nil
-	}
-	if choice == 0 {
-		return removeContainer(nil)
-	}
-	return removeImage(nil)
-}
-
-// removeContainer 删除容器, 并清理 /etc/hosts 与 /32 路由残留。
-func removeContainer(args []string) error {
 	name := ""
 	if len(args) >= 1 {
 		name = args[0]
@@ -139,9 +109,13 @@ func removeContainer(args []string) error {
 	return nil
 }
 
-// removeImage 删除镜像别名及其指向的镜像 (无其他别名引用时一并删镜像)。
-func removeImage(args []string) error {
+// CmdRemoveImage 删除镜像别名及其指向的镜像 (无其他别名引用时一并删镜像)。
+func CmdRemoveImage(args []string) error {
+	if len(args) > 1 {
+		return fmt.Errorf("image remove 最多接受一个镜像名")
+	}
 	alias := ""
+	interactive := len(args) == 0
 	if len(args) >= 1 {
 		alias = args[0]
 	} else {
@@ -165,11 +139,12 @@ func removeImage(args []string) error {
 	if _, err := client.GetImageAliasEntry(alias); err != nil {
 		return fmt.Errorf("镜像别名 %s 不存在", alias)
 	}
-	// 二次确认
-	confirm := selectMenu([]string{"确认删除", "取消"}, fmt.Sprintf("确认删除镜像 %s? (↑↓ 选择, Enter 确认)", alias))
-	if confirm != 0 {
-		fmt.Println("已取消")
-		return nil
+	if interactive {
+		confirm := selectMenu([]string{"确认删除", "取消"}, fmt.Sprintf("确认删除镜像 %s? (↑↓ 选择, Enter 确认)", alias))
+		if confirm != 0 {
+			fmt.Println("已取消")
+			return nil
+		}
 	}
 	if err := client.DeleteImageByAlias(alias); err != nil {
 		return err
@@ -199,8 +174,8 @@ func CmdStop(name string) error {
 	return nil
 }
 
-// CmdIn 进入容器（交互式透传 stdio）。
-func CmdIn(name string) error {
+// CmdShell 进入容器（交互式透传 stdio）。
+func CmdShell(name string) error {
 	return NewIncusClient().Exec(name)
 }
 
@@ -220,38 +195,37 @@ func CmdRestart(name string) error {
 }
 
 // CmdExec 在容器内执行命令（非交互，stdout/stderr 实时输出）。
-// 语法: bocker exec <容器名> <命令...>
-// 示例: bocker exec web ls -la /app
+// 语法: bocker container exec <容器名> <命令...>
+// 示例: bocker container exec web ls -la /app
 //
-//	bocker exec web "curl -s http://localhost/health"
+//	bocker container exec web "curl -s http://localhost/health"
 //
 // 命令通过 /bin/sh -c 执行，支持管道、重定向等 shell 特性。
-// 省略容器名时弹出交互式选择菜单（与 start/stop/in 一致）。
 func CmdExec(args []string) error {
-	var name string
-	var cmdArgs []string
-	if len(args) >= 1 {
-		name = args[0]
-		cmdArgs = args[1:]
-	} else {
-		// 交互式选择容器
-		n, err := selectContainer("选择要执行命令的容器")
-		if err != nil {
-			return err
-		}
-		if n == "" {
-			return nil
-		}
-		name = n
+	if len(args) < 2 {
+		return fmt.Errorf("用法: bocker container exec <name> <command...>")
 	}
-	if len(cmdArgs) == 0 {
-		return fmt.Errorf("请提供要在 %s 内执行的命令\n示例: bocker exec %s ls -la /app\n      bocker exec %s curl -s http://localhost/health", name, name, name)
-	}
+	name := args[0]
+	cmdArgs := args[1:]
 	command := strings.Join(cmdArgs, " ")
 	if err := NewIncusClient().ExecStreaming(name, command, nil); err != nil {
 		return fmt.Errorf("exec %s 失败: %w", name, err)
 	}
 	return nil
+}
+
+// CmdExecInteractive 选择容器并询问要执行的命令。
+func CmdExecInteractive() error {
+	name, err := selectContainer("选择要执行命令的容器")
+	if err != nil || name == "" {
+		return err
+	}
+	command := prompt("要执行的命令: ")
+	if strings.TrimSpace(command) == "" {
+		fmt.Println("未输入命令，已取消。")
+		return nil
+	}
+	return CmdExec([]string{name, command})
 }
 
 // CmdExport 导出容器为 ./容器名_YYYYMMDD_HHMMSS.tar.gz。

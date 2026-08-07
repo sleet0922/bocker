@@ -21,7 +21,7 @@ import (
 const (
 	guiHelperChildEnv = "BOCKER_GUI_HELPER_CHILD"
 	guiHelperMaxInput = 1 << 20
-	guiHelperProtocol = 3
+	guiHelperProtocol = 4
 )
 
 type guiHelperRequest struct {
@@ -187,11 +187,11 @@ func handleGUIHelperConnection(connection net.Conn, binary string) {
 
 func handleGUIInteractiveConnection(connection net.Conn, reader io.Reader, binary string, request guiHelperRequest) {
 	args := request.Arguments
-	if len(args) != 2 || args[0] != "in" {
+	if len(args) != 3 || args[0] != "container" || args[1] != "shell" {
 		_, _ = fmt.Fprintln(connection, "GUI 交互终端请求无效")
 		return
 	}
-	if err := validateBockerName(args[1]); err != nil {
+	if err := validateBockerName(args[2]); err != nil {
 		_, _ = fmt.Fprintf(connection, "容器名称无效: %v\n", err)
 		return
 	}
@@ -248,7 +248,7 @@ func runGUIShellClient(args []string) error {
 		width, height = w, h
 	}
 	request := guiHelperRequest{
-		Arguments:   []string{"in", name},
+		Arguments:   []string{"container", "shell", name},
 		Interactive: true,
 		Width:       width,
 		Height:      height,
@@ -280,7 +280,7 @@ func validateGUIHelperArguments(args []string) error {
 		}
 	}
 	switch args[0] {
-	case "list", "ls", "images", "image", "start", "stop", "restart", "exec", "set", "export", "import", "install", "i", "remove", "rm", "build", "create", "run":
+	case "template", "image", "container":
 		return nil
 	default:
 		return fmt.Errorf("GUI 不支持命令: %s", args[0])

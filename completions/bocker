@@ -1,0 +1,72 @@
+_bocker_completion() {
+    local cur prev resource action options
+    COMPREPLY=()
+    cur="${COMP_WORDS[COMP_CWORD]}"
+    prev=""
+    if (( COMP_CWORD > 0 )); then
+        prev="${COMP_WORDS[COMP_CWORD-1]}"
+    fi
+
+    case "$prev" in
+        --network)
+            mapfile -t COMPREPLY < <(compgen -W "nat bridge" -- "$cur")
+            return
+            ;;
+        --permission)
+            mapfile -t COMPREPLY < <(compgen -W "normal super" -- "$cur")
+            return
+            ;;
+        --name)
+            return
+            ;;
+    esac
+
+    if (( COMP_CWORD == 1 )); then
+        mapfile -t COMPREPLY < <(compgen -W "template image container help version" -- "$cur")
+        return
+    fi
+
+    resource="${COMP_WORDS[1]}"
+    if (( COMP_CWORD == 2 )); then
+        case "$resource" in
+            template) options="list install" ;;
+            image) options="build list run remove" ;;
+            container) options="list shell exec start stop restart set export import remove" ;;
+            *) return ;;
+        esac
+        mapfile -t COMPREPLY < <(compgen -W "$options" -- "$cur")
+        return
+    fi
+
+    action="${COMP_WORDS[2]}"
+    case "$resource:$action" in
+        template:list|image:list|container:list)
+            options="--json"
+            ;;
+        template:install|image:run)
+            options="--name --network --permission"
+            ;;
+        image:build)
+            options="--name --network --help"
+            ;;
+        container:import)
+            options="--network --permission"
+            ;;
+        *)
+            options=""
+            ;;
+    esac
+
+    if [[ "$cur" == -* ]]; then
+        mapfile -t COMPREPLY < <(compgen -W "$options" -- "$cur")
+        return
+    fi
+
+    case "$resource:$action" in
+        image:build|container:import)
+            mapfile -t COMPREPLY < <(compgen -f -- "$cur")
+            ;;
+    esac
+}
+
+complete -F _bocker_completion bocker

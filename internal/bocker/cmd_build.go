@@ -12,8 +12,8 @@ import (
 	"time"
 )
 
-// CmdBuild 从 Incusfile 构建镜像 (类似 docker build)。
-// 构建完成后用 'bocker create' 启动容器。
+// CmdBuild 从 Incusfile 构建镜像。
+// 构建完成后用 'bocker image run' 启动容器。
 //
 // 用法:
 //
@@ -26,11 +26,6 @@ func CmdBuild(args []string) error {
 	if err != nil {
 		return err
 	}
-	// 子命令: bocker build show - 列出可用于 FROM 的基础镜像
-	if len(args) > 0 && (args[0] == "show" || args[0] == "list" || args[0] == "images") {
-		return showBuildBaseImages()
-	}
-
 	overrideName := ""
 	incusfilePath := ""
 
@@ -38,10 +33,7 @@ func CmdBuild(args []string) error {
 	for i < len(args) {
 		arg := args[i]
 		switch arg {
-		case "--image-only", "--no-run":
-			// 兼容旧参数: build 现在始终只构建镜像，这两个标志已无意义，静默接受
-			i++
-		case "--name", "-n":
+		case "--name":
 			if i+1 >= len(args) {
 				return fmt.Errorf("--name 需要参数")
 			}
@@ -126,20 +118,19 @@ func CmdBuild(args []string) error {
 	}
 
 	fmt.Printf("\n✔ 镜像 %s 构建完成\n", alias)
-	fmt.Printf("  使用 'bocker create' 启动容器\n")
+	fmt.Printf("  使用 'bocker image run %s --name <容器名>' 启动容器\n", alias)
 	return nil
 }
 
 func buildUsage() string {
-	return `bocker build - 从 Incusfile 构建镜像 (支持多阶段构建)
+	return `bocker image build - 从 Incusfile 构建镜像 (支持多阶段构建)
 
 用法:
-  bocker build [Incusfile]                构建镜像 (默认 ./Incusfile)
-  bocker build --name <name> [Incusfile]  覆盖镜像别名
-  bocker build --network <bridge|nat> [Incusfile]  覆盖构建网络
-  bocker build show                       列出可用于 FROM 的基础镜像
+  bocker image build [Incusfile]                         构建镜像 (默认 ./Incusfile)
+  bocker image build --name <name> [Incusfile]           覆盖镜像别名
+  bocker image build --network <bridge|nat> [Incusfile]  覆盖构建网络
 
-构建完成后用 'bocker create' 启动容器。
+构建完成后用 'bocker image run <image> --name <name>' 启动容器。
 
 Incusfile 指令:
   FROM <image> [AS <name>]   基础镜像，开始新构建阶段 (多阶段)
@@ -194,17 +185,39 @@ TEMP 块示例 (单 FROM all-in-one, 编译产物隔离):
 `
 }
 
-// showBuildBaseImages 列出远程镜像源中可用于 FROM 指令的基础镜像。
-// 输出按发行版分组，每行一个版本，可直接复制到 Incusfile 的 FROM 行。
-func showBuildBaseImages() error {
-	fmt.Println("正在从镜像源获取可用基础镜像 ...")
+type templateListItem struct {
+	Distro  string `json:"distro"`
+	Release string `json:"release"`
+	Image   string `json:"image"`
+}
+
+// CmdTemplateList 列出远程镜像源中可以安装的模板。
+func CmdTemplateList(args []string) error {
+	jsonOutput, err := parseJSONOutputOption(args)
+	if err != nil {
+		return fmt.Errorf("template list: %w", err)
+	}
+	if !jsonOutput {
+		fmt.Println("正在从镜像源获取可安装模板 ...")
+	}
 	client := NewIncusClient()
 	groups, err := client.ListImages()
 	if err != nil {
 		return err
 	}
 	if len(groups) == 0 {
-		return fmt.Errorf("未找到可用基础镜像")
+		return fmt.Errorf("未找到可安装模板")
+	}
+	if jsonOutput {
+		items := make([]templateListItem, 0)
+		for _, group := range groups {
+			for _, version := range group.Versions {
+				items = append(items, templateListItem{
+					Distro: group.Distro, Release: version.Release, Image: version.Image,
+				})
+			}
+		}
+		return json.NewEncoder(os.Stdout).Encode(items)
 	}
 
 	arch := archName()
@@ -212,8 +225,8 @@ func showBuildBaseImages() error {
 	for _, g := range groups {
 		total += len(g.Versions)
 	}
-	fmt.Printf("╭─ 可用基础镜像 (架构: %s, 共 %d 个发行版 %d 个版本)\n", arch, len(groups), total)
-	fmt.Println("│ 可直接用于 Incusfile 的 FROM 指令")
+	fmt.Printf("╭─ 可安装模板 (架构: %s, 共 %d 个发行版 %d 个版本)\n", arch, len(groups), total)
+	fmt.Println("│ 模板名可用于 template install，也可写入 Incusfile 的 FROM")
 	fmt.Println("│")
 	for _, g := range groups {
 		fmt.Printf("│ %s\n", g.Distro)
@@ -222,7 +235,7 @@ func showBuildBaseImages() error {
 		}
 	}
 	fmt.Println("│")
-	fmt.Println("│ 提示: FROM 同时接受 debian/12 与 debian:12 两种写法")
+	fmt.Println("│ 安装示例: bocker template install debian/12 --name demo")
 	fmt.Println("╰─")
 	return nil
 }
@@ -483,7 +496,7 @@ func resolvePriorStage(stages []Stage, current int, reference string) (int, erro
 	return 0, fmt.Errorf("COPY --from=%s: 找不到该阶段 (可用: %v)", reference, stageNames(stages, current))
 }
 
-// buildImageProperties 将 Incusfile 的运行时指令编码为镜像属性，供 bocker create 读取。
+// buildImageProperties 将 Incusfile 的运行时指令编码为镜像属性，供 bocker image run 读取。
 func buildImageProperties(f *Incusfile) map[string]string {
 	p := map[string]string{}
 	if f.Name != "" {
@@ -602,7 +615,7 @@ func runFromBuiltImage(client *IncusClient, alias string, f *Incusfile, networkM
 
 	// 检查同名容器是否已存在
 	if existing, _ := client.GetContainer(name); existing != nil {
-		return fmt.Errorf("容器 %s 已存在，请先卸载或使用 --name 指定其他名称", name)
+		return fmt.Errorf("容器 %s 已存在，请先删除或使用 --name 指定其他名称", name)
 	}
 
 	fmt.Printf("▶ 启动容器 %s (镜像 %s) ...\n", name, alias)
@@ -872,13 +885,13 @@ func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
-// CmdCreate 从 ./Incusfile 读取镜像别名并创建+启动容器 (类似 docker run)。
-// 镜像必须已由 'bocker build' 构建完成。EXPOSE/DOMAIN/AUTOSTART 直接取自 Incusfile。
-//
-// 用法:
-//
-//	bocker create [容器名]   从 ./Incusfile 读取镜像名并创建+启动容器
-func CmdCreate(args []string) error {
+// CmdRun 从本地镜像创建并启动容器，并恢复构建时保存的运行配置。
+func CmdRun(args []string) error {
+	name, args, err := nameOptionFromArgs(args)
+	if err != nil {
+		return err
+	}
+	permissionOverride := hasPermissionOverride(args)
 	permissionMode, args, err := permissionModeFromArgs(args)
 	if err != nil {
 		return err
@@ -888,44 +901,78 @@ func CmdCreate(args []string) error {
 	if err != nil {
 		return err
 	}
-	// 从当前目录的 Incusfile 读取
-	f, err := parseIncusfile("")
-	if err != nil {
-		return fmt.Errorf("读取 ./Incusfile 失败: %w\n提示: bocker create 从当前目录的 Incusfile 读取镜像名，请先创建 Incusfile 并用 'bocker build' 构建镜像", err)
-	}
-	if f.Network != "" && !networkOverride {
-		networkMode, err = ParseNetworkMode(f.Network)
-		if err != nil {
-			return err
-		}
-	}
-
-	alias := f.Name
-	if alias == "" {
-		alias = defaultNameFromImage(f.From) + "-built"
-	}
-	if err := validateBockerName(alias); err != nil {
-		return fmt.Errorf("镜像别名 %q 无效: %w", alias, err)
-	}
 	if len(args) > 1 {
-		return fmt.Errorf("create 只接受一个可选容器名")
-	}
-
-	// 可选容器名覆盖 (省略则用 Incusfile 的 NAME，再否则由镜像别名派生)
-	if len(args) >= 1 {
-		if err := validateBockerName(args[0]); err != nil {
-			return fmt.Errorf("容器名称 %q 无效: %w", args[0], err)
-		}
-		f.Name = args[0]
-	}
-	displayName := f.Name
-	if displayName == "" {
-		displayName = defaultNameFromImage(alias)
+		return fmt.Errorf("用法: bocker image run [image] [--name <name>]")
 	}
 
 	client := NewIncusClient()
+	alias := ""
+	interactiveImage := len(args) == 0
+	if !interactiveImage {
+		alias = args[0]
+	} else {
+		aliases, listErr := client.ListLocalImageAliases()
+		if listErr != nil {
+			return fmt.Errorf("读取本地镜像列表失败: %w", listErr)
+		}
+		if len(aliases) == 0 {
+			fmt.Println("本地没有可运行的镜像。请先执行 'bocker image build [Incusfile]'。")
+			return nil
+		}
+		choice := selectMenu(aliases, "选择要运行的本地镜像 (↑↓ 选择, Enter 确认, q 退出)")
+		if choice < 0 {
+			return nil
+		}
+		alias = aliases[choice]
+	}
+	if err := validateBockerName(alias); err != nil {
+		return fmt.Errorf("镜像名称 %q 无效: %w", alias, err)
+	}
+	if name == "" {
+		defaultName := defaultNameFromImage(alias)
+		name = prompt(fmt.Sprintf("容器名称 (回车默认 %s): ", defaultName))
+		if name == "" {
+			name = defaultName
+		}
+	}
+	if err := validateBockerName(name); err != nil {
+		return fmt.Errorf("容器名称 %q 无效: %w", name, err)
+	}
 
-	fmt.Printf("▶ 从镜像 %s 启动容器 %s\n", alias, displayName)
+	if interactiveImage && !networkOverride {
+		selected, ok := selectNetworkMode(networkMode)
+		if !ok {
+			return nil
+		}
+		networkMode = selected
+		networkOverride = true
+	}
+	if interactiveImage && !permissionOverride {
+		selected, ok := selectPermissionMode(permissionMode)
+		if !ok {
+			return nil
+		}
+		permissionMode = selected
+	}
+
+	properties, err := client.GetImageProperties(alias)
+	if err != nil {
+		return fmt.Errorf("读取本地镜像 %s 失败: %w", alias, err)
+	}
+	f, err := runtimeConfigFromImageProperties(name, properties)
+	if err != nil {
+		return fmt.Errorf("镜像 %s 的运行配置无效: %w", alias, err)
+	}
+	if !networkOverride {
+		if value := properties[containerNetworkConfig]; value != "" {
+			networkMode, err = ParseNetworkMode(value)
+			if err != nil {
+				return fmt.Errorf("镜像 %s 的网络配置无效: %w", alias, err)
+			}
+		}
+	}
+
+	fmt.Printf("▶ 从本地镜像 %s 创建并启动容器 %s\n", alias, name)
 	if len(f.Exposes) > 0 {
 		fmt.Printf("  EXPOSE: %s\n", exposeString(f.Exposes))
 	}
@@ -938,4 +985,20 @@ func CmdCreate(args []string) error {
 	fmt.Println()
 
 	return runFromBuiltImage(client, alias, f, networkMode, permissionMode)
+}
+
+func runtimeConfigFromImageProperties(name string, properties map[string]string) (*Incusfile, error) {
+	f := &Incusfile{
+		Name:    name,
+		Exposes: parseExposeString(properties["user.bocker.expose"]),
+		Domain:  properties["user.bocker.domain"],
+	}
+	if value := properties["user.bocker.autostart"]; value != "" {
+		autostart, err := parseBoolPayload(value)
+		if err != nil {
+			return nil, fmt.Errorf("AUTOSTART: %w", err)
+		}
+		f.Autostart = &autostart
+	}
+	return f, nil
 }

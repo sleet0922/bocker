@@ -6,8 +6,12 @@ import (
 )
 
 // CmdInstall 两级菜单：先选发行版，再选具体版本，最后安装。
-// 若传入参数：bocker install [镜像名/引用] [容器名] 则跳过菜单直接安装。
+// 若传入模板：bocker template install <template> [--name <name>]，则直接安装。
 func CmdInstall(args []string) error {
+	nameOverride, args, err := nameOptionFromArgs(args)
+	if err != nil {
+		return err
+	}
 	permissionOverride := hasPermissionOverride(args)
 	permissionMode, args, err := permissionModeFromArgs(args)
 	if err != nil {
@@ -19,18 +23,16 @@ func CmdInstall(args []string) error {
 		return err
 	}
 	client := NewIncusClient()
-	if len(args) > 2 {
-		return fmt.Errorf("install 只接受镜像引用和可选容器名")
+	if len(args) > 1 {
+		return fmt.Errorf("template install 只接受一个模板名；容器名请用 --name 指定")
 	}
 
 	if len(args) >= 1 {
 		imageRef := args[0]
 		// 规范化镜像引用：debian:12 -> debian/12，统一内部处理
 		imageRef = normalizeImageRef(imageRef)
-		name := ""
-		if len(args) >= 2 {
-			name = args[1]
-		} else {
+		name := nameOverride
+		if name == "" {
 			name = defaultNameFromImage(args[0])
 		}
 		if err := validateBockerName(name); err != nil {
@@ -96,9 +98,12 @@ func CmdInstall(args []string) error {
 
 	// 容器名
 	defaultName := defaultNameFromImage(version.Image)
-	name := prompt(fmt.Sprintf("容器名称 (回车默认 %s): ", defaultName))
+	name := nameOverride
 	if name == "" {
-		name = defaultName
+		name = prompt(fmt.Sprintf("容器名称 (回车默认 %s): ", defaultName))
+		if name == "" {
+			name = defaultName
+		}
 	}
 	if err := validateBockerName(name); err != nil {
 		return fmt.Errorf("容器名称 %q 无效: %w", name, err)

@@ -7,6 +7,9 @@ bundle_dir="$gui_dir/build/linux/x64/release/bundle"
 
 (cd "$project_dir" && make build-cli)
 (cd "$gui_dir" && flutter build linux --release)
+find "$bundle_dir" -type d -exec chmod 0755 {} +
+find "$bundle_dir" -type f -exec chmod 0644 {} +
+chmod 0755 "$bundle_dir/bocker_gui"
 install -m 0755 "$project_dir/bocker" "$bundle_dir/bocker"
 install -m 0755 "$gui_dir/install_desktop.sh" "$bundle_dir/install_desktop.sh"
 install -m 0644 "$project_dir/logo.png" "$bundle_dir/logo.png"

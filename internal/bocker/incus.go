@@ -84,14 +84,10 @@ const (
 	defaultNICName      = "eth0"
 	defaultBridgeParent = "ens18"
 	bridgeParentEnv     = "BOCKER_BRIDGE_PARENT"
-	legacyParentEnv     = "BOCKER_MACVLAN_PARENT"
 )
 
 func detectBridgeParent() (string, error) {
 	parent := strings.TrimSpace(os.Getenv(bridgeParentEnv))
-	if parent == "" {
-		parent = strings.TrimSpace(os.Getenv(legacyParentEnv))
-	}
 	if parent != "" {
 		if !linkExists(parent) {
 			return "", fmt.Errorf("%s=%q 指定的网卡不存在或不可用", bridgeParentEnv, parent)
@@ -1196,7 +1192,7 @@ func (c *IncusClient) ExecStreaming(name, command string, extraEnv map[string]st
 }
 
 // PublishImage 将容器发布为本地 Incus 镜像，并设置别名。
-// properties 会作为镜像属性存储，供 bocker create 读取以恢复 EXPOSE/DOMAIN/AUTOSTART。
+// properties 会作为镜像属性存储，供 bocker image run 读取以恢复 EXPOSE/DOMAIN/AUTOSTART。
 func (c *IncusClient) PublishImage(containerName, alias string, properties map[string]string) error {
 	if err := c.ready(); err != nil {
 		return err
@@ -1308,7 +1304,7 @@ func (c *IncusClient) ReplaceImageAlias(alias string) error {
 }
 
 // ListLocalImageAliases 列出本地所有镜像别名 (含 bocker 构建的镜像)。
-// 用于 bocker create 的交互式选择。
+// 用于 bocker image run 的交互式选择。
 func (c *IncusClient) ListLocalImageAliases() ([]string, error) {
 	if err := c.ready(); err != nil {
 		return nil, err

@@ -3,12 +3,12 @@ GOOS ?= linux
 GOARCH ?= amd64
 CGO_ENABLED ?= 0
 LDFLAGS ?= -s -w
-VERSION ?= 2.0.2
+VERSION ?= 3.0.0
 NFPM ?= go run github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
 
 .DEFAULT_GOAL := help
 
-.PHONY: help build build-cli build-gui install-gui test vet check clean build-cli-deb build-gui-deb release
+.PHONY: help build build-cli build-gui install-gui test test-completion vet check clean build-cli-deb build-gui-deb release
 
 help:
 	@echo Targets:
@@ -17,7 +17,7 @@ help:
 	@echo "  make build-cli-deb  Build the CLI deb package using nfpm"
 	@echo "  make build-gui-deb  Build the GUI deb package using nfpm"
 	@echo "  make install-gui    Install the GUI bundle for the current desktop user"
-	@echo "  make build          Alias for build-cli (backward compatible)"
+	@echo "  make build          Alias for build-cli"
 	@echo "  make check          Run go test and go vet"
 	@echo "  make clean          Remove the standalone binary and deb artifacts"
 
@@ -26,6 +26,7 @@ build: build-cli
 build-cli: check
 	CGO_ENABLED=$(CGO_ENABLED) GOOS=$(GOOS) GOARCH=$(GOARCH) \
 		go build -trimpath -ldflags '$(LDFLAGS)' -o '$(BIN_NAME)' ./cmd/bocker
+	chmod 0755 '$(BIN_NAME)'
 	@echo "Built ./$(BIN_NAME) for $(GOOS)/$(GOARCH)"
 
 build-gui:
@@ -37,10 +38,14 @@ install-gui: build-gui
 test:
 	go test ./...
 
+test-completion:
+	bash -n completions/bocker
+	bash completions/bocker_test.bash
+
 vet:
 	go vet ./...
 
-check: test vet
+check: test test-completion vet
 
 clean:
 	rm -f '$(BIN_NAME)'
@@ -58,7 +63,7 @@ release:
 	@echo "Current version: $(VERSION)"
 	@NEW_VERSION=$$(echo $(VERSION) | awk -F. '{print $$1"."$$2"."$$3+1}'); \
 	echo "Bumping version to $$NEW_VERSION..."; \
-	sed -i 's/VERSION ?= 2.0.1
+	sed -i 's/^VERSION ?=.*/VERSION ?= '"$$NEW_VERSION"'/' Makefile; \
 	sed -i 's/const Version = ".*/const Version = "'$$NEW_VERSION'"/' internal/bocker/main.go; \
 	sed -i 's/version: .*/version: '$$NEW_VERSION'+1/' gui/pubspec.yaml; \
 	echo "Building deb packages..."; \

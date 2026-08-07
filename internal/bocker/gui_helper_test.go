@@ -26,3 +26,20 @@ func TestSetEnvironmentValueReplacesExistingEntry(t *testing.T) {
 		t.Fatalf("environment = %#v, want %#v", got, want)
 	}
 }
+
+func TestGUIHelperAcceptsOnlyResourceCommands(t *testing.T) {
+	for _, args := range [][]string{
+		{"template", "list", "--json"},
+		{"image", "list", "--json"},
+		{"container", "list", "--json"},
+	} {
+		if err := validateGUIHelperArguments(args); err != nil {
+			t.Fatalf("validateGUIHelperArguments(%#v): %v", args, err)
+		}
+	}
+	for _, args := range [][]string{{"list"}, {"images"}, {"build"}, {"run"}, {"in", "demo"}} {
+		if err := validateGUIHelperArguments(args); err == nil {
+			t.Fatalf("legacy GUI command %#v unexpectedly succeeded", args)
+		}
+	}
+}

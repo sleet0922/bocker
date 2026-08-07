@@ -2,12 +2,11 @@ import 'package:bocker_gui/main.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  test('parses the bocker list table', () {
-    const output = '''
-NAME       STATUS    NETWORK  IPV4          IPV6  AUTOSTART  PORTS
-web        running   nat      10.0.100.24   -     on         8080/tcp -> 80
-worker     stopped   bridge   -             -     off        -
-''';
+  test('parses the container list JSON', () {
+    const output = '''[
+      {"name":"web","status":"running","network":"nat","ipv4":"10.0.100.24","ipv6":"","autostart":"on","ports":"8080/tcp -> 80"},
+      {"name":"worker","status":"stopped","network":"bridge","ipv4":"","ipv6":"","autostart":"off","ports":"-"}
+    ]''';
 
     final containers = parseContainers(output);
 
@@ -18,24 +17,18 @@ worker     stopped   bridge   -             -     off        -
     expect(containers.last.network, 'bridge');
   });
 
-  test('parses a list whose terminal collapsed the column padding', () {
-    const output = 'api running nat 10.0.100.20 - on 8080/tcp -> 80\n';
+  test('rejects malformed container JSON without crashing', () {
+    const output = 'not json';
 
     final containers = parseContainers(output);
 
-    expect(containers, hasLength(1));
-    expect(containers.single.name, 'api');
-    expect(containers.single.ports, '8080/tcp -> 80');
+    expect(containers, isEmpty);
   });
 
-  test('parses local image rows and ignores the table frame', () {
-    const output = '''
-╭─ 本地镜像 (共 1 个)
-│ 别名                          大小      创建时间          指纹(短)
-│ ──────────────────────────── ──────── ──────────────── ────────────
-│ web-image                     12.0M    2026-08-07 10:20  abc123def456
-╰─
-''';
+  test('parses local image JSON', () {
+    const output = '''[
+      {"name":"web-image","size":"12.0M","created":"2026-08-07 10:20","fingerprint":"abc123def456"}
+    ]''';
 
     final images = parseImages(output);
 
@@ -45,19 +38,12 @@ worker     stopped   bridge   -             -     off        -
     expect(images.single.fingerprint, 'abc123def456');
   });
 
-  test('parses remote templates from build show', () {
-    const output = '''
-╭─ 可用基础镜像 (架构: x86_64, 共 2 个发行版 3 个版本)
-│ 可直接用于 Incusfile 的 FROM 指令
-│
-│ Alpine
-│   FROM alpine/3.20   # 3.20
-│ Debian
-│   FROM debian/12   # 12
-│   FROM debian/13   # 13
-│
-╰─
-''';
+  test('parses remote template JSON', () {
+    const output = '''[
+      {"distro":"Alpine","release":"3.20","image":"alpine/3.20"},
+      {"distro":"Debian","release":"12","image":"debian/12"},
+      {"distro":"Debian","release":"13","image":"debian/13"}
+    ]''';
 
     final templates = parseImageTemplates(output);
 
@@ -65,5 +51,62 @@ worker     stopped   bridge   -             -     off        -
     expect(templates[0].distro, 'Alpine');
     expect(templates[1].image, 'debian/12');
     expect(templates[2].release, '13');
+  });
+
+  test('builds canonical template install arguments', () {
+    final args = templateInstallArguments(
+      image: 'debian/12',
+      name: 'demo',
+      network: 'nat',
+      permission: 'normal',
+    );
+
+    expect(args, [
+      'template',
+      'install',
+      'debian/12',
+      '--network',
+      'nat',
+      '--permission',
+      'normal',
+      '--name',
+      'demo',
+    ]);
+  });
+
+  test('builds canonical image run arguments', () {
+    final defaults = imageRunArguments(
+      image: 'web-image',
+      name: 'web-01',
+      network: 'default',
+      permission: 'normal',
+    );
+    final overridden = imageRunArguments(
+      image: 'web-image',
+      name: 'web-02',
+      network: 'nat',
+      permission: 'super',
+    );
+
+    expect(defaults, [
+      'image',
+      'run',
+      'web-image',
+      '--name',
+      'web-01',
+      '--permission',
+      'normal',
+    ]);
+    expect(overridden, [
+      'image',
+      'run',
+      'web-image',
+      '--name',
+      'web-02',
+      '--permission',
+      'super',
+      '--network',
+      'nat',
+    ]);
   });
 }

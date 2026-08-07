@@ -361,25 +361,28 @@ func (c *IncusClient) RemovePortMapping(name string, hostPort int, protocol stri
 	return c.updateInstance(name, etag, put)
 }
 
-// cmdSetPort 处理 bocker set <name> port ... 子命令。
+// cmdSetPort 处理 bocker container set <name> port ... 子命令。
 //
 // 用法：
 //
-//	bocker set <name> port                  交互式菜单
-//	bocker set <name> port <spec>           添加/替换映射
-//	bocker set <name> port rm <spec>        移除映射
-//	bocker set <name> port list             列出映射
+//	bocker container set <name> port                  交互式菜单
+//	bocker container set <name> port <spec>           添加/替换映射
+//	bocker container set <name> port rm <spec>        移除映射
+//	bocker container set <name> port list             列出映射
 func cmdSetPort(client *IncusClient, ct *Container, args []string) error {
 	name := ct.Name
 
 	if len(args) >= 1 {
 		flag := strings.ToLower(args[0])
 		switch flag {
-		case "--list", "-l", "list":
+		case "list":
+			if len(args) != 1 {
+				return fmt.Errorf("port list 不接受其他参数")
+			}
 			return printPortMappings(client, name)
-		case "--rm", "--unset", "rm", "unset", "remove", "del":
-			if len(args) < 2 {
-				return fmt.Errorf("用法: bocker set %s port rm <host_port[/proto]>", name)
+		case "rm":
+			if len(args) != 2 {
+				return fmt.Errorf("用法: bocker container set %s port rm <host_port[/proto]>", name)
 			}
 			hostPort, _, proto, err := parsePortSpec(args[1])
 			if err != nil {
@@ -392,6 +395,9 @@ func cmdSetPort(client *IncusClient, ct *Container, args []string) error {
 			return nil
 		}
 		if !strings.HasPrefix(args[0], "-") {
+			if len(args) != 1 {
+				return fmt.Errorf("port 规则只能指定一个")
+			}
 			spec := args[0]
 			hostPort, containerPort, proto, err := parsePortSpec(spec)
 			if err != nil {

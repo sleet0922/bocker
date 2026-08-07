@@ -27,21 +27,23 @@ func CmdSet(args []string) error {
 	if len(args) >= 2 {
 		sub := strings.ToLower(args[1])
 		switch sub {
-		case "domain", "host", "dns":
-			if len(args) >= 3 && args[2] != "--unset" && args[2] != "" {
+		case "domain":
+			if len(args) != 3 {
+				return fmt.Errorf("用法: bocker container set %s domain <domain|--unset>", name)
+			}
+			if args[2] != "--unset" && args[2] != "" {
 				return applyDomain(client, ct, args[2])
 			}
 			return removeDomain(client, ct)
-		case "port", "ports", "forward", "fwd":
+		case "port":
 			return cmdSetPort(client, ct, args[2:])
 		case "autostart":
-			on := true
-			if len(args) >= 3 {
-				parsed, err := parseBoolPayload(args[2])
-				if err != nil {
-					return fmt.Errorf("autostart 参数无效: %w", err)
-				}
-				on = parsed
+			if len(args) != 3 {
+				return fmt.Errorf("用法: bocker container set %s autostart on|off", name)
+			}
+			on, err := parseBoolPayload(args[2])
+			if err != nil {
+				return fmt.Errorf("autostart 参数无效: %w", err)
 			}
 			if err := client.SetBootAutostart(name, on); err != nil {
 				return err
@@ -52,28 +54,24 @@ func CmdSet(args []string) error {
 				fmt.Printf("✔ 容器 %s 已关闭开机自启动\n", name)
 			}
 			return nil
-		case "network", "net":
-			if strings.EqualFold(ct.Status, "Running") {
-				return fmt.Errorf("容器 %s 正在运行，请先 stop 后再切换网络", name)
+		case "network":
+			if len(args) != 3 {
+				return fmt.Errorf("用法: bocker container set %s network bridge|nat", name)
 			}
-			var mode NetworkMode
-			if len(args) >= 3 {
-				mode, err = ParseNetworkMode(args[2])
-				if err != nil {
-					return err
-				}
-			} else {
-				var ok bool
-				mode, ok = selectNetworkMode(NetworkMode(ct.NetworkMode()))
-				if !ok {
-					return nil
-				}
+			if strings.EqualFold(ct.Status, "Running") {
+				return fmt.Errorf("容器 %s 正在运行，请先执行 'bocker container stop %s'", name, name)
+			}
+			mode, err := ParseNetworkMode(args[2])
+			if err != nil {
+				return err
 			}
 			if err := client.SetContainerNetwork(name, mode, true); err != nil {
 				return err
 			}
 			fmt.Printf("✔ 容器 %s 网络已设置为 %s\n", name, mode)
 			return nil
+		default:
+			return fmt.Errorf("未知 container set 设置: %s (可用: domain, port, autostart, network)", sub)
 		}
 	}
 

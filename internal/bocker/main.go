@@ -1,12 +1,13 @@
 package bocker
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 )
 
 // Version 工具版本
-const Version = "2.0.2"
+const Version = "3.0.0"
 
 // MirrorRemote 镜像源在本地的 remote 名称
 const MirrorRemote = "mirror-images"
@@ -75,42 +76,12 @@ func isLightweightCommand(cmd string) bool {
 // dispatch 命令分发
 func dispatch(cmd string, args []string) error {
 	switch cmd {
-	case "list", "ls":
-		return CmdList()
-	case "start":
-		return withContainer(args, "选择要启动的容器", CmdStart)
-	case "stop":
-		return withContainer(args, "选择要停止的容器", CmdStop)
-	case "restart":
-		return withContainer(args, "选择要重启的容器", CmdRestart)
-	case "in":
-		return withContainer(args, "选择要进入的容器", CmdIn)
-	case "exec":
-		return CmdExec(args)
-	case "set":
-		return CmdSet(args)
-	case "export":
-		return withContainer(args, "选择要导出的容器", CmdExport)
-	case "import":
-		return CmdImport(args)
-	case "install", "i":
-		return CmdInstall(args)
-	case "remove", "rm":
-		return CmdRemove(args)
-	case "uninstall":
-		// 旧别名: 行为同 remove container (兼容老用户)
-		fmt.Println("提示: uninstall 已改名为 remove, 用法: bocker remove container [名]")
-		return CmdRemove(append([]string{"container"}, args...))
-	case "build":
-		return CmdBuild(args)
-	case "create":
-		return CmdCreate(args)
-	case "run":
-		// 旧别名兼容
-		fmt.Println("提示: run 已改名为 create, 用法: bocker create [容器名]")
-		return CmdCreate(args)
-	case "images", "image":
-		return CmdImages(args)
+	case "template":
+		return dispatchTemplate(args)
+	case "image":
+		return dispatchImage(args)
+	case "container":
+		return dispatchContainer(args)
 	case "help", "-h", "--help":
 		printUsage()
 		return nil
@@ -122,8 +93,136 @@ func dispatch(cmd string, args []string) error {
 	}
 }
 
+func dispatchTemplate(args []string) error {
+	if len(args) == 0 {
+		choice := selectMenu([]string{
+			"list - 查看远程模板",
+			"install - 选择模板并安装容器",
+		}, "选择 template 操作 (↑↓ 选择, Enter 确认, q 退出)")
+		switch choice {
+		case 0:
+			return CmdTemplateList(nil)
+		case 1:
+			return CmdInstall(nil)
+		default:
+			return nil
+		}
+	}
+	switch args[0] {
+	case "list":
+		return CmdTemplateList(args[1:])
+	case "install":
+		return CmdInstall(args[1:])
+	default:
+		return fmt.Errorf("未知 template 动作: %s (可用: list, install)", args[0])
+	}
+}
+
+func dispatchImage(args []string) error {
+	if len(args) == 0 {
+		choice := selectMenu([]string{
+			"list - 查看本地镜像",
+			"build - 按 Incusfile 制作镜像",
+			"run - 选择镜像并启动容器",
+			"remove - 删除本地镜像",
+		}, "选择 image 操作 (↑↓ 选择, Enter 确认, q 退出)")
+		switch choice {
+		case 0:
+			return CmdImages(nil)
+		case 1:
+			return CmdBuild(nil)
+		case 2:
+			return CmdRun(nil)
+		case 3:
+			return CmdRemoveImage(nil)
+		default:
+			return nil
+		}
+	}
+	switch args[0] {
+	case "build":
+		return CmdBuild(args[1:])
+	case "list":
+		return CmdImages(args[1:])
+	case "run":
+		return CmdRun(args[1:])
+	case "remove":
+		return CmdRemoveImage(args[1:])
+	default:
+		return fmt.Errorf("未知 image 动作: %s (可用: build, list, run, remove)", args[0])
+	}
+}
+
+func dispatchContainer(args []string) error {
+	if len(args) == 0 {
+		choice := selectMenu([]string{
+			"list - 查看所有容器",
+			"shell - 进入容器命令行",
+			"exec - 在容器内执行命令",
+			"start - 启动容器",
+			"stop - 停止容器",
+			"restart - 重启容器",
+			"set - 修改容器设置",
+			"export - 导出容器备份",
+			"import - 导入容器备份",
+			"remove - 删除容器",
+		}, "选择 container 操作 (↑↓ 选择, Enter 确认, q 退出)")
+		switch choice {
+		case 0:
+			return CmdList(nil)
+		case 1:
+			return withContainer(nil, "选择要进入的容器", "shell", CmdShell)
+		case 2:
+			return CmdExecInteractive()
+		case 3:
+			return withContainer(nil, "选择要启动的容器", "start", CmdStart)
+		case 4:
+			return withContainer(nil, "选择要停止的容器", "stop", CmdStop)
+		case 5:
+			return withContainer(nil, "选择要重启的容器", "restart", CmdRestart)
+		case 6:
+			return CmdSet(nil)
+		case 7:
+			return withContainer(nil, "选择要导出的容器", "export", CmdExport)
+		case 8:
+			return CmdImport(nil)
+		case 9:
+			return CmdRemoveContainer(nil)
+		default:
+			return nil
+		}
+	}
+	switch args[0] {
+	case "list":
+		return CmdList(args[1:])
+	case "shell":
+		return withContainer(args[1:], "选择要进入的容器", "shell", CmdShell)
+	case "exec":
+		return CmdExec(args[1:])
+	case "start":
+		return withContainer(args[1:], "选择要启动的容器", "start", CmdStart)
+	case "stop":
+		return withContainer(args[1:], "选择要停止的容器", "stop", CmdStop)
+	case "restart":
+		return withContainer(args[1:], "选择要重启的容器", "restart", CmdRestart)
+	case "remove":
+		return CmdRemoveContainer(args[1:])
+	case "export":
+		return withContainer(args[1:], "选择要导出的容器", "export", CmdExport)
+	case "import":
+		return CmdImport(args[1:])
+	case "set":
+		return CmdSet(args[1:])
+	default:
+		return fmt.Errorf("未知 container 动作: %s", args[0])
+	}
+}
+
 // withContainer 若 args 中有容器名则直接使用，否则弹出交互式选择菜单。
-func withContainer(args []string, label string, fn func(string) error) error {
+func withContainer(args []string, label, action string, fn func(string) error) error {
+	if len(args) > 1 {
+		return fmt.Errorf("container %s 最多接受一个容器名", action)
+	}
 	if len(args) >= 1 {
 		return fn(args[0])
 	}
@@ -161,34 +260,49 @@ func selectContainer(label string) (string, error) {
 
 func printUsage() {
 	fmt.Printf("bocker - 独立容器管理工具 v%s\n\n", Version)
-	fmt.Println("用法: bocker <命令> [参数]")
-	printUsageSection("容器", []usageEntry{
-		{"bocker list | ls", "列出容器"},
-		{"bocker install [image] [name]", "安装并启动容器"},
-		{"bocker start|stop|restart [name]", "启动、停止或重启"},
-		{"bocker in [name]", "进入容器 shell"},
-		{"bocker exec <name> <command...>", "执行非交互命令"},
-		{"bocker remove [container|image] [name]", "删除容器或镜像"},
-		{"bocker export|import [file] [name]", "导出或导入容器"},
+	fmt.Println("用法: bocker <资源> <动作> [参数]")
+	fmt.Println("资源: template=远程模板，image=本地镜像，container=已经创建的容器")
+	fmt.Println("说明: [内容] 可以省略，<内容> 必须填写。")
+
+	printUsageSection("远程模板 template", []usageEntry{
+		{"bocker template", "打开 template 操作菜单"},
+		{"bocker template list [--json]", "列出远程模板；--json 给 GUI/脚本使用"},
+		{"bocker template install [template] [--name <name>]", "下载模板，创建并启动容器"},
 	})
-	printUsageSection("设置", []usageEntry{
-		{"bocker set <name> port [spec]", "端口映射，如 8080:80/tcp"},
-		{"bocker set <name> domain <domain>", "配置域名映射"},
-		{"bocker set <name> autostart on|off", "配置开机自启动"},
-		{"bocker set <name> network bridge|nat", "切换网络模式"},
+
+	printUsageSection("本地镜像 image", []usageEntry{
+		{"bocker image", "打开 image 操作菜单"},
+		{"bocker image build [Incusfile]", "按 Incusfile 制作本地镜像"},
+		{"bocker image list [--json]", "列出本地镜像；--json 给 GUI/脚本使用"},
+		{"bocker image run [image] [--name <name>]", "选择或指定本地镜像，创建并启动容器"},
+		{"bocker image remove [image]", "删除本地镜像"},
 	})
-	printUsageSection("镜像", []usageEntry{
-		{"bocker build [Incusfile]", "构建镜像"},
-		{"bocker create [name]", "从 Incusfile 创建容器"},
-		{"bocker images", "列出本地镜像"},
+
+	printUsageSection("已有容器 container", []usageEntry{
+		{"bocker container", "打开 container 操作菜单"},
+		{"bocker container list [--json]", "列出容器；--json 给 GUI/脚本使用"},
+		{"bocker container shell [name]", "进入容器命令行"},
+		{"bocker container exec <name> <command...>", "在容器里执行一条命令"},
+		{"bocker container start [name]", "启动容器"},
+		{"bocker container stop [name]", "停止容器"},
+		{"bocker container restart [name]", "重启容器"},
+		{"bocker container remove [name]", "删除容器"},
+		{"bocker container export [name]", "导出容器备份"},
+		{"bocker container import [file] [name]", "导入容器备份"},
+		{"bocker container set <name> <setting> ...", "修改端口、域名、自启动或网络"},
 	})
-	printUsageSection("选项", []usageEntry{
-		{"--network bridge|nat", "bridge=局域网直连，nat=地址转换"},
-		{"--permission normal|super", "普通或超级权限，默认 normal"},
-		{"BOCKER_NETWORK=bridge|nat", "设置默认网络模式"},
+
+	printUsageSection("创建容器时可用", []usageEntry{
+		{"--network <nat|bridge>", "NAT 私有网络或局域网直连；默认 bridge"},
+		{"--permission <normal|super>", "普通权限或放宽隔离；默认 normal"},
+		{"--name <name>", "指定新容器的名称"},
 	})
-	fmt.Println("\nIncusfile: FROM NAME RUN COPY ENV NETWORK EXPOSE DOMAIN AUTOSTART ENTRYPOINT CMD TEMP ... END")
-	fmt.Println("省略容器名时进入交互式选择；使用 bocker help 查看本帮助。")
+
+	fmt.Println("\n示例: bocker template install debian:12 --name demo --network nat")
+	fmt.Println("      bocker image build --name web-image ./Incusfile")
+	fmt.Println("      bocker image run web-image --name web-01")
+	fmt.Println("补全: CLI Debian 包会安装 Bash 自动补全；重新打开终端后生效。")
+	fmt.Println("提示: 需要 root 权限时，在 bocker 前加 sudo。")
 }
 
 type usageEntry struct {
@@ -199,20 +313,44 @@ type usageEntry struct {
 func printUsageSection(title string, entries []usageEntry) {
 	fmt.Printf("\n%s:\n", title)
 	for _, entry := range entries {
-		fmt.Printf("  %-42s %s\n", entry.command, entry.description)
+		fmt.Printf("  %-56s %s\n", entry.command, entry.description)
 	}
 }
 
-// CmdImages 列出本地镜像别名 (bocker build 的产物)。
+// CmdImages 列出本地镜像别名 (bocker image build 的产物)。
 // 显示别名、镜像指纹(短)、大小、创建时间。
 func CmdImages(args []string) error {
+	jsonOutput, err := parseJSONOutputOption(args)
+	if err != nil {
+		return fmt.Errorf("image list: %w", err)
+	}
 	client := NewIncusClient()
 	infos, err := client.ListLocalImageAliasesWithDetails()
 	if err != nil {
 		return fmt.Errorf("读取本地镜像列表失败: %w", err)
 	}
+	if jsonOutput {
+		type imageListItem struct {
+			Name        string `json:"name"`
+			Size        string `json:"size"`
+			Created     string `json:"created"`
+			Fingerprint string `json:"fingerprint"`
+		}
+		items := make([]imageListItem, 0, len(infos))
+		for _, info := range infos {
+			fingerprint := info.Target
+			if len(fingerprint) > 12 {
+				fingerprint = fingerprint[:12]
+			}
+			items = append(items, imageListItem{
+				Name: info.Name, Size: humanSize(info.Size),
+				Created: info.CreatedAt.Format("2006-01-02 15:04"), Fingerprint: fingerprint,
+			})
+		}
+		return json.NewEncoder(os.Stdout).Encode(items)
+	}
 	if len(infos) == 0 {
-		fmt.Println("本地无镜像别名。用 'bocker build' 构建镜像。")
+		fmt.Println("本地没有 build 制作的镜像。查看远程模板请用 'bocker template list'。")
 		return nil
 	}
 	fmt.Printf("╭─ 本地镜像 (共 %d 个)\n", len(infos))

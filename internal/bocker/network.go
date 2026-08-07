@@ -86,7 +86,7 @@ func networkModeFromArgs(args []string) (NetworkMode, []string, error) {
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch arg {
-		case "--network", "-N":
+		case "--network":
 			if i+1 >= len(args) {
 				return "", nil, fmt.Errorf("%s 需要 bridge 或 nat", arg)
 			}
@@ -111,7 +111,7 @@ func networkModeFromArgs(args []string) (NetworkMode, []string, error) {
 
 func hasNetworkOverride(args []string) bool {
 	for _, arg := range args {
-		if arg == "--network" || arg == "-N" || strings.HasPrefix(arg, "--network=") {
+		if arg == "--network" || strings.HasPrefix(arg, "--network=") {
 			return true
 		}
 	}
