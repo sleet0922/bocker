@@ -3,12 +3,12 @@ GOOS ?= linux
 GOARCH ?= amd64
 CGO_ENABLED ?= 0
 LDFLAGS ?= -s -w
-VERSION ?= 2.0.0
+VERSION ?= 2.0.1
 NFPM ?= go run github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
 
 .DEFAULT_GOAL := help
 
-.PHONY: help build build-cli build-gui install-gui test vet check clean build-cli-deb build-gui-deb
+.PHONY: help build build-cli build-gui install-gui test vet check clean build-cli-deb build-gui-deb release
 
 help:
 	@echo Targets:
@@ -53,3 +53,24 @@ build-cli-deb: build-cli
 build-gui-deb: build-gui
 	@echo "Building bocker GUI deb package..."
 	VERSION=$(VERSION) GOARCH=$(GOARCH) $(NFPM) package --config build/nfpm-gui.yaml --packager deb --target bocker-gui.deb
+
+release:
+	@echo "Current version: $(VERSION)"
+	@NEW_VERSION=$$(echo $(VERSION) | awk -F. '{print $$1"."$$2"."$$3+1}'); \
+	echo "Bumping version to $$NEW_VERSION..."; \
+	sed -i 's/VERSION ?= 2.0.1
+	sed -i 's/const Version = ".*/const Version = "'$$NEW_VERSION'"/' internal/bocker/main.go; \
+	sed -i 's/version: .*/version: '$$NEW_VERSION'+1/' gui/pubspec.yaml; \
+	echo "Building deb packages..."; \
+	$(MAKE) clean; \
+	VERSION=$$NEW_VERSION $(MAKE) build-cli-deb; \
+	VERSION=$$NEW_VERSION PATH="$(PATH):$(HOME)/.local/flutter/bin" $(MAKE) build-gui-deb; \
+	echo "Committing and pushing to GitHub..."; \
+	git add .; \
+	git commit -m "chore: auto release v$$NEW_VERSION"; \
+	git push; \
+	echo "Creating git tag and GitHub release..."; \
+	git tag -a v$$NEW_VERSION -m "Release v$$NEW_VERSION"; \
+	git push origin v$$NEW_VERSION; \
+	gh release create v$$NEW_VERSION bocker.deb bocker-gui.deb -t "Release v$$NEW_VERSION" -n "Auto-generated release v$$NEW_VERSION"; \
+	echo "Release v$$NEW_VERSION published successfully!"
