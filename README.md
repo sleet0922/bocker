@@ -24,10 +24,7 @@ Bocker 的状态默认存放在 `/var/lib/bocker`，包括容器、镜像、Unix
 从源码构建（需要 Go 1.25 或更高版本）：
 
 ```bash
-go test ./...
-go vet ./...
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-  go build -trimpath -ldflags '-s -w' -o bocker ./cmd/bocker
+make build-cli
 ```
 
 安装到系统：
@@ -57,9 +54,12 @@ BOCKER_BINARY="$PWD/../bocker" flutter run -d linux
 构建桌面包：
 
 ```bash
-cd gui
-./build_release.sh
+make build-gui
 ```
+
+`make build-cli` 仅构建独立终端版 `bocker`，适合服务器或只使用命令行的环境。
+`make build-gui` 构建 Ubuntu 桌面包，并将相同版本的 `bocker` 放入 GUI bundle。
+`make build` 保留为 `make build-cli` 的兼容别名。
 
 源码采用标准 Go 项目布局：`cmd/bocker/` 是精简的可执行入口，
 `internal/bocker/` 包含 CLI 命令、容器运行时适配和对应测试，`gui/` 是独立的

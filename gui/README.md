@@ -45,7 +45,8 @@ by default on standard Ubuntu desktop installations.
 ## Build a release
 
 ```bash
-./build_release.sh
+cd ..
+make build-gui
 ```
 
 Both `bocker_gui` and its matching `bocker` CLI are written to
