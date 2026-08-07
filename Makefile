@@ -6,12 +6,13 @@ LDFLAGS ?= -s -w
 
 .DEFAULT_GOAL := help
 
-.PHONY: help build build-cli build-gui test vet check clean
+.PHONY: help build build-cli build-gui install-gui test vet check clean
 
 help:
 	@echo Targets:
 	@echo "  make build-cli  Build the standalone ./$(BIN_NAME) CLI binary"
 	@echo "  make build-gui  Build the GUI bundle with its matching CLI binary"
+	@echo "  make install-gui  Install the GUI bundle for the current desktop user"
 	@echo "  make build      Alias for build-cli (backward compatible)"
 	@echo "  make check  Run go test and go vet"
 	@echo "  make clean  Remove the standalone binary"
@@ -25,6 +26,9 @@ build-cli: check
 
 build-gui:
 	./gui/build_release.sh
+
+install-gui: build-gui
+	./gui/install_desktop.sh
 
 test:
 	go test ./...

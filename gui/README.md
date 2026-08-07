@@ -52,3 +52,20 @@ make build-gui
 Both `bocker_gui` and its matching `bocker` CLI are written to
 `build/linux/x64/release/bundle/`. Keep the bundle contents together when moving
 or packaging the application.
+
+## Install for the desktop user
+
+From the project root, build and register the GUI in the current user's
+application menu and desktop:
+
+```bash
+make install-gui
+```
+
+The script copies the bundle to `~/.local/opt/bocker-gui`, creates an
+`io.bocker.bocker_gui.desktop` application entry, and creates a trusted desktop
+launcher when the desktop environment supports it. Run it as the desktop user,
+not with `sudo`.
+
+The GUI release bundle also includes this script. After extracting a downloaded
+GUI release, run `./install_desktop.sh` from its `bundle/` directory.

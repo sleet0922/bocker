@@ -59,6 +59,10 @@ make build-gui
 
 `make build-cli` 仅构建独立终端版 `bocker`，适合服务器或只使用命令行的环境。
 `make build-gui` 构建 Ubuntu 桌面包，并将相同版本的 `bocker` 放入 GUI bundle。
+`make install-gui` 会将 GUI 安装到当前用户的 `~/.local/opt/bocker-gui`，并注册
+应用菜单和桌面启动器；不要通过 `sudo` 执行此命令。
+从 GitHub 下载 GUI 包时，解压后进入 `bundle/` 执行 `./install_desktop.sh` 即可完成
+同样的桌面安装。
 `make build` 保留为 `make build-cli` 的兼容别名。
 
 源码采用标准 Go 项目布局：`cmd/bocker/` 是精简的可执行入口，
