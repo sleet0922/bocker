@@ -1210,6 +1210,7 @@ class BockerCommand {
   BockerCommand();
 
   static const _socketName = 'bocker-gui-bundled.sock';
+  static const _helperProtocol = 3;
   Future<bool>? _rootCheck;
 
   Future<CommandResult> run(List<String> arguments) async {
@@ -1241,6 +1242,22 @@ class BockerCommand {
       if (!root && (runtimeDir == null || runtimeDir.isEmpty)) {
         return const CommandResult(false, '无法找到当前桌面会话的运行目录。', -1);
       }
+      if (!root) {
+        final socketPath = '$runtimeDir/$_socketName';
+        var helperResponse = await _send(socketPath, ['list']);
+        if (helperResponse == null) {
+          final bootstrap = await _startHelper(socketPath);
+          if (!bootstrap.ok) return bootstrap;
+          for (var attempt = 0; attempt < 30; attempt++) {
+            await Future<void>.delayed(const Duration(milliseconds: 100));
+            helperResponse = await _send(socketPath, ['list']);
+            if (helperResponse != null) break;
+          }
+          if (helperResponse == null) {
+            return const CommandResult(false, '权限代理已启动，但无法连接到本地 socket。', -1);
+          }
+        }
+      }
       final shellArguments = root
           ? [_binary, 'in', containerName]
           : [
@@ -1250,18 +1267,38 @@ class BockerCommand {
               '$runtimeDir/$_socketName',
               containerName,
             ];
-      await Process.start('x-terminal-emulator', [
-        '-e',
-        'bash',
-        '-lc',
-        'exec "\$@"',
-        'bocker-container-shell',
-        ...shellArguments,
-      ], mode: ProcessStartMode.detached);
+      final nativeTerminal =
+          _findExecutable('ptyxis') ?? _findExecutable('gnome-terminal');
+      if (nativeTerminal != null) {
+        await Process.start(nativeTerminal, [
+          '-T',
+          'Bocker: $containerName',
+          '--',
+          ...shellArguments,
+        ], mode: ProcessStartMode.detached);
+      } else {
+        await Process.start('x-terminal-emulator', [
+          '-T',
+          'Bocker: $containerName',
+          '-e',
+          ...shellArguments,
+        ], mode: ProcessStartMode.detached);
+      }
       return const CommandResult(true, '', 0);
     } on ProcessException catch (error) {
       return CommandResult(false, error.message, -1);
     }
+  }
+
+  String? _findExecutable(String name) {
+    final path = Platform.environment['PATH'];
+    if (path == null || path.isEmpty) return null;
+    for (final directory in path.split(':')) {
+      if (directory.isEmpty) continue;
+      final candidate = File('$directory/$name');
+      if (candidate.existsSync()) return candidate.path;
+    }
+    return null;
   }
 
   Future<CommandResult> _runDirect(List<String> arguments) async {
@@ -1306,7 +1343,7 @@ class BockerCommand {
       final raw = await utf8.decoder.bind(socket).join();
       socket.destroy();
       final response = jsonDecode(raw) as Map<String, dynamic>;
-      if (response['protocol'] != 2) {
+      if (response['protocol'] != _helperProtocol) {
         return null;
       }
       return CommandResult(

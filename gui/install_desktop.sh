@@ -19,7 +19,7 @@ install_dir="${BOCKER_GUI_INSTALL_DIR:-$HOME/.local/opt/bocker-gui}"
 data_dir="${XDG_DATA_HOME:-$HOME/.local/share}"
 applications_dir="$data_dir/applications"
 
-if [[ ! -x "$bundle_dir/bocker_gui" || ! -x "$bundle_dir/bocker" ]]; then
+if [[ ! -x "$bundle_dir/bocker_gui" || ! -x "$bundle_dir/bocker" || ! -f "$bundle_dir/logo.png" ]]; then
   if [[ -z "$project_dir" ]]; then
     echo "GUI bundle is incomplete: $bundle_dir" >&2
     exit 1
@@ -27,7 +27,7 @@ if [[ ! -x "$bundle_dir/bocker_gui" || ! -x "$bundle_dir/bocker" ]]; then
   make -C "$project_dir" build-gui
 fi
 
-if [[ ! -x "$bundle_dir/bocker_gui" || ! -x "$bundle_dir/bocker" ]]; then
+if [[ ! -x "$bundle_dir/bocker_gui" || ! -x "$bundle_dir/bocker" || ! -f "$bundle_dir/logo.png" ]]; then
   echo "GUI bundle is incomplete: $bundle_dir" >&2
   exit 1
 fi
@@ -51,11 +51,12 @@ write_desktop_file() {
     printf 'Exec=%s\n' "$install_dir/bocker_gui"
     printf 'TryExec=%s\n' "$install_dir/bocker_gui"
     printf 'Path=%s\n' "$install_dir"
-    printf '%s\n' 'Icon=application-x-executable'
+    printf 'Icon=%s\n' "$install_dir/logo.png"
     printf '%s\n' 'Terminal=false'
     printf '%s\n' 'Categories=System;'
     printf '%s\n' 'Keywords=container;incus;bocker;'
     printf '%s\n' 'StartupNotify=true'
+    printf '%s\n' 'StartupWMClass=io.bocker.bocker_gui'
   } >"$target"
   chmod 0755 "$target"
 }

@@ -10,20 +10,26 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
+
+	"golang.org/x/term"
 )
 
 const (
 	guiHelperChildEnv = "BOCKER_GUI_HELPER_CHILD"
 	guiHelperMaxInput = 1 << 20
-	guiHelperProtocol = 2
+	guiHelperProtocol = 3
 )
 
 type guiHelperRequest struct {
 	Arguments   []string `json:"arguments"`
 	Interactive bool     `json:"interactive,omitempty"`
+	Width       int      `json:"width,omitempty"`
+	Height      int      `json:"height,omitempty"`
+	Term        string   `json:"term,omitempty"`
 }
 
 type guiHelperResponse struct {
@@ -155,7 +161,7 @@ func handleGUIHelperConnection(connection net.Conn, binary string) {
 	}
 	_ = connection.SetReadDeadline(time.Time{})
 	if request.Interactive {
-		handleGUIInteractiveConnection(connection, reader, binary, request.Arguments)
+		handleGUIInteractiveConnection(connection, reader, binary, request)
 		return
 	}
 	if err := validateGUIHelperArguments(request.Arguments); err != nil {
@@ -179,7 +185,8 @@ func handleGUIHelperConnection(connection net.Conn, binary string) {
 	writeGUIHelperResponse(connection, response)
 }
 
-func handleGUIInteractiveConnection(connection net.Conn, reader io.Reader, binary string, args []string) {
+func handleGUIInteractiveConnection(connection net.Conn, reader io.Reader, binary string, request guiHelperRequest) {
+	args := request.Arguments
 	if len(args) != 2 || args[0] != "in" {
 		_, _ = fmt.Fprintln(connection, "GUI 交互终端请求无效")
 		return
@@ -189,12 +196,31 @@ func handleGUIInteractiveConnection(connection net.Conn, reader io.Reader, binar
 		return
 	}
 	command := exec.Command(binary, args...)
+	command.Env = os.Environ()
+	if request.Width > 0 && request.Height > 0 {
+		command.Env = setEnvironmentValue(command.Env, "BOCKER_TERM_WIDTH", strconv.Itoa(request.Width))
+		command.Env = setEnvironmentValue(command.Env, "BOCKER_TERM_HEIGHT", strconv.Itoa(request.Height))
+	}
+	if strings.TrimSpace(request.Term) != "" {
+		command.Env = setEnvironmentValue(command.Env, "TERM", strings.TrimSpace(request.Term))
+	}
 	command.Stdin = reader
 	command.Stdout = connection
 	command.Stderr = connection
 	if err := command.Run(); err != nil {
 		_, _ = fmt.Fprintf(connection, "\r\n容器终端已断开: %v\r\n", err)
 	}
+}
+
+func setEnvironmentValue(environment []string, key, value string) []string {
+	prefix := key + "="
+	filtered := environment[:0]
+	for _, entry := range environment {
+		if !strings.HasPrefix(entry, prefix) {
+			filtered = append(filtered, entry)
+		}
+	}
+	return append(filtered, prefix+value)
 }
 
 // runGUIShellClient is the unprivileged half of an interactive GUI terminal.
@@ -216,12 +242,22 @@ func runGUIShellClient(args []string) error {
 		return fmt.Errorf("连接 GUI 权限代理失败: %w", err)
 	}
 	defer connection.Close()
-	request := guiHelperRequest{Arguments: []string{"in", name}, Interactive: true}
+	fd := int(os.Stdin.Fd())
+	width, height := 120, 40
+	if w, h, sizeErr := term.GetSize(fd); sizeErr == nil && w > 0 && h > 0 {
+		width, height = w, h
+	}
+	request := guiHelperRequest{
+		Arguments:   []string{"in", name},
+		Interactive: true,
+		Width:       width,
+		Height:      height,
+		Term:        os.Getenv("TERM"),
+	}
 	if err := json.NewEncoder(connection).Encode(request); err != nil {
 		return fmt.Errorf("发送终端请求失败: %w", err)
 	}
 
-	fd := int(os.Stdin.Fd())
 	if old, err := makeRaw(fd); err == nil {
 		defer restoreTerm(fd, old)
 	}

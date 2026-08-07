@@ -369,6 +369,9 @@ func (c *IncusClient) Exec(name string) error {
 	if w, h, err := term.GetSize(fd); err == nil && w > 0 && h > 0 {
 		width, height = w, h
 	}
+	if requestedWidth, requestedHeight := requestedTerminalSize(); requestedWidth > 0 && requestedHeight > 0 {
+		width, height = requestedWidth, requestedHeight
+	}
 	req := api.InstanceExecPost{
 		Command:     []string{shell},
 		Environment: defaultExecEnv(),
@@ -385,6 +388,15 @@ func (c *IncusClient) Exec(name string) error {
 		return fmt.Errorf("进入容器 %s 的 shell 断开或执行失败: %w", name, err)
 	}
 	return nil
+}
+
+func requestedTerminalSize() (int, int) {
+	width, widthErr := strconv.Atoi(strings.TrimSpace(os.Getenv("BOCKER_TERM_WIDTH")))
+	height, heightErr := strconv.Atoi(strings.TrimSpace(os.Getenv("BOCKER_TERM_HEIGHT")))
+	if widthErr != nil || heightErr != nil || width <= 0 || height <= 0 {
+		return 0, 0
+	}
+	return width, height
 }
 
 // execExitCode 等待 exec 操作完成并返回命令退出码。

@@ -11,4 +11,6 @@ contents:
     dst: /opt/bocker-gui
     type: tree
   - src: ./gui/bocker_gui.desktop
-    dst: /usr/share/applications/bocker_gui.desktop
+    dst: /usr/share/applications/io.bocker.bocker_gui.desktop
+  - src: ./logo.png
+    dst: /usr/share/pixmaps/io.bocker.bocker_gui.png
