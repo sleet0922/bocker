@@ -21,6 +21,10 @@ import (
 //	bocker build --name <name> [Incusfile] 覆盖镜像别名
 //	bocker build --help                   显示帮助
 func CmdBuild(args []string) error {
+	brokerArgs := append([]string{"image", "build"}, args...)
+	if handled, err := runPrivilegedOperation(brokerArgs); handled {
+		return err
+	}
 	networkOverride := hasNetworkOverride(args)
 	networkMode, args, err := networkModeFromArgs(args)
 	if err != nil {
@@ -887,6 +891,12 @@ func shellQuote(value string) string {
 
 // CmdRun 从本地镜像创建并启动容器，并恢复构建时保存的运行配置。
 func CmdRun(args []string) error {
+	if len(args) > 0 {
+		brokerArgs := append([]string{"image", "run"}, args...)
+		if handled, err := runPrivilegedOperation(brokerArgs); handled {
+			return err
+		}
+	}
 	name, args, err := nameOptionFromArgs(args)
 	if err != nil {
 		return err
@@ -953,6 +963,14 @@ func CmdRun(args []string) error {
 			return nil
 		}
 		permissionMode = selected
+	}
+	if interactiveImage {
+		if handled, err := runPrivilegedOperation([]string{
+			"image", "run", alias, "--name", name,
+			"--network", string(networkMode), "--permission", string(permissionMode),
+		}); handled {
+			return err
+		}
 	}
 
 	properties, err := client.GetImageProperties(alias)

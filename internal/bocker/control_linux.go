@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,8 +23,9 @@ const privilegedChildEnv = "BOCKER_PRIVILEGED_CHILD"
 const controlMaxInput = 1 << 20
 
 type bockerControlRequest struct {
-	Arguments   []string          `json:"arguments"`
-	Environment map[string]string `json:"environment,omitempty"`
+	Arguments        []string          `json:"arguments"`
+	Environment      map[string]string `json:"environment,omitempty"`
+	WorkingDirectory string            `json:"workingDirectory,omitempty"`
 }
 
 type bockerControlResponse struct {
@@ -113,12 +115,19 @@ func handleBockerControlConnection(connection net.Conn) {
 		writeBockerControlResponse(connection, bockerControlResponse{Output: err.Error(), ExitCode: 1})
 		return
 	}
+	if request.WorkingDirectory != "" {
+		if !filepath.IsAbs(request.WorkingDirectory) || strings.ContainsRune(request.WorkingDirectory, 0) {
+			writeBockerControlResponse(connection, bockerControlResponse{Output: "Bocker 控制工作目录无效", ExitCode: 1})
+			return
+		}
+	}
 	binary, err := os.Executable()
 	if err != nil {
 		writeBockerControlResponse(connection, bockerControlResponse{Output: "读取 Bocker 守护进程路径失败: " + err.Error(), ExitCode: 1})
 		return
 	}
 	command := exec.Command(binary, request.Arguments...)
+	command.Dir = request.WorkingDirectory
 	command.Env = append(os.Environ(), privilegedChildEnv+"=1")
 	for key, value := range request.Environment {
 		if !allowedBrokerEnvironment(key) {
@@ -170,6 +179,20 @@ func shouldUsePrivilegedBroker(args []string) bool {
 	return os.Geteuid() != 0 && os.Getenv(privilegedChildEnv) != "1" && brokerCommandClassification(args)
 }
 
+func runPrivilegedOperation(args []string) (bool, error) {
+	if os.Geteuid() == 0 || os.Getenv(privilegedChildEnv) == "1" || !brokerCommandClassification(args) {
+		return false, nil
+	}
+	exitCode, err := runPrivilegedBrokerCommand(args)
+	if err != nil {
+		return true, err
+	}
+	if exitCode != 0 {
+		return true, fmt.Errorf("Bocker 后台命令退出码 %d", exitCode)
+	}
+	return true, nil
+}
+
 func brokerCommandClassification(args []string) bool {
 	if len(args) < 2 {
 		return false
@@ -179,13 +202,27 @@ func brokerCommandClassification(args []string) bool {
 	}
 	if args[0] == "container" {
 		switch args[1] {
-		case "shell", "exec", "export", "import":
+		case "shell", "exec", "export":
 			return false
+		case "import":
+			return hasPositionalArgument(args, 2)
 		case "set":
 			return len(args) >= 4 && (args[3] == "domain" || args[3] == "network")
+		case "start", "stop", "restart", "remove":
+			return hasPositionalArgument(args, 2)
 		}
 	}
-	return args[1] == "install" || args[1] == "run" || args[1] == "start" || args[1] == "stop" || args[1] == "restart" || args[1] == "remove"
+	if args[0] == "image" && args[1] == "run" {
+		return hasPositionalArgument(args, 2)
+	}
+	if args[0] == "template" && args[1] == "install" {
+		return hasPositionalArgument(args, 2)
+	}
+	return args[1] == "build"
+}
+
+func hasPositionalArgument(args []string, index int) bool {
+	return len(args) > index && !strings.HasPrefix(args[index], "-")
 }
 
 func runPrivilegedBrokerCommand(args []string) (int, error) {
@@ -198,13 +235,17 @@ func runPrivilegedBrokerCommand(args []string) (int, error) {
 		return 1, fmt.Errorf("无法连接 Bocker 后台控制 socket（请确认 bocker.service 已启动且当前用户在 lxd 组）: %w", err)
 	}
 	defer connection.Close()
+	workingDirectory, err := os.Getwd()
+	if err != nil {
+		return 1, fmt.Errorf("读取当前工作目录失败: %w", err)
+	}
 	environment := make(map[string]string)
 	for _, key := range []string{networkModeEnv, bridgeParentEnv, natNetworkCIDREnv, natNetworkIPv6CIDREnv, hostShimCIDREnv} {
 		if value, ok := os.LookupEnv(key); ok {
 			environment[key] = value
 		}
 	}
-	if err := json.NewEncoder(connection).Encode(bockerControlRequest{Arguments: args, Environment: environment}); err != nil {
+	if err := json.NewEncoder(connection).Encode(bockerControlRequest{Arguments: args, Environment: environment, WorkingDirectory: workingDirectory}); err != nil {
 		return 1, fmt.Errorf("发送 Bocker 控制请求失败: %w", err)
 	}
 	responseData, err := io.ReadAll(connection)
