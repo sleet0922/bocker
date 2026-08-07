@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Bocker GUI
+Comment=Manage Bocker containers
+Exec=/opt/bocker-gui/bocker_gui
+TryExec=/opt/bocker-gui/bocker_gui
+Path=/opt/bocker-gui
+Icon=application-x-executable
+Terminal=false
+Categories=System;
+Keywords=container;incus;bocker;
+StartupNotify=true

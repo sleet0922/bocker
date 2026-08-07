@@ -5,6 +5,7 @@ bocker-check.exe
 bocker-linux-*
 *.test
 *.tar.gz
+*.deb
 
 # Flutter desktop GUI
 gui/*.class

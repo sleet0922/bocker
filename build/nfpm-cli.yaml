@@ -1,0 +1,11 @@
+name: bocker
+arch: "${GOARCH}"
+platform: linux
+version: "${VERSION}"
+section: default
+priority: extra
+maintainer: Bocker Maintainers <maintainers@example.com>
+description: Bocker CLI
+contents:
+  - src: ./bocker
+    dst: /usr/bin/bocker

@@ -3,19 +3,23 @@ GOOS ?= linux
 GOARCH ?= amd64
 CGO_ENABLED ?= 0
 LDFLAGS ?= -s -w
+VERSION ?= 1.0.0
+NFPM ?= go run github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
 
 .DEFAULT_GOAL := help
 
-.PHONY: help build build-cli build-gui install-gui test vet check clean
+.PHONY: help build build-cli build-gui install-gui test vet check clean build-cli-deb build-gui-deb
 
 help:
 	@echo Targets:
-	@echo "  make build-cli  Build the standalone ./$(BIN_NAME) CLI binary"
-	@echo "  make build-gui  Build the GUI bundle with its matching CLI binary"
-	@echo "  make install-gui  Install the GUI bundle for the current desktop user"
-	@echo "  make build      Alias for build-cli (backward compatible)"
-	@echo "  make check  Run go test and go vet"
-	@echo "  make clean  Remove the standalone binary"
+	@echo "  make build-cli      Build the standalone ./$(BIN_NAME) CLI binary"
+	@echo "  make build-gui      Build the GUI bundle with its matching CLI binary"
+	@echo "  make build-cli-deb  Build the CLI deb package using nfpm"
+	@echo "  make build-gui-deb  Build the GUI deb package using nfpm"
+	@echo "  make install-gui    Install the GUI bundle for the current desktop user"
+	@echo "  make build          Alias for build-cli (backward compatible)"
+	@echo "  make check          Run go test and go vet"
+	@echo "  make clean          Remove the standalone binary and deb artifacts"
 
 build: build-cli
 
@@ -40,3 +44,12 @@ check: test vet
 
 clean:
 	rm -f '$(BIN_NAME)'
+	rm -f *.deb
+
+build-cli-deb: build-cli
+	@echo "Building bocker CLI deb package..."
+	VERSION=$(VERSION) GOARCH=$(GOARCH) $(NFPM) package --config build/nfpm-cli.yaml --packager deb --target bocker.deb
+
+build-gui-deb: build-gui
+	@echo "Building bocker GUI deb package..."
+	VERSION=$(VERSION) GOARCH=$(GOARCH) $(NFPM) package --config build/nfpm-gui.yaml --packager deb --target bocker-gui.deb
