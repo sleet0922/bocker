@@ -4,15 +4,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
 
 // CmdStart 启动容器，若配置了域名映射则自动更新 /etc/hosts。
 func CmdStart(name string) error {
-	if handled, err := runPrivilegedOperation([]string{"container", "start", name}); handled {
-		return err
-	}
 	client := NewIncusClient()
 
 	// 容器已在运行则跳过启动，继续处理域名逻辑
@@ -86,9 +84,6 @@ func CmdRemoveContainer(args []string) error {
 		}
 		name = n
 	}
-	if handled, err := runPrivilegedOperation([]string{"container", "remove", name}); handled {
-		return err
-	}
 	client := NewIncusClient()
 	// 先获取容器信息用于清理路由
 	ct, _ := client.GetContainer(name)
@@ -161,9 +156,6 @@ func CmdRemoveImage(args []string) error {
 
 // CmdStop 停止容器，并清理对应的 /32 路由避免死路由堆积。
 func CmdStop(name string) error {
-	if handled, err := runPrivilegedOperation([]string{"container", "stop", name}); handled {
-		return err
-	}
 	fmt.Printf("停止容器 %s ...\n", name)
 	client := NewIncusClient()
 	// 先获取容器 IP 用于后续路由清理
@@ -191,9 +183,6 @@ func CmdShell(name string) error {
 // CmdRestart 重启容器：若容器正在运行则先停止再启动，若已停止则直接启动。
 // 复用 CmdStop/CmdStart 以保证 /32 路由清理、端口映射刷新、域名 hosts 更新等副作用一致。
 func CmdRestart(name string) error {
-	if handled, err := runPrivilegedOperation([]string{"container", "restart", name}); handled {
-		return err
-	}
 	client := NewIncusClient()
 	ct, _ := client.GetContainer(name)
 	if ct != nil && strings.EqualFold(ct.Status, "Running") {
@@ -248,6 +237,16 @@ func CmdExport(name string) error {
 	if err := NewIncusClient().Export(name, path); err != nil {
 		return err
 	}
+	if uidText := strings.TrimSpace(os.Getenv(callerUIDEnv)); uidText != "" {
+		uid, uidErr := strconv.Atoi(uidText)
+		gid, gidErr := strconv.Atoi(strings.TrimSpace(os.Getenv(callerGIDEnv)))
+		if uidErr != nil || gidErr != nil || uid < 0 || gid < 0 {
+			return fmt.Errorf("导出文件所有者信息无效")
+		}
+		if err := os.Chown(path, uid, gid); err != nil {
+			return fmt.Errorf("设置导出文件所有者失败: %w", err)
+		}
+	}
 	fmt.Printf("✔ 已导出到 %s\n", path)
 	return nil
 }
@@ -289,14 +288,6 @@ func CmdImport(args []string) error {
 		if err := validateBockerName(name); err != nil {
 			return fmt.Errorf("容器名称 %q 无效: %w", name, err)
 		}
-	}
-	brokerArgs := []string{"container", "import", path}
-	if name != "" {
-		brokerArgs = append(brokerArgs, name)
-	}
-	brokerArgs = append(brokerArgs, "--network", string(networkMode), "--permission", string(permissionMode))
-	if handled, err := runPrivilegedOperation(brokerArgs); handled {
-		return err
 	}
 	fmt.Printf("导入 %s ...\n", path)
 	client := NewIncusClient()

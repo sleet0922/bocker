@@ -38,12 +38,6 @@ func CmdInstall(args []string) error {
 		if err := validateBockerName(name); err != nil {
 			return fmt.Errorf("容器名称 %q 无效: %w", name, err)
 		}
-		if handled, err := runPrivilegedOperation([]string{
-			"template", "install", imageRef, "--name", name,
-			"--network", string(mode), "--permission", string(permissionMode),
-		}); handled {
-			return err
-		}
 		fmt.Printf("正在安装 %s (名称: %s, 网络: %s, 权限: %s) ...\n", imageRef, name, mode, permissionMode)
 		if err := client.LaunchWithNetworkAndPermission(imageRef, name, mode, permissionMode); err != nil {
 			return err
@@ -117,12 +111,6 @@ func CmdInstall(args []string) error {
 
 	// version.Image 已是 alias 形式（如 debian/12），Launch 内部会处理
 	imageRef := version.Image
-	if handled, err := runPrivilegedOperation([]string{
-		"template", "install", imageRef, "--name", name,
-		"--network", string(mode), "--permission", string(permissionMode),
-	}); handled {
-		return err
-	}
 	fmt.Printf("\n正在安装 %s %s (%s, 网络: %s) ...\n", group.Distro, version.Release, imageRef, mode)
 	if err := client.LaunchWithNetworkAndPermission(imageRef, name, mode, permissionMode); err != nil {
 		return err

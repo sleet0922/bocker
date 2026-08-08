@@ -65,9 +65,6 @@ func CmdSet(args []string) error {
 			if err != nil {
 				return err
 			}
-			if handled, err := runPrivilegedOperation([]string{"container", "set", name, "network", string(mode)}); handled {
-				return err
-			}
 			if err := client.SetContainerNetwork(name, mode, true); err != nil {
 				return err
 			}
@@ -174,9 +171,6 @@ func applyDomain(client *IncusClient, ct *Container, domain string) error {
 	if err := validateDomainName(domain); err != nil {
 		return fmt.Errorf("域名无效: %w", err)
 	}
-	if handled, err := runPrivilegedOperation([]string{"container", "set", ct.Name, "domain", domain}); handled {
-		return err
-	}
 	if err := client.SetDomain(ct.Name, domain); err != nil {
 		return err
 	}
@@ -211,9 +205,6 @@ func removeDomain(client *IncusClient, ct *Container) error {
 	if ct.Domain() == "" {
 		fmt.Println("该容器未配置域名映射。")
 		return nil
-	}
-	if handled, err := runPrivilegedOperation([]string{"container", "set", ct.Name, "domain", "--unset"}); handled {
-		return err
 	}
 	if err := client.UnsetDomain(ct.Name); err != nil {
 		return err

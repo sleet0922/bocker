@@ -12,11 +12,21 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+
+	"golang.org/x/term"
 )
 
 const privilegedChildEnv = "BOCKER_PRIVILEGED_CHILD"
+
+const (
+	callerUIDEnv      = "BOCKER_CALLER_UID"
+	callerGIDEnv      = "BOCKER_CALLER_GID"
+	terminalWidthEnv  = "BOCKER_TERM_WIDTH"
+	terminalHeightEnv = "BOCKER_TERM_HEIGHT"
+)
 
 const controlMaxInput = 1 << 20
 
@@ -24,6 +34,8 @@ type bockerControlRequest struct {
 	Arguments        []string          `json:"arguments"`
 	Environment      map[string]string `json:"environment,omitempty"`
 	WorkingDirectory string            `json:"workingDirectory,omitempty"`
+	CallerUID        int               `json:"callerUID,omitempty"`
+	CallerGID        int               `json:"callerGID,omitempty"`
 }
 
 type bockerControlResponse struct {
@@ -116,6 +128,8 @@ func handleBockerControlConnection(connection net.Conn) {
 	command := exec.Command(binary, request.Arguments...)
 	command.Dir = request.WorkingDirectory
 	command.Env = append(os.Environ(), privilegedChildEnv+"=1")
+	command.Env = setControlEnvironmentValue(command.Env, callerUIDEnv, strconv.Itoa(request.CallerUID))
+	command.Env = setControlEnvironmentValue(command.Env, callerGIDEnv, strconv.Itoa(request.CallerGID))
 	for key, value := range request.Environment {
 		if !allowedBrokerEnvironment(key) {
 			continue
@@ -123,17 +137,67 @@ func handleBockerControlConnection(connection net.Conn) {
 		command.Env = setControlEnvironmentValue(command.Env, key, value)
 	}
 	stream := &bockerControlOutputStream{connection: connection}
-	command.Stdout = stream
-	command.Stderr = stream
-	runErr := command.Run()
+	stdin, err := command.StdinPipe()
+	if err != nil {
+		writeBockerControlResponse(connection, bockerControlResponse{Output: "创建 Bocker 控制 stdin 失败: " + err.Error(), ExitCode: 1})
+		return
+	}
+	stdout, err := command.StdoutPipe()
+	if err != nil {
+		_ = stdin.Close()
+		writeBockerControlResponse(connection, bockerControlResponse{Output: "创建 Bocker 控制 stdout 失败: " + err.Error(), ExitCode: 1})
+		return
+	}
+	stderr, err := command.StderrPipe()
+	if err != nil {
+		_ = stdin.Close()
+		_ = stdout.Close()
+		writeBockerControlResponse(connection, bockerControlResponse{Output: "创建 Bocker 控制 stderr 失败: " + err.Error(), ExitCode: 1})
+		return
+	}
+	if err := command.Start(); err != nil {
+		_ = stdin.Close()
+		_ = stdout.Close()
+		_ = stderr.Close()
+		writeBockerControlResponse(connection, bockerControlResponse{Output: "启动 Bocker 控制命令失败: " + err.Error(), ExitCode: 1})
+		return
+	}
+	var outputWG sync.WaitGroup
+	outputWG.Add(3)
+	go func() {
+		defer outputWG.Done()
+		_, _ = io.Copy(stdin, reader)
+		_ = stdin.Close()
+	}()
+	go func() {
+		defer outputWG.Done()
+		_, _ = io.Copy(stream, stdout)
+		_ = stdout.Close()
+	}()
+	go func() {
+		defer outputWG.Done()
+		_, _ = io.Copy(stream, stderr)
+		_ = stderr.Close()
+	}()
+	processState, runErr := command.Process.Wait()
+	closeBockerControlInput(connection)
+	_ = stdin.Close()
+	outputWG.Wait()
 	response := bockerControlResponse{Done: true}
-	if exitErr, ok := runErr.(*exec.ExitError); ok {
-		response.ExitCode = exitErr.ExitCode()
-	} else if runErr != nil {
+	if processState != nil {
+		response.ExitCode = processState.ExitCode()
+	}
+	if runErr != nil && processState == nil {
 		response.ExitCode = 1
 		response.Output = runErr.Error()
 	}
 	writeBockerControlResponse(connection, response)
+}
+
+func closeBockerControlInput(connection net.Conn) {
+	if unixConnection, ok := connection.(*net.UnixConn); ok {
+		_ = unixConnection.CloseRead()
+	}
 }
 
 // bockerControlOutputStream forwards child output as newline-delimited JSON
@@ -177,57 +241,23 @@ func writeBockerControlResponse(connection net.Conn, response bockerControlRespo
 	_ = json.NewEncoder(connection).Encode(response)
 }
 
-// shouldUsePrivilegedBroker leaves terminal-oriented commands in the caller so
-// stdin/stdout and PTY behavior remain native. Other explicit operations are
-// run by the privileged daemon and can therefore update host networking/files.
+// shouldUsePrivilegedBroker routes every public resource command through the
+// root-owned backend. The backend also carries stdin/stdout for menus and
+// terminal-oriented commands.
 func shouldUsePrivilegedBroker(args []string) bool {
 	return os.Geteuid() != 0 && os.Getenv(privilegedChildEnv) != "1" && brokerCommandClassification(args)
 }
 
-func runPrivilegedOperation(args []string) (bool, error) {
-	if os.Geteuid() == 0 || os.Getenv(privilegedChildEnv) == "1" || !brokerCommandClassification(args) {
-		return false, nil
-	}
-	exitCode, err := runPrivilegedBrokerCommand(args)
-	if err != nil {
-		return true, err
-	}
-	if exitCode != 0 {
-		return true, fmt.Errorf("Bocker 后台命令退出码 %d", exitCode)
-	}
-	return true, nil
-}
-
 func brokerCommandClassification(args []string) bool {
-	if len(args) < 2 {
+	if len(args) == 0 {
 		return false
 	}
-	if args[0] != "template" && args[0] != "image" && args[0] != "container" {
+	switch args[0] {
+	case "template", "image", "container":
+		return true
+	default:
 		return false
 	}
-	if args[0] == "container" {
-		switch args[1] {
-		case "shell", "exec", "export":
-			return false
-		case "import":
-			return hasPositionalArgument(args, 2)
-		case "set":
-			return len(args) >= 4 && (args[3] == "domain" || args[3] == "network")
-		case "start", "stop", "restart", "remove":
-			return hasPositionalArgument(args, 2)
-		}
-	}
-	if args[0] == "image" && args[1] == "run" {
-		return hasPositionalArgument(args, 2)
-	}
-	if args[0] == "template" && args[1] == "install" {
-		return hasPositionalArgument(args, 2)
-	}
-	return args[1] == "build"
-}
-
-func hasPositionalArgument(args []string, index int) bool {
-	return len(args) > index && !strings.HasPrefix(args[index], "-")
 }
 
 func runPrivilegedBrokerCommand(args []string) (int, error) {
@@ -245,14 +275,36 @@ func runPrivilegedBrokerCommand(args []string) (int, error) {
 		return 1, fmt.Errorf("读取当前工作目录失败: %w", err)
 	}
 	environment := make(map[string]string)
-	for _, key := range []string{networkModeEnv, bridgeParentEnv, natNetworkCIDREnv, natNetworkIPv6CIDREnv, hostShimCIDREnv} {
+	for _, key := range []string{networkModeEnv, bridgeParentEnv, natNetworkCIDREnv, natNetworkIPv6CIDREnv, hostShimCIDREnv, terminalWidthEnv, terminalHeightEnv} {
 		if value, ok := os.LookupEnv(key); ok {
 			environment[key] = value
 		}
 	}
-	if err := json.NewEncoder(connection).Encode(bockerControlRequest{Arguments: args, Environment: environment, WorkingDirectory: workingDirectory}); err != nil {
+	terminalFD := int(os.Stdin.Fd())
+	terminal := term.IsTerminal(terminalFD) && term.IsTerminal(int(os.Stdout.Fd()))
+	if terminal {
+		if width, height, sizeErr := term.GetSize(terminalFD); sizeErr == nil && width > 0 && height > 0 {
+			environment[terminalWidthEnv] = strconv.Itoa(width)
+			environment[terminalHeightEnv] = strconv.Itoa(height)
+		}
+	}
+	var terminalState *term.State
+	if terminal && brokerCommandNeedsRawTerminal(args) {
+		terminalState, err = term.MakeRaw(terminalFD)
+		if err != nil {
+			return 1, fmt.Errorf("设置终端模式失败: %w", err)
+		}
+		defer term.Restore(terminalFD, terminalState)
+	}
+	if err := json.NewEncoder(connection).Encode(bockerControlRequest{
+		Arguments: args, Environment: environment, WorkingDirectory: workingDirectory,
+		CallerUID: os.Getuid(), CallerGID: os.Getgid(),
+	}); err != nil {
 		return 1, fmt.Errorf("发送 Bocker 控制请求失败: %w", err)
 	}
+	go func() {
+		_, _ = io.Copy(connection, os.Stdin)
+	}()
 	decoder := json.NewDecoder(connection)
 	exitCode := 0
 	for {
@@ -273,9 +325,15 @@ func runPrivilegedBrokerCommand(args []string) (int, error) {
 	}
 }
 
+func brokerCommandNeedsRawTerminal(args []string) bool {
+	return len(args) >= 3 && args[0] == "container" && args[1] == "shell" && !strings.HasPrefix(args[2], "-")
+}
+
 func allowedBrokerEnvironment(key string) bool {
 	switch key {
 	case networkModeEnv, bridgeParentEnv, natNetworkCIDREnv, natNetworkIPv6CIDREnv, hostShimCIDREnv:
+		return true
+	case terminalWidthEnv, terminalHeightEnv:
 		return true
 	default:
 		return false

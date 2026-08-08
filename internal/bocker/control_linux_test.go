@@ -9,21 +9,25 @@ func TestShouldUsePrivilegedBroker(t *testing.T) {
 		args []string
 		want bool
 	}{
+		{[]string{"template"}, true},
+		{[]string{"image"}, true},
+		{[]string{"container"}, true},
+		{[]string{"help"}, false},
 		{[]string{"container", "start", "demo"}, true},
-		{[]string{"container", "start"}, false},
+		{[]string{"container", "start"}, true},
 		{[]string{"container", "set", "demo", "domain", "demo.test"}, true},
-		{[]string{"container", "set", "demo", "port", "18080:80"}, false},
-		{[]string{"container", "shell", "demo"}, false},
-		{[]string{"container", "exec", "demo", "id"}, false},
-		{[]string{"container", "export", "demo"}, false},
+		{[]string{"container", "set", "demo", "port", "18080:80"}, true},
+		{[]string{"container", "shell", "demo"}, true},
+		{[]string{"container", "exec", "demo", "id"}, true},
+		{[]string{"container", "export", "demo"}, true},
 		{[]string{"image", "build", "Incusfile"}, true},
 		{[]string{"image", "build"}, true},
 		{[]string{"image", "run", "demo"}, true},
-		{[]string{"image", "run", "--name", "demo"}, false},
+		{[]string{"image", "run", "--name", "demo"}, true},
 		{[]string{"template", "install", "debian:12"}, true},
-		{[]string{"template", "install", "--name", "demo"}, false},
+		{[]string{"template", "install", "--name", "demo"}, true},
 		{[]string{"container", "import", "backup.tar.gz", "demo"}, true},
-		{[]string{"container", "import"}, false},
+		{[]string{"container", "import"}, true},
 	} {
 		if got := brokerCommandClassification(test.args); got != test.want {
 			t.Errorf("shouldUsePrivilegedBroker(%v)=%v, want %v", test.args, got, test.want)
