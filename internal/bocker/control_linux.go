@@ -15,7 +15,9 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 
+	"github.com/creack/pty"
 	"golang.org/x/term"
 )
 
@@ -36,6 +38,7 @@ type bockerControlRequest struct {
 	WorkingDirectory string            `json:"workingDirectory,omitempty"`
 	CallerUID        int               `json:"callerUID,omitempty"`
 	CallerGID        int               `json:"callerGID,omitempty"`
+	Terminal         bool              `json:"terminal,omitempty"`
 }
 
 type bockerControlResponse struct {
@@ -137,30 +140,44 @@ func handleBockerControlConnection(connection net.Conn) {
 		command.Env = setControlEnvironmentValue(command.Env, key, value)
 	}
 	stream := &bockerControlOutputStream{connection: connection}
+	var processState *os.ProcessState
+	if request.Terminal {
+		processState, err = runBockerTerminalCommand(connection, command, reader, stream, request)
+	} else {
+		processState, err = runBockerPipeCommand(connection, command, reader, stream)
+	}
+	response := bockerControlResponse{Done: true}
+	if processState != nil {
+		response.ExitCode = processState.ExitCode()
+	}
+	if err != nil && processState == nil {
+		response.ExitCode = 1
+		response.Output = err.Error()
+	}
+	writeBockerControlResponse(connection, response)
+}
+
+func runBockerPipeCommand(connection net.Conn, command *exec.Cmd, reader io.Reader, stream io.Writer) (*os.ProcessState, error) {
 	stdin, err := command.StdinPipe()
 	if err != nil {
-		writeBockerControlResponse(connection, bockerControlResponse{Output: "创建 Bocker 控制 stdin 失败: " + err.Error(), ExitCode: 1})
-		return
+		return nil, fmt.Errorf("创建 Bocker 控制 stdin 失败: %w", err)
 	}
 	stdout, err := command.StdoutPipe()
 	if err != nil {
 		_ = stdin.Close()
-		writeBockerControlResponse(connection, bockerControlResponse{Output: "创建 Bocker 控制 stdout 失败: " + err.Error(), ExitCode: 1})
-		return
+		return nil, fmt.Errorf("创建 Bocker 控制 stdout 失败: %w", err)
 	}
 	stderr, err := command.StderrPipe()
 	if err != nil {
 		_ = stdin.Close()
 		_ = stdout.Close()
-		writeBockerControlResponse(connection, bockerControlResponse{Output: "创建 Bocker 控制 stderr 失败: " + err.Error(), ExitCode: 1})
-		return
+		return nil, fmt.Errorf("创建 Bocker 控制 stderr 失败: %w", err)
 	}
 	if err := command.Start(); err != nil {
 		_ = stdin.Close()
 		_ = stdout.Close()
 		_ = stderr.Close()
-		writeBockerControlResponse(connection, bockerControlResponse{Output: "启动 Bocker 控制命令失败: " + err.Error(), ExitCode: 1})
-		return
+		return nil, fmt.Errorf("启动 Bocker 控制命令失败: %w", err)
 	}
 	var outputWG sync.WaitGroup
 	outputWG.Add(3)
@@ -179,19 +196,54 @@ func handleBockerControlConnection(connection net.Conn) {
 		_, _ = io.Copy(stream, stderr)
 		_ = stderr.Close()
 	}()
-	processState, runErr := command.Process.Wait()
+	processState, waitErr := command.Process.Wait()
 	closeBockerControlInput(connection)
 	_ = stdin.Close()
 	outputWG.Wait()
-	response := bockerControlResponse{Done: true}
-	if processState != nil {
-		response.ExitCode = processState.ExitCode()
+	return processState, waitErr
+}
+
+func runBockerTerminalCommand(connection net.Conn, command *exec.Cmd, reader io.Reader, stream io.Writer, request bockerControlRequest) (*os.ProcessState, error) {
+	master, slave, err := pty.Open()
+	if err != nil {
+		return nil, fmt.Errorf("创建 Bocker 控制终端失败: %w", err)
 	}
-	if runErr != nil && processState == nil {
-		response.ExitCode = 1
-		response.Output = runErr.Error()
+	defer master.Close()
+	command.Stdin = slave
+	command.Stdout = slave
+	command.Stderr = slave
+	command.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 0}
+	if width, height := brokerTerminalSize(request.Environment); width > 0 && height > 0 {
+		_ = pty.Setsize(master, &pty.Winsize{Cols: uint16(width), Rows: uint16(height)})
 	}
-	writeBockerControlResponse(connection, response)
+	if err := command.Start(); err != nil {
+		_ = slave.Close()
+		return nil, fmt.Errorf("启动 Bocker 控制终端命令失败: %w", err)
+	}
+	var outputWG sync.WaitGroup
+	outputWG.Add(2)
+	go func() {
+		defer outputWG.Done()
+		_, _ = io.Copy(master, reader)
+	}()
+	go func() {
+		defer outputWG.Done()
+		_, _ = io.Copy(stream, master)
+	}()
+	processState, waitErr := command.Process.Wait()
+	closeBockerControlInput(connection)
+	_ = slave.Close()
+	outputWG.Wait()
+	return processState, waitErr
+}
+
+func brokerTerminalSize(environment map[string]string) (int, int) {
+	width, widthErr := strconv.Atoi(environment[terminalWidthEnv])
+	height, heightErr := strconv.Atoi(environment[terminalHeightEnv])
+	if widthErr != nil || heightErr != nil || width <= 0 || height <= 0 {
+		return 120, 40
+	}
+	return width, height
 }
 
 func closeBockerControlInput(connection net.Conn) {
@@ -289,7 +341,7 @@ func runPrivilegedBrokerCommand(args []string) (int, error) {
 		}
 	}
 	var terminalState *term.State
-	if terminal && brokerCommandNeedsRawTerminal(args) {
+	if terminal {
 		terminalState, err = term.MakeRaw(terminalFD)
 		if err != nil {
 			return 1, fmt.Errorf("设置终端模式失败: %w", err)
@@ -298,7 +350,7 @@ func runPrivilegedBrokerCommand(args []string) (int, error) {
 	}
 	if err := json.NewEncoder(connection).Encode(bockerControlRequest{
 		Arguments: args, Environment: environment, WorkingDirectory: workingDirectory,
-		CallerUID: os.Getuid(), CallerGID: os.Getgid(),
+		CallerUID: os.Getuid(), CallerGID: os.Getgid(), Terminal: terminal,
 	}); err != nil {
 		return 1, fmt.Errorf("发送 Bocker 控制请求失败: %w", err)
 	}
@@ -323,10 +375,6 @@ func runPrivilegedBrokerCommand(args []string) (int, error) {
 		}
 		exitCode = response.ExitCode
 	}
-}
-
-func brokerCommandNeedsRawTerminal(args []string) bool {
-	return len(args) >= 3 && args[0] == "container" && args[1] == "shell" && !strings.HasPrefix(args[2], "-")
 }
 
 func allowedBrokerEnvironment(key string) bool {

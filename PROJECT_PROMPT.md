@@ -39,6 +39,11 @@ Incus system service。
 需要宿主机 root 能力的操作通过 Bocker 后台 broker 转发。终端交互命令
 （例如 `shell`、`exec`、`export`）仍须保留正常的标准输入输出行为。
 
+所有公开资源命令统一从普通用户 CLI 进入 control socket，由 root 后台调用 Incus API。
+当调用者位于真实终端时，broker 必须为后台子进程分配 PTY，并双向转发输入输出，以保留
+上下键菜单、raw terminal、窗口尺寸和交互 shell；管道或 GUI 调用则使用普通 stdin/stdout
+管道。普通用户 CLI 不应再绕过 control socket 直接执行某一类资源命令。
+
 broker 转发必须是流式的：长时间运行的 `image build`、`template install`、容器操作等
 要在执行过程中持续把 stdout/stderr 转发给调用者，不能等整个子进程结束后才一次性返回，
 否则用户会误以为命令没有反应。
