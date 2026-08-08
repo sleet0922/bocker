@@ -12,8 +12,8 @@ not change the CLI or its state format.
 - `bocker_gui` is an unprivileged Flutter frontend. It contains no container
   engine and sends the same CLI arguments to the matching bundled `bocker`.
 - The GUI invokes the bundled CLI directly as the desktop user. The CLI talks
-  to the already-running Bocker service through its `lxd`-group authorized Unix
-  socket, including for the interactive container shell; no PolicyKit prompt
+  to the already-running Bocker service through its local Unix socket, including
+  for the interactive container shell; no PolicyKit prompt
   or `sudo` helper is used.
 
 The release bundle keeps `bocker_gui`, `bocker`, `lib/`, and `data/` together.

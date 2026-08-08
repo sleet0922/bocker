@@ -14,10 +14,8 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"os/user"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -31,7 +29,6 @@ import (
 const (
 	embeddedIncusVersion  = "7.2-container"
 	defaultBockerState    = "/var/lib/bocker"
-	defaultSocketGroup    = "lxd"
 	embeddedSocketWait    = 90 * time.Second
 	hostDependencyTimeout = 5 * time.Minute
 	daemonGracefulStop    = 20 * time.Second
@@ -79,12 +76,12 @@ func ensureEmbeddedDaemonOnce() error {
 		return err
 	}
 	setEmbeddedEnvironment(paths)
-	// The daemon owns the host-level privileges.  Normal users connect to its
-	// group-authorized Unix socket and never need to start a privileged process.
+	// The daemon owns the host-level privileges. Normal users connect to its
+	// local Unix sockets and never need to start a privileged process.
 	if os.Geteuid() != 0 {
 		server, connectErr := connectEmbeddedServer(paths.socket)
 		if connectErr != nil {
-			return fmt.Errorf("无法连接 Bocker 后台服务（普通用户无需 sudo，但需要已启动 bocker.service 且当前用户在 lxd 组）: %w", connectErr)
+			return fmt.Errorf("无法连接 Bocker 后台服务（请确认 bocker.service 已启动）: %w", connectErr)
 		}
 		return ensureDefaultIncusConfig(server)
 	}
@@ -332,43 +329,23 @@ WantedBy=multi-user.target
 `, exe, stateDir)
 }
 
-// allowSocketGroup makes only the state directory components needed to reach
-// the API socket traversable by members of the Incus administration group.
-// Container data and logs remain mode 0700.
-func allowSocketGroup(paths embeddedPaths) error {
-	group, err := user.LookupGroup(defaultSocketGroup)
-	if err != nil {
-		return nil
-	}
-	gid, err := strconv.Atoi(group.Gid)
-	if err != nil {
-		return fmt.Errorf("parse %s group id: %w", defaultSocketGroup, err)
-	}
+// allowSocketAccess makes only the state directory components needed to reach
+// the API socket traversable by all local users. Container data and logs
+// remain mode 0700.
+func allowSocketAccess(paths embeddedPaths) error {
 	for _, dir := range []string{paths.stateDir, paths.incusDir} {
-		if err := os.Chown(dir, 0, gid); err != nil {
-			return fmt.Errorf("set %s group on %s: %w", defaultSocketGroup, dir, err)
-		}
-		if err := os.Chmod(dir, 0o710); err != nil {
+		if err := os.Chmod(dir, 0o711); err != nil {
 			return fmt.Errorf("set socket traversal permission on %s: %w", dir, err)
 		}
 	}
 	return nil
 }
 
-func ensureSocketGroupWhenReady(paths embeddedPaths) {
-	group, err := user.LookupGroup(defaultSocketGroup)
-	if err != nil {
-		return
-	}
-	gid, err := strconv.Atoi(group.Gid)
-	if err != nil {
-		return
-	}
+func ensureSocketAccessWhenReady(paths embeddedPaths) {
 	deadline := time.Now().Add(embeddedSocketWait)
 	for time.Now().Before(deadline) {
 		if info, statErr := os.Stat(paths.socket); statErr == nil && info.Mode()&os.ModeSocket != 0 {
-			_ = os.Chown(paths.socket, 0, gid)
-			_ = os.Chmod(paths.socket, 0o660)
+			_ = os.Chmod(paths.socket, 0o666)
 			return
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -639,7 +616,7 @@ func runEmbeddedDaemonSupervisor() error {
 			return err
 		}
 	}
-	if err := allowSocketGroup(paths); err != nil {
+	if err := allowSocketAccess(paths); err != nil {
 		return err
 	}
 
@@ -668,9 +645,6 @@ func runEmbeddedDaemonSupervisor() error {
 
 	incusdPath := filepath.Join(paths.runtimeDir, "bin", "incusd")
 	cmdArgs := []string{"--logfile", filepath.Join(paths.logDir, "incusd-internal.log")}
-	if _, err := user.LookupGroup(defaultSocketGroup); err == nil {
-		cmdArgs = append(cmdArgs, "--group", defaultSocketGroup)
-	}
 	cmd := exec.Command(incusdPath, cmdArgs...)
 	cmd.Env = os.Environ()
 	cmd.Stdout = logFile
@@ -679,10 +653,9 @@ func runEmbeddedDaemonSupervisor() error {
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start embedded incusd: %w", err)
 	}
-	// Incus creates the socket asynchronously.  The --group flag above is the
-	// primary authorization mechanism; this also fixes access when reusing a
-	// socket left by an older daemon.
-	go ensureSocketGroupWhenReady(paths)
+	// Incus creates the socket asynchronously; normalize its mode after it
+	// appears, including when reusing a socket left by an older daemon.
+	go ensureSocketAccessWhenReady(paths)
 	control, err := startBockerControl(paths)
 	if err != nil {
 		stopProcess(cmd.Process)

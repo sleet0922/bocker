@@ -7,7 +7,7 @@ import (
 )
 
 // Version 工具版本
-const Version = "3.0.2"
+const Version = "3.0.3"
 
 // MirrorRemote 镜像源在本地的 remote 名称
 const MirrorRemote = "mirror-images"
@@ -297,7 +297,7 @@ func printUsage() {
 	fmt.Println("      bocker image build --name web-image ./Incusfile")
 	fmt.Println("      bocker image run web-image --name web-01")
 	fmt.Println("补全: CLI Debian 包会安装 Bash 自动补全；重新打开终端后生效。")
-	fmt.Println("提示: 普通用户需加入 lxd 组并确保 bocker.service 已启动；日常操作不需要 sudo。")
+	fmt.Println("提示: 安装完成后普通用户可直接使用；日常操作不需要 sudo。")
 }
 
 type usageEntry struct {

@@ -6,6 +6,8 @@ section: default
 priority: extra
 maintainer: Bocker Maintainers <maintainers@example.com>
 description: Bocker CLI
+scripts:
+  postinstall: ./build/postinstall.sh
 contents:
   - src: ./bocker
     dst: /usr/bin/bocker

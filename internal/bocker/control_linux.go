@@ -11,9 +11,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
-	"os/user"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 )
@@ -57,19 +55,7 @@ func startBockerControl(paths embeddedPaths) (*bockerControlServer, error) {
 }
 
 func authorizeBockerSocket(path string) error {
-	group, err := user.LookupGroup(defaultSocketGroup)
-	if err != nil {
-		_ = os.Chmod(path, 0o600)
-		return fmt.Errorf("缺少 %s 组，无法授权普通用户使用 Bocker: %w", defaultSocketGroup, err)
-	}
-	gid, err := strconv.Atoi(group.Gid)
-	if err != nil {
-		return fmt.Errorf("解析 %s 组 ID 失败: %w", defaultSocketGroup, err)
-	}
-	if err := os.Chown(path, 0, gid); err != nil {
-		return fmt.Errorf("设置 Bocker 控制 socket 所有者失败: %w", err)
-	}
-	if err := os.Chmod(path, 0o660); err != nil {
+	if err := os.Chmod(path, 0o666); err != nil {
 		return fmt.Errorf("设置 Bocker 控制 socket 权限失败: %w", err)
 	}
 	return nil
@@ -232,7 +218,7 @@ func runPrivilegedBrokerCommand(args []string) (int, error) {
 	}
 	connection, err := net.Dial("unix", paths.control)
 	if err != nil {
-		return 1, fmt.Errorf("无法连接 Bocker 后台控制 socket（请确认 bocker.service 已启动且当前用户在 lxd 组）: %w", err)
+		return 1, fmt.Errorf("无法连接 Bocker 后台控制 socket（请确认 bocker.service 已启动）: %w", err)
 	}
 	defer connection.Close()
 	workingDirectory, err := os.Getwd()

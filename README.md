@@ -11,8 +11,7 @@ Bocker 专注于常用工作流：安装镜像、创建和管理容器、配置�
 
 - Linux amd64。当前嵌入式运行时不支持其他架构。
 - 容器运行时由 `bocker.service` 负责宿主机 namespace、cgroup、网络、挂载和存储；
-  日常 CLI 操作通过 Incus Unix socket 完成，不需要 root 或 `sudo`。使用 CLI 的普通用户
-  需要加入 `lxd` 组并重新登录。
+  日常 CLI 操作通过本地 Unix socket 完成，不需要 root 或 `sudo`。
 - 宿主机需要以下命令：`ip`、`nsenter`、`dnsmasq`、`rsync`、`tar`、`unsquashfs` 和 `xz`。
 - 首次部署后台服务时，如果缺少 `setfattr`，管理员需要安装 `attr` 软件包；服务启动后
   普通用户不需要为任何 Bocker 命令加 `sudo`。
@@ -39,8 +38,8 @@ install -m 0644 completions/bocker /usr/share/bash-completion/completions/bocker
 bocker --version
 ```
 
-首次部署或升级后台服务需要管理员执行一次安装/启动，并把日常用户加入 `lxd` 组；
-完成后，日常的 `bocker` CLI 和 GUI 操作都直接以普通用户运行，不需要 `sudo`。
+Debian 包安装时会自动初始化并启动后台服务；完成后，日常的 `bocker` CLI 和 GUI
+操作都直接以普通用户运行，不需要 `sudo`。
 
 Debian 包按标准系统目录安装且不创建额外软链接：CLI 位于 `/usr/bin/bocker`，Bash
 补全位于 `/usr/share/bash-completion/completions/bocker`，GUI 私有运行文件位于
@@ -57,7 +56,7 @@ Debian 包会自动安装 Bash 补全文件。重新打开终端后，输入 `bo
 
 `gui/` 提供了基于 Flutter Material 3 的 Ubuntu 桌面界面，覆盖容器、镜像、
 构建和常用设置管理，同时保留所有原有 CLI 用法。GUI 直接调用同捆 CLI；CLI
-通过 `lxd` 组授权的 Bocker 后台 socket 执行需要宿主机权限的操作，不弹出提权提示。
+通过 Bocker 后台 socket 执行需要宿主机权限的操作，不弹出提权提示。
 GUI 包会携带同版本 `bocker` 二进制，并优先使用该副本以避免版本不兼容。
 
 开发运行：
@@ -372,8 +371,7 @@ tail -n 80 /var/lib/bocker/logs/incusd.log
 
 常见问题：
 
-- 报无法连接 Bocker 后台服务：确认 `bocker.service` 已启动，当前用户在 `lxd` 组中并已
-  重新登录；不要给每条命令加 `sudo`。
+- 报无法连接 Bocker 后台服务：确认 `bocker.service` 已启动；不要给每条命令加 `sudo`。
 - 服务因 `setfattr` 退出：确认已安装 `attr`；root 首次运行会自动处理。
 - Bridge 无法创建：设置正确的 `BOCKER_BRIDGE_PARENT`，或改用 `--network nat`。
 - `image build` 找不到 `Incusfile`：检查文件路径和当前工作目录。

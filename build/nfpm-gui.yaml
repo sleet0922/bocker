@@ -6,6 +6,8 @@ section: default
 priority: extra
 maintainer: Bocker Maintainers <maintainers@example.com>
 description: Bocker GUI
+scripts:
+  postinstall: ./build/postinstall.sh
 contents:
   - src: ./gui/build/linux/x64/release/bundle/
     dst: /usr/lib/bocker-gui
