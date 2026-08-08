@@ -29,6 +29,7 @@ type bockerControlRequest struct {
 type bockerControlResponse struct {
 	Output   string `json:"output"`
 	ExitCode int    `json:"exitCode"`
+	Done     bool   `json:"done,omitempty"`
 }
 
 type bockerControlServer struct {
@@ -121,20 +122,37 @@ func handleBockerControlConnection(connection net.Conn) {
 		}
 		command.Env = setControlEnvironmentValue(command.Env, key, value)
 	}
-	var output strings.Builder
-	command.Stdout = &output
-	command.Stderr = &output
+	stream := &bockerControlOutputStream{connection: connection}
+	command.Stdout = stream
+	command.Stderr = stream
 	runErr := command.Run()
-	response := bockerControlResponse{Output: output.String()}
+	response := bockerControlResponse{Done: true}
 	if exitErr, ok := runErr.(*exec.ExitError); ok {
 		response.ExitCode = exitErr.ExitCode()
 	} else if runErr != nil {
 		response.ExitCode = 1
-		if response.Output == "" {
-			response.Output = runErr.Error()
-		}
+		response.Output = runErr.Error()
 	}
 	writeBockerControlResponse(connection, response)
+}
+
+// bockerControlOutputStream forwards child output as newline-delimited JSON
+// messages so long-running builds remain visibly active in the caller.
+type bockerControlOutputStream struct {
+	connection net.Conn
+	mu         sync.Mutex
+}
+
+func (s *bockerControlOutputStream) Write(data []byte) (int, error) {
+	if len(data) == 0 {
+		return 0, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := json.NewEncoder(s.connection).Encode(bockerControlResponse{Output: string(data)}); err != nil {
+		return 0, err
+	}
+	return len(data), nil
 }
 
 func validatePrivilegedArguments(args []string) error {
@@ -155,6 +173,7 @@ func validatePrivilegedArguments(args []string) error {
 }
 
 func writeBockerControlResponse(connection net.Conn, response bockerControlResponse) {
+	response.Done = true
 	_ = json.NewEncoder(connection).Encode(response)
 }
 
@@ -234,18 +253,24 @@ func runPrivilegedBrokerCommand(args []string) (int, error) {
 	if err := json.NewEncoder(connection).Encode(bockerControlRequest{Arguments: args, Environment: environment, WorkingDirectory: workingDirectory}); err != nil {
 		return 1, fmt.Errorf("发送 Bocker 控制请求失败: %w", err)
 	}
-	responseData, err := io.ReadAll(connection)
-	if err != nil {
-		return 1, fmt.Errorf("读取 Bocker 控制响应失败: %w", err)
+	decoder := json.NewDecoder(connection)
+	exitCode := 0
+	for {
+		var response bockerControlResponse
+		if err := decoder.Decode(&response); err != nil {
+			if errors.Is(err, io.EOF) {
+				return exitCode, nil
+			}
+			return 1, fmt.Errorf("读取 Bocker 控制响应失败: %w", err)
+		}
+		if response.Output != "" {
+			_, _ = fmt.Fprint(os.Stdout, response.Output)
+		}
+		if response.Done {
+			return response.ExitCode, nil
+		}
+		exitCode = response.ExitCode
 	}
-	var response bockerControlResponse
-	if err := json.Unmarshal(responseData, &response); err != nil {
-		return 1, fmt.Errorf("Bocker 控制响应格式无效: %w", err)
-	}
-	if response.Output != "" {
-		_, _ = fmt.Fprint(os.Stdout, response.Output)
-	}
-	return response.ExitCode, nil
 }
 
 func allowedBrokerEnvironment(key string) bool {

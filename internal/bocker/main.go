@@ -7,7 +7,7 @@ import (
 )
 
 // Version 工具版本
-const Version = "3.0.3"
+const Version = "3.0.4"
 
 // MirrorRemote 镜像源在本地的 remote 名称
 const MirrorRemote = "mirror-images"

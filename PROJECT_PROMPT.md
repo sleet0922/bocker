@@ -39,6 +39,10 @@ Incus system service。
 需要宿主机 root 能力的操作通过 Bocker 后台 broker 转发。终端交互命令
 （例如 `shell`、`exec`、`export`）仍须保留正常的标准输入输出行为。
 
+broker 转发必须是流式的：长时间运行的 `image build`、`template install`、容器操作等
+要在执行过程中持续把 stdout/stderr 转发给调用者，不能等整个子进程结束后才一次性返回，
+否则用户会误以为命令没有反应。
+
 内部命令 `bocker __daemon` 是 systemd 使用的私有入口，只允许 root 运行；普通用户不应
 直接调用它。不要把这个内部约束误认为公开 CLI 需要 root。
 
