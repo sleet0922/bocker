@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 void main() {
   runApp(const BockerGuiApp());
@@ -995,22 +996,14 @@ class _ContainersView extends StatelessWidget {
                             ),
                           ),
                           DataCell(Text(item.network)),
-                          DataCell(Text(item.ipv4)),
+                          DataCell(CopyableText(text: item.ipv4)),
                           DataCell(
-                            Tooltip(
-                              message: item.domain.isEmpty
-                                  ? '未映射域名'
-                                  : item.domain,
-                              child: ConstrainedBox(
-                                constraints: const BoxConstraints(
-                                  minWidth: 100,
-                                  maxWidth: 180,
-                                ),
-                                child: Text(
-                                  item.domain.isEmpty ? '-' : item.domain,
-                                  softWrap: true,
-                                ),
+                            ConstrainedBox(
+                              constraints: const BoxConstraints(
+                                minWidth: 100,
+                                maxWidth: 180,
                               ),
+                              child: CopyableText(text: item.domain),
                             ),
                           ),
                           DataCell(
@@ -1137,6 +1130,36 @@ class _ContainersView extends StatelessWidget {
 }
 
 enum _ContainerAction { exec, settings, export, delete }
+
+class CopyableText extends StatelessWidget {
+  const CopyableText({required this.text, super.key});
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    if (text.isEmpty) return const Text('-');
+
+    return Tooltip(
+      message: '点击复制: $text',
+      child: InkWell(
+        mouseCursor: SystemMouseCursors.click,
+        onTap: () async {
+          await Clipboard.setData(ClipboardData(text: text));
+          if (!context.mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('已复制: $text'),
+              behavior: SnackBarBehavior.floating,
+              duration: const Duration(seconds: 2),
+            ),
+          );
+        },
+        child: Text(text, softWrap: true),
+      ),
+    );
+  }
+}
 
 class _ImagesView extends StatelessWidget {
   const _ImagesView({

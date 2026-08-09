@@ -1,7 +1,37 @@
 import 'package:bocker_gui/main.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 void main() {
+  testWidgets('copies a container value when clicked', (tester) async {
+    String? copiedText;
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(SystemChannels.platform, (call) async {
+          if (call.method == 'Clipboard.setData') {
+            copiedText =
+                (call.arguments as Map<Object?, Object?>)['text'] as String?;
+          }
+          return null;
+        });
+    addTearDown(
+      () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(SystemChannels.platform, null),
+    );
+
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: Scaffold(body: CopyableText(text: 'test.cn')),
+      ),
+    );
+
+    await tester.tap(find.text('test.cn'));
+    await tester.pump();
+
+    expect(copiedText, 'test.cn');
+    expect(find.text('已复制: test.cn'), findsOneWidget);
+  });
+
   test('parses the container list JSON', () {
     const output = '''[
       {"name":"web","status":"running","network":"nat","ipv4":"10.0.100.24","ipv6":"","domain":"web.test","autostart":"on","ports":"80/tcp(v4,v6), 8080->80/tcp(v4,v6)"},
