@@ -4,8 +4,8 @@ import 'package:flutter_test/flutter_test.dart';
 void main() {
   test('parses the container list JSON', () {
     const output = '''[
-      {"name":"web","status":"running","network":"nat","ipv4":"10.0.100.24","ipv6":"","autostart":"on","ports":"8080/tcp -> 80"},
-      {"name":"worker","status":"stopped","network":"bridge","ipv4":"","ipv6":"","autostart":"off","ports":"-"}
+      {"name":"web","status":"running","network":"nat","ipv4":"10.0.100.24","ipv6":"","domain":"web.test","autostart":"on","ports":"80/tcp(v4,v6), 8080->80/tcp(v4,v6)"},
+      {"name":"worker","status":"stopped","network":"bridge","ipv4":"","ipv6":"","domain":"","autostart":"off","ports":"-"}
     ]''';
 
     final containers = parseContainers(output);
@@ -13,7 +13,8 @@ void main() {
     expect(containers, hasLength(2));
     expect(containers.first.name, 'web');
     expect(containers.first.isRunning, isTrue);
-    expect(containers.first.ports, '8080/tcp -> 80');
+    expect(containers.first.domain, 'web.test');
+    expect(containers.first.portsDisplay, '80/tcp(v4,v6)\n8080->80/tcp(v4,v6)');
     expect(containers.last.network, 'bridge');
   });
 

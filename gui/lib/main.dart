@@ -566,7 +566,7 @@ class _BockerHomeState extends State<BockerHome> {
   }
 
   Future<void> _settingsDialog(ContainerInfo container) async {
-    final domain = TextEditingController();
+    final domain = TextEditingController(text: container.domain);
     final port = TextEditingController();
     final removePort = TextEditingController();
     var autostart = container.autostart == 'on';
@@ -954,12 +954,15 @@ class _ContainersView extends StatelessWidget {
             child: ConstrainedBox(
               constraints: BoxConstraints(minWidth: constraints.maxWidth),
               child: DataTable(
-                columnSpacing: 28,
+                columnSpacing: 20,
+                dataRowMinHeight: 56,
+                dataRowMaxHeight: 160,
                 columns: const [
                   DataColumn(label: Text('名称')),
                   DataColumn(label: Text('状态')),
                   DataColumn(label: Text('网络')),
                   DataColumn(label: Text('IPv4')),
+                  DataColumn(label: Text('域名')),
                   DataColumn(label: Text('端口')),
                   DataColumn(label: Text('自启动')),
                   DataColumn(label: Text('操作')),
@@ -994,11 +997,31 @@ class _ContainersView extends StatelessWidget {
                           DataCell(Text(item.network)),
                           DataCell(Text(item.ipv4)),
                           DataCell(
-                            SizedBox(
-                              width: 150,
-                              child: Text(
-                                item.ports,
-                                overflow: TextOverflow.ellipsis,
+                            Tooltip(
+                              message: item.domain.isEmpty
+                                  ? '未映射域名'
+                                  : item.domain,
+                              child: ConstrainedBox(
+                                constraints: const BoxConstraints(
+                                  minWidth: 100,
+                                  maxWidth: 180,
+                                ),
+                                child: Text(
+                                  item.domain.isEmpty ? '-' : item.domain,
+                                  softWrap: true,
+                                ),
+                              ),
+                            ),
+                          ),
+                          DataCell(
+                            Tooltip(
+                              message: item.ports.isEmpty ? '-' : item.ports,
+                              child: ConstrainedBox(
+                                constraints: const BoxConstraints(
+                                  minWidth: 190,
+                                  maxWidth: 250,
+                                ),
+                                child: Text(item.portsDisplay, softWrap: true),
                               ),
                             ),
                           ),
@@ -1391,7 +1414,6 @@ class BockerCommand {
     }
     return '${File(Platform.resolvedExecutable).parent.path}/bocker';
   }
-
 }
 
 class CommandResult {
@@ -1413,6 +1435,7 @@ class ContainerInfo {
     required this.network,
     required this.ipv4,
     required this.ipv6,
+    required this.domain,
     required this.autostart,
     required this.ports,
   });
@@ -1421,9 +1444,14 @@ class ContainerInfo {
   final String network;
   final String ipv4;
   final String ipv6;
+  final String domain;
   final String autostart;
   final String ports;
   bool get isRunning => status.toLowerCase() == 'running';
+  String get portsDisplay {
+    if (ports.isEmpty) return '-';
+    return ports.split(', ').join('\n');
+  }
 }
 
 class ImageInfo {
@@ -1462,6 +1490,7 @@ List<ContainerInfo> parseContainers(String output) {
         network: item['network'] as String? ?? '',
         ipv4: item['ipv4'] as String? ?? '',
         ipv6: item['ipv6'] as String? ?? '',
+        domain: item['domain'] as String? ?? '',
         autostart: item['autostart'] as String? ?? '',
         ports: item['ports'] as String? ?? '',
       );

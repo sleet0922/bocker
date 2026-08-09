@@ -14,6 +14,7 @@ type containerListItem struct {
 	Network   string `json:"network"`
 	IPv4      string `json:"ipv4"`
 	IPv6      string `json:"ipv6"`
+	Domain    string `json:"domain"`
 	Autostart string `json:"autostart"`
 	Ports     string `json:"ports"`
 }
@@ -39,6 +40,7 @@ func CmdList(args []string) error {
 				Network:   c.NetworkMode(),
 				IPv4:      c.IPv4(),
 				IPv6:      strings.Join(c.IPv6Addresses(), ","),
+				Domain:    c.Domain(),
 				Autostart: autostartBadge(c.Autostart()),
 				Ports:     portSummary(c.PortMappings()),
 			})
@@ -51,15 +53,16 @@ func CmdList(args []string) error {
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "NAME\tSTATUS\tNETWORK\tIPV4\tIPV6\tAUTOSTART\tPORTS")
+	fmt.Fprintln(w, "NAME\tSTATUS\tNETWORK\tIPV4\tIPV6\tDOMAIN\tAUTOSTART\tPORTS")
 	for i := range cs {
 		c := &cs[i]
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			c.Name,
 			strings.ToLower(c.Status),
 			c.NetworkMode(),
 			c.IPv4(),
 			strings.Join(c.IPv6Addresses(), ","),
+			c.Domain(),
 			autostartBadge(c.Autostart()),
 			portSummary(c.PortMappings()),
 		)
