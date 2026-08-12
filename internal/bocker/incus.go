@@ -343,9 +343,12 @@ func defaultExecEnv() map[string]string {
 	if term == "" {
 		term = "xterm-256color"
 	}
+	// Do not set PATH here. Incus supplies its distribution-aware default and
+	// appends /run/current-system/sw/bin for NixOS containers. Supplying a
+	// traditional Linux PATH would override that detection and make NixOS
+	// commands such as ls and cat unavailable by name.
 	return map[string]string{
 		"HOME": "/root",
-		"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 		"TERM": term,
 		"USER": "root",
 	}

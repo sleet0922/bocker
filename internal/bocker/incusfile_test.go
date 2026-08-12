@@ -535,3 +535,15 @@ func TestDefaultNameFromImageProducesValidName(t *testing.T) {
 		}
 	}
 }
+
+func TestDefaultExecEnvLeavesPATHToIncus(t *testing.T) {
+	env := defaultExecEnv()
+	if _, ok := env["PATH"]; ok {
+		t.Fatal("default exec environment must not override the container PATH")
+	}
+	for key := range map[string]string{"HOME": "/root", "TERM": "", "USER": "root"} {
+		if env[key] == "" {
+			t.Fatalf("default exec environment is missing %s", key)
+		}
+	}
+}
