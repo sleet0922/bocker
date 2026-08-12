@@ -953,6 +953,12 @@ func (c *IncusClient) LaunchLocalImageWithNetwork(alias, name string, mode Netwo
 }
 
 func (c *IncusClient) LaunchLocalImageWithNetworkAndPermission(alias, name string, mode NetworkMode, permission PermissionMode) error {
+	return c.LaunchLocalImageWithNetworkPermissionAndConfig(alias, name, mode, permission, nil)
+}
+
+// LaunchLocalImageWithNetworkPermissionAndConfig starts a local image with
+// additional instance configuration applied before its init process starts.
+func (c *IncusClient) LaunchLocalImageWithNetworkPermissionAndConfig(alias, name string, mode NetworkMode, permission PermissionMode, extraConfig map[string]string) error {
 	if err := c.ready(); err != nil {
 		return err
 	}
@@ -972,6 +978,9 @@ func (c *IncusClient) LaunchLocalImageWithNetworkAndPermission(alias, name strin
 	}
 	config := map[string]string{
 		containerNetworkConfig: string(mode),
+	}
+	for key, value := range extraConfig {
+		config[key] = value
 	}
 	applyPermissionConfig(config, permission)
 	req := api.InstancesPost{

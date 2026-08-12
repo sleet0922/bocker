@@ -3,7 +3,7 @@ GOOS ?= linux
 GOARCH ?= amd64
 CGO_ENABLED ?= 0
 LDFLAGS ?= -s -w
-VERSION ?= 3.1
+VERSION ?= 3.1.1
 NFPM_VERSION ?= v2.45.0
 NFPM ?= go run github.com/goreleaser/nfpm/v2/cmd/nfpm@$(NFPM_VERSION)
 
@@ -27,7 +27,7 @@ build: build-cli
 
 build-cli: check
 	CGO_ENABLED=$(CGO_ENABLED) GOOS=$(GOOS) GOARCH=$(GOARCH) \
-		go build -trimpath -ldflags '$(LDFLAGS)' -o '$(BIN_NAME)' ./cmd/bocker
+		go build -a -trimpath -ldflags '$(LDFLAGS)' -o '$(BIN_NAME)' ./cmd/bocker
 	chmod 0755 '$(BIN_NAME)'
 	@echo "Built ./$(BIN_NAME) for $(GOOS)/$(GOARCH)"
 

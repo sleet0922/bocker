@@ -521,6 +521,18 @@ func TestEnvPersistenceHelpers(t *testing.T) {
 	}
 }
 
+func TestRuntimeEnvironmentMetadata(t *testing.T) {
+	f := &Incusfile{Env: []EnvSpec{{Key: "A", Value: "first"}, {Key: "A", Value: "final"}, {Key: "B", Value: "two"}}}
+	properties := buildImageProperties(f)
+	parsed, err := runtimeConfigFromImageProperties("test", properties)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := incusEnvironmentConfig(parsed.Env), map[string]string{"environment.A": "final", "environment.B": "two"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("environment config = %#v, want %#v", got, want)
+	}
+}
+
 func TestDefaultNameFromImageProducesValidName(t *testing.T) {
 	for _, image := range []string{
 		"debian:12",

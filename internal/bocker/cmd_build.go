@@ -525,6 +525,9 @@ func buildImageProperties(f *Incusfile) map[string]string {
 	if len(f.Stages) > 0 && f.Stages[len(f.Stages)-1].BaseFingerprint != "" {
 		p["user.bocker.base_fingerprint"] = f.Stages[len(f.Stages)-1].BaseFingerprint
 	}
+	if data, err := json.Marshal(dedupeEnvSpecs(f.Env)); err == nil && len(f.Env) > 0 {
+		p["user.bocker.env"] = string(data)
+	}
 	if data, err := json.Marshal(f.Entrypoint); err == nil && len(f.Entrypoint) > 0 {
 		p["user.bocker.entrypoint"] = string(data)
 	}
@@ -646,7 +649,7 @@ func runFromBuiltImage(client *IncusClient, alias string, f *Incusfile, networkM
 	}
 
 	fmt.Printf("▶ 启动容器 %s (镜像 %s) ...\n", name, alias)
-	if err := client.LaunchLocalImageWithNetworkAndPermission(alias, name, networkMode, permission); err != nil {
+	if err := client.LaunchLocalImageWithNetworkPermissionAndConfig(alias, name, networkMode, permission, incusEnvironmentConfig(f.Env)); err != nil {
 		return fmt.Errorf("启动容器失败: %w", err)
 	}
 	completed := false
@@ -1081,5 +1084,24 @@ func runtimeConfigFromImageProperties(name string, properties map[string]string)
 		}
 		f.Autostart = &autostart
 	}
+	if value := properties["user.bocker.env"]; value != "" {
+		if err := json.Unmarshal([]byte(value), &f.Env); err != nil {
+			return nil, fmt.Errorf("ENV: %w", err)
+		}
+		for _, env := range f.Env {
+			if err := validateEnvKey(env.Key); err != nil {
+				return nil, fmt.Errorf("ENV: %w", err)
+			}
+		}
+		f.Env = dedupeEnvSpecs(f.Env)
+	}
 	return f, nil
+}
+
+func incusEnvironmentConfig(envs []EnvSpec) map[string]string {
+	config := make(map[string]string, len(envs))
+	for _, env := range dedupeEnvSpecs(envs) {
+		config["environment."+env.Key] = env.Value
+	}
+	return config
 }

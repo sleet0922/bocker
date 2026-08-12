@@ -2,6 +2,7 @@ package bocker
 
 import (
 	"archive/zip"
+	"io"
 	"strings"
 	"testing"
 )
@@ -14,6 +15,7 @@ func TestEmbeddedRuntimeIsContainerOnly(t *testing.T) {
 	defer zr.Close()
 
 	entries := make(map[string]bool, len(zr.File))
+	libuvValidated := false
 	for _, entry := range zr.File {
 		entries[strings.ReplaceAll(entry.Name, "\\", "/")] = true
 	}
@@ -23,6 +25,7 @@ func TestEmbeddedRuntimeIsContainerOnly(t *testing.T) {
 		"lib/liblxc.so.1",
 		"lib/libcowsql.so.0",
 		"lib/libfuse3.so.3",
+		"lib/libuv.so.1",
 		"share/lxcfs/lxc.mount.hook",
 	} {
 		if !entries[required] {
@@ -51,5 +54,28 @@ func TestEmbeddedRuntimeIsContainerOnly(t *testing.T) {
 		if entries[forbidden] {
 			t.Errorf("embedded runtime unexpectedly contains %s", forbidden)
 		}
+	}
+	for _, entry := range zr.File {
+		if strings.ReplaceAll(entry.Name, "\\", "/") != "lib/libuv.so.1" {
+			continue
+		}
+		reader, err := entry.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		header := make([]byte, 4)
+		_, err = io.ReadFull(reader, header)
+		_ = reader.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(header) != "\x7fELF" {
+			t.Fatalf("embedded libuv.so.1 is not an ELF file: %q", header)
+		}
+		libuvValidated = true
+		break
+	}
+	if !libuvValidated {
+		t.Fatal("embedded runtime is missing a readable lib/libuv.so.1")
 	}
 }

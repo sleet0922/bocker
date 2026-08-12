@@ -41,6 +41,7 @@ type Incusfile struct {
 	Autostart  *bool
 	Entrypoint []string
 	Cmd        []string
+	Env        []EnvSpec
 }
 
 // Stage 表示一个构建阶段 (FROM ... AS ...)。
@@ -390,6 +391,11 @@ func parseIncusfile(path string) (*Incusfile, error) {
 	f.Autostart = last.Autostart
 	f.Entrypoint = append([]string(nil), last.Entrypoint...)
 	f.Cmd = append([]string(nil), last.Cmd...)
+	for _, step := range last.Steps {
+		if step.Kind == "ENV" {
+			f.Env = append(f.Env, step.Env)
+		}
+	}
 	return f, nil
 }
 
