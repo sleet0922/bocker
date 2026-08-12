@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/creack/pty"
 	"golang.org/x/term"
@@ -30,7 +31,12 @@ const (
 	terminalHeightEnv = "BOCKER_TERM_HEIGHT"
 )
 
-const controlMaxInput = 1 << 20
+const (
+	controlMaxInput       = 1 << 20
+	controlMaxConnections = 32
+	controlRequestTimeout = 30 * time.Second
+	controlWriteTimeout   = 30 * time.Second
+)
 
 type bockerControlRequest struct {
 	Arguments        []string          `json:"arguments"`
@@ -48,8 +54,9 @@ type bockerControlResponse struct {
 }
 
 type bockerControlServer struct {
-	listener net.Listener
-	close    sync.Once
+	listener    net.Listener
+	close       sync.Once
+	connections chan struct{}
 }
 
 func startBockerControl(paths embeddedPaths) (*bockerControlServer, error) {
@@ -65,7 +72,7 @@ func startBockerControl(paths embeddedPaths) (*bockerControlServer, error) {
 		_ = os.Remove(paths.control)
 		return nil, err
 	}
-	server := &bockerControlServer{listener: listener}
+	server := &bockerControlServer{listener: listener, connections: make(chan struct{}, controlMaxConnections)}
 	go server.serve()
 	return server, nil
 }
@@ -86,7 +93,17 @@ func (s *bockerControlServer) serve() {
 			}
 			continue
 		}
-		go handleBockerControlConnection(connection)
+		select {
+		case s.connections <- struct{}{}:
+			go func() {
+				defer func() { <-s.connections }()
+				handleBockerControlConnection(connection)
+			}()
+		default:
+			_ = connection.SetWriteDeadline(time.Now().Add(controlWriteTimeout))
+			writeBockerControlResponse(connection, bockerControlResponse{Output: "Bocker 控制服务繁忙，请稍后重试", ExitCode: 1})
+			_ = connection.Close()
+		}
 	}
 }
 
@@ -102,12 +119,14 @@ func (s *bockerControlServer) Close() {
 
 func handleBockerControlConnection(connection net.Conn) {
 	defer connection.Close()
-	reader := bufio.NewReaderSize(connection, controlMaxInput)
-	line, err := reader.ReadBytes('\n')
+	_ = connection.SetReadDeadline(time.Now().Add(controlRequestTimeout))
+	reader := bufio.NewReaderSize(connection, 64*1024)
+	line, err := readBockerControlRequest(reader)
 	if err != nil {
 		writeBockerControlResponse(connection, bockerControlResponse{Output: "读取 Bocker 控制请求失败: " + err.Error(), ExitCode: 1})
 		return
 	}
+	_ = connection.SetReadDeadline(time.Time{})
 	var request bockerControlRequest
 	if err := json.Unmarshal(line, &request); err != nil {
 		writeBockerControlResponse(connection, bockerControlResponse{Output: "Bocker 控制请求格式无效: " + err.Error(), ExitCode: 1})
@@ -155,6 +174,23 @@ func handleBockerControlConnection(connection net.Conn) {
 		response.Output = err.Error()
 	}
 	writeBockerControlResponse(connection, response)
+}
+
+func readBockerControlRequest(reader *bufio.Reader) ([]byte, error) {
+	var line []byte
+	for {
+		fragment, err := reader.ReadSlice('\n')
+		if len(line)+len(fragment) > controlMaxInput {
+			return nil, fmt.Errorf("Bocker 控制请求超过 %d 字节限制", controlMaxInput)
+		}
+		line = append(line, fragment...)
+		if err == nil {
+			return line, nil
+		}
+		if !errors.Is(err, bufio.ErrBufferFull) {
+			return nil, err
+		}
+	}
 }
 
 func runBockerPipeCommand(connection net.Conn, command *exec.Cmd, reader io.Reader, stream io.Writer) (*os.ProcessState, error) {
@@ -265,7 +301,12 @@ func (s *bockerControlOutputStream) Write(data []byte) (int, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := json.NewEncoder(s.connection).Encode(bockerControlResponse{Output: string(data)}); err != nil {
+	if err := s.connection.SetWriteDeadline(time.Now().Add(controlWriteTimeout)); err != nil {
+		return 0, err
+	}
+	err := json.NewEncoder(s.connection).Encode(bockerControlResponse{Output: string(data)})
+	_ = s.connection.SetWriteDeadline(time.Time{})
+	if err != nil {
 		return 0, err
 	}
 	return len(data), nil
@@ -290,7 +331,9 @@ func validatePrivilegedArguments(args []string) error {
 
 func writeBockerControlResponse(connection net.Conn, response bockerControlResponse) {
 	response.Done = true
+	_ = connection.SetWriteDeadline(time.Now().Add(controlWriteTimeout))
 	_ = json.NewEncoder(connection).Encode(response)
+	_ = connection.SetWriteDeadline(time.Time{})
 }
 
 // shouldUsePrivilegedBroker routes every public resource command through the
@@ -324,7 +367,13 @@ func runPrivilegedBrokerCommand(args []string) (int, error) {
 	defer connection.Close()
 	workingDirectory, err := os.Getwd()
 	if err != nil {
-		return 1, fmt.Errorf("读取当前工作目录失败: %w", err)
+		workingDirectory, err = os.UserHomeDir()
+		if err != nil {
+			return 1, fmt.Errorf("读取当前工作目录和用户主目录均失败: %w", err)
+		}
+		if !filepath.IsAbs(workingDirectory) {
+			return 1, fmt.Errorf("用户主目录不是绝对路径: %q", workingDirectory)
+		}
 	}
 	environment := make(map[string]string)
 	for _, key := range []string{networkModeEnv, bridgeParentEnv, natNetworkCIDREnv, natNetworkIPv6CIDREnv, hostShimCIDREnv, terminalWidthEnv, terminalHeightEnv} {
@@ -358,12 +407,11 @@ func runPrivilegedBrokerCommand(args []string) (int, error) {
 		_, _ = io.Copy(connection, os.Stdin)
 	}()
 	decoder := json.NewDecoder(connection)
-	exitCode := 0
 	for {
 		var response bockerControlResponse
 		if err := decoder.Decode(&response); err != nil {
 			if errors.Is(err, io.EOF) {
-				return exitCode, nil
+				return 1, fmt.Errorf("Bocker 后台服务在命令完成前关闭了连接")
 			}
 			return 1, fmt.Errorf("读取 Bocker 控制响应失败: %w", err)
 		}
@@ -373,7 +421,6 @@ func runPrivilegedBrokerCommand(args []string) (int, error) {
 		if response.Done {
 			return response.ExitCode, nil
 		}
-		exitCode = response.ExitCode
 	}
 }
 

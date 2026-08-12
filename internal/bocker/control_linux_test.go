@@ -2,7 +2,12 @@
 
 package bocker
 
-import "testing"
+import (
+	"bufio"
+	"os"
+	"strings"
+	"testing"
+)
 
 func TestShouldUsePrivilegedBroker(t *testing.T) {
 	for _, test := range []struct {
@@ -32,6 +37,25 @@ func TestShouldUsePrivilegedBroker(t *testing.T) {
 		if got := brokerCommandClassification(test.args); got != test.want {
 			t.Errorf("shouldUsePrivilegedBroker(%v)=%v, want %v", test.args, got, test.want)
 		}
+	}
+}
+
+func TestBrokerWorkingDirectoryFallback(t *testing.T) {
+	// The public client must still work when invoked through a launcher whose
+	// inherited working directory is no longer accessible to that user.
+	t.Setenv("HOME", t.TempDir())
+	if home, err := os.UserHomeDir(); err != nil || home == "" {
+		t.Fatalf("user home fallback unavailable: %q, %v", home, err)
+	}
+}
+
+func TestReadBockerControlRequestLimit(t *testing.T) {
+	if _, err := readBockerControlRequest(bufio.NewReader(strings.NewReader("{}\n"))); err != nil {
+		t.Fatalf("valid request: %v", err)
+	}
+	tooLarge := strings.Repeat("x", controlMaxInput+1) + "\n"
+	if _, err := readBockerControlRequest(bufio.NewReader(strings.NewReader(tooLarge))); err == nil {
+		t.Fatal("oversized request unexpectedly accepted")
 	}
 }
 

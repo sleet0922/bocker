@@ -12,6 +12,9 @@ Bocker 专注于常用工作流：安装镜像、创建和管理容器、配置�
 - Linux amd64。当前嵌入式运行时不支持其他架构。
 - 容器运行时由 `bocker.service` 负责宿主机 namespace、cgroup、网络、挂载和存储；
   日常 CLI 操作通过本地 Unix socket 完成，不需要 root 或 `sudo`。
+- 控制 socket 对本机用户开放，所有能登录该主机的用户都可管理 Bocker 容器并触发
+  Bocker 支持的宿主机网络与 hosts 修改。这是单机共享管理模型，不是不同本机用户之间的
+  权限隔离边界；不要在不互信的多用户主机上部署 Bocker。
 - 宿主机需要以下命令：`ip`、`nsenter`、`dnsmasq`、`rsync`、`tar`、`unsquashfs` 和 `xz`。
 - 首次部署后台服务时，如果缺少 `setfattr`，管理员需要安装 `attr` 软件包；服务启动后
   普通用户不需要为任何 Bocker 命令加 `sudo`。
@@ -161,6 +164,9 @@ bocker template install
 所有操作都必须使用完整的资源命令，不提供顶层快捷命令。省略模板、镜像或
 容器名时，可交互操作会打开选择菜单。
 
+`container exec` 按参数数组直接执行，不会隐式经过 shell；需要管道、重定向等
+shell 语法时，显式使用 `sh -c`，例如 `bocker container exec demo sh -c 'id | cat'`。
+
 只输入 `bocker template`、`bocker image` 或 `bocker container` 会打开对应的
 动作菜单。列表命令的 `--json` 用于 GUI 和脚本，它会输出机器可解析的 JSON
 数组；普通终端查看列表时不需要使用。
@@ -262,7 +268,9 @@ bocker template install debian:12 --name debian-super --permission super
 bocker image run trusted-image --name trusted --permission super
 ```
 
-`super` 会启用嵌套 LXC、移除容器 AppArmor 和 capability 限制，并放宽容器
+`normal` 使用 Incus 非特权容器（`security.privileged=false`），保留默认的
+AppArmor 和 capability 隔离。`super` 会启用特权容器、嵌套 LXC、移除容器 AppArmor
+和 capability 限制，并放宽容器
 内部 systemd 的隔离设置。它不会修改其他容器或宿主机的 systemd 配置，
 但只应对可信软件使用。
 

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"strings"
 
 	"github.com/lxc/incus/v7/shared/api"
@@ -220,6 +221,12 @@ func (c *IncusClient) ensureNATNetwork() error {
 	}
 	network, etag, err := c.server.GetNetwork(natNetworkName)
 	if err != nil {
+		if !api.StatusErrorCheck(err, 404) {
+			return fmt.Errorf("读取 NAT 网络 %s 失败: %w", natNetworkName, err)
+		}
+		if err := rejectHostNetworkConflict(cidr); err != nil {
+			return err
+		}
 		config := api.ConfigMap{
 			"ipv4.address": cidr,
 			"ipv4.nat":     "true",
@@ -267,6 +274,34 @@ func (c *IncusClient) ensureNATNetwork() error {
 	}
 	if err := c.server.UpdateNetwork(natNetworkName, api.NetworkPut{Config: apiConfig(config), Description: network.Description}, etag); err != nil {
 		return fmt.Errorf("更新 NAT 网络 %s 失败: %w", natNetworkName, err)
+	}
+	return nil
+}
+
+// rejectHostNetworkConflict prevents a managed NAT bridge from stealing a
+// subnet already routed by the host. Incus otherwise reports this only after
+// partially creating the network.
+func rejectHostNetworkConflict(cidr string) error {
+	_, requested, err := net.ParseCIDR(cidr)
+	if err != nil {
+		return err
+	}
+	out, err := exec.Command("ip", "-4", "route", "show").Output()
+	if err != nil {
+		return fmt.Errorf("读取宿主机 IPv4 路由失败: %w", err)
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 || fields[0] == "default" {
+			continue
+		}
+		_, existing, parseErr := net.ParseCIDR(fields[0])
+		if parseErr != nil {
+			continue
+		}
+		if requested.Contains(existing.IP) || existing.Contains(requested.IP) {
+			return fmt.Errorf("NAT 网段 %s 与宿主机路由 %s 冲突；请设置 %s 为未使用网段", requested, existing, natNetworkCIDREnv)
+		}
 	}
 	return nil
 }
@@ -319,16 +354,29 @@ func (c *IncusClient) SetContainerNetwork(name string, mode NetworkMode, forceNe
 	if err != nil {
 		return err
 	}
-	if err := c.EnsureNetworkMode(parsed); err != nil {
-		return err
-	}
 	full, etag, err := c.server.GetInstanceFull(name)
 	if err != nil {
 		return err
 	}
+	current := convertContainer(full)
+	if !forceNewMAC {
+		currentMode, modeErr := networkModeFromContainer(current)
+		if modeErr == nil && currentMode == parsed && current.Devices[defaultNICName] != nil {
+			if parsed != NetworkNAT {
+				return nil
+			}
+			if err := c.EnsureNetworkMode(parsed); err != nil {
+				return err
+			}
+			return nil
+		}
+	}
+	if err := c.EnsureNetworkMode(parsed); err != nil {
+		return err
+	}
 	mac := ""
 	if !forceNewMAC && parsed == NetworkBridge {
-		mac = convertContainer(full).NICMAC(defaultNICName)
+		mac = current.NICMAC(defaultNICName)
 	}
 	if parsed == NetworkBridge && mac == "" {
 		mac, err = randomMAC()

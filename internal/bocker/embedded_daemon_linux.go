@@ -34,6 +34,7 @@ const (
 	daemonGracefulStop    = 20 * time.Second
 	daemonTermStop        = 5 * time.Second
 	daemonKillWait        = 2 * time.Second
+	maxDaemonLogSize      = 10 << 20
 )
 
 // incusRuntimeArchive contains the container-only Incus daemon, liblxc and
@@ -214,7 +215,7 @@ func spawnEmbeddedSupervisor(paths embeddedPaths) error {
 		return fmt.Errorf("create Bocker log directory: %w", err)
 	}
 	logPath := filepath.Join(paths.logDir, "supervisor.log")
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	logFile, err := openRotatedDaemonLog(logPath)
 	if err != nil {
 		return fmt.Errorf("open Bocker supervisor log: %w", err)
 	}
@@ -637,7 +638,7 @@ func runEmbeddedDaemonSupervisor() error {
 		defer stopAndReapProcess(lxcfs.Process)
 	}
 
-	logFile, err := os.OpenFile(filepath.Join(paths.logDir, "incusd.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	logFile, err := openRotatedDaemonLog(filepath.Join(paths.logDir, "incusd.log"))
 	if err != nil {
 		return err
 	}
@@ -712,7 +713,7 @@ func startEmbeddedLXCFS(paths embeddedPaths) *exec.Cmd {
 	if _, err := os.Stat(path); err != nil {
 		return nil
 	}
-	logFile, err := os.OpenFile(filepath.Join(paths.logDir, "lxcfs.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	logFile, err := openRotatedDaemonLog(filepath.Join(paths.logDir, "lxcfs.log"))
 	if err != nil {
 		return nil
 	}
@@ -784,12 +785,36 @@ func normalizeDaemonExit(err error) error {
 }
 
 func tailFile(path string, limit int) string {
-	data, err := os.ReadFile(path)
-	if err != nil || len(data) == 0 {
+	file, err := os.Open(path)
+	if err != nil {
 		return ""
 	}
-	if len(data) > limit {
-		data = data[len(data)-limit:]
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || info.Size() == 0 {
+		return ""
+	}
+	start := info.Size() - int64(limit)
+	if start < 0 {
+		start = 0
+	}
+	if _, err := file.Seek(start, io.SeekStart); err != nil {
+		return ""
+	}
+	data, err := io.ReadAll(io.LimitReader(file, int64(limit)))
+	if err != nil {
+		return ""
 	}
 	return strings.TrimSpace(string(data))
+}
+
+func openRotatedDaemonLog(path string) (*os.File, error) {
+	if info, err := os.Stat(path); err == nil && info.Size() >= maxDaemonLogSize {
+		backup := path + ".1"
+		_ = os.Remove(backup)
+		if err := os.Rename(path, backup); err != nil {
+			return nil, fmt.Errorf("rotate log %s: %w", path, err)
+		}
+	}
+	return os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 }

@@ -6,8 +6,19 @@ section: default
 priority: extra
 maintainer: Bocker Maintainers <maintainers@example.com>
 description: Bocker GUI
+depends:
+  - iproute2
+  - util-linux
+  - dnsmasq-base
+  - rsync
+  - tar
+  - squashfs-tools
+  - xz-utils
+  - attr
 scripts:
   postinstall: ./build/postinstall.sh
+  preremove: ./build/preremove.sh
+  postremove: ./build/postremove.sh
 contents:
   - src: ./gui/build/linux/x64/release/bundle/
     dst: /usr/lib/bocker-gui

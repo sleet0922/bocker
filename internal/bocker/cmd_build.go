@@ -357,13 +357,6 @@ func buildImage(client *IncusClient, f *Incusfile, alias string, networkMode Net
 			fmt.Printf("  阶段 %d IPv4: %s\n", si+1, ip)
 		}
 
-		// 自动配置镜像源 (仅 apt 系)
-		if ip != "" {
-			if err := autoConfigureAptMirror(client, stageContainer); err != nil {
-				fmt.Fprintf(os.Stderr, "⚠ 阶段 %d 自动配置镜像源失败: %v\n", si+1, err)
-			}
-		}
-
 		// 执行步骤
 		workdir := "/"
 		runEnv := map[string]string{}
@@ -614,8 +607,10 @@ func runFromBuiltImage(client *IncusClient, alias string, f *Incusfile, networkM
 	}
 
 	// 检查同名容器是否已存在
-	if existing, _ := client.GetContainer(name); existing != nil {
+	if existing, err := client.GetContainer(name); err == nil && existing != nil {
 		return fmt.Errorf("容器 %s 已存在，请先删除或使用 --name 指定其他名称", name)
+	} else if err != nil && !isInstanceNotFound(err) {
+		return fmt.Errorf("检查容器 %s 是否存在失败: %w", name, err)
 	}
 
 	fmt.Printf("▶ 启动容器 %s (镜像 %s) ...\n", name, alias)
@@ -625,32 +620,35 @@ func runFromBuiltImage(client *IncusClient, alias string, f *Incusfile, networkM
 
 	ip := waitForIP(client, name, 30)
 	if ip != "" {
-		warnAutoHostBridge(AutoConfigureHostBridge(client))
+		if err := AutoConfigureHostBridge(client); err != nil {
+			return fmt.Errorf("配置宿主机 bridge 互通失败: %w", err)
+		}
 	} else {
-		fmt.Printf("⚠ 容器未获取 IPv4，端口映射与域名映射将跳过\n")
+		if f.Domain != "" || len(f.Exposes) > 0 {
+			return fmt.Errorf("容器未获取 IPv4，无法应用 DOMAIN 或 EXPOSE 配置")
+		}
 	}
 
 	// AUTOSTART
 	if f.Autostart != nil {
 		if err := client.SetBootAutostart(name, *f.Autostart); err != nil {
-			fmt.Printf("⚠ 设置 AUTOSTART 失败: %v\n", err)
+			return fmt.Errorf("设置 AUTOSTART 失败: %w", err)
 		}
 	}
 
 	// DOMAIN
 	if f.Domain != "" {
 		if err := client.SetDomain(name, f.Domain); err != nil {
-			fmt.Printf("⚠ 设置 DOMAIN 失败: %v\n", err)
+			return fmt.Errorf("设置 DOMAIN 失败: %w", err)
 		} else if ip != "" {
 			addresses := waitForIPAddresses(client, name, 5, true)
 			if len(addresses) == 0 {
 				addresses = []string{ip}
 			}
 			if err := updateHostsAddresses(name, f.Domain, addresses); err != nil {
-				fmt.Printf("⚠ 更新 /etc/hosts 失败: %v\n", err)
-			} else {
-				fmt.Printf("✔ 域名映射: %s -> %s\n", f.Domain, ip)
+				return fmt.Errorf("更新 /etc/hosts 失败: %w", err)
 			}
+			fmt.Printf("✔ 域名映射: %s -> %s\n", f.Domain, ip)
 		}
 	}
 
@@ -658,10 +656,9 @@ func runFromBuiltImage(client *IncusClient, alias string, f *Incusfile, networkM
 	if len(f.Exposes) > 0 && ip != "" {
 		for _, exp := range f.Exposes {
 			if err := client.AddPortMapping(name, exp.Port, exp.Port, exp.Protocol); err != nil {
-				fmt.Printf("⚠ 端口映射 %d/%s 失败: %v\n", exp.Port, exp.Protocol, err)
-			} else {
-				fmt.Printf("✔ 端口映射: %d/%s\n", exp.Port, exp.Protocol)
+				return fmt.Errorf("端口映射 %d/%s 失败: %w", exp.Port, exp.Protocol, err)
 			}
+			fmt.Printf("✔ 端口映射: %d/%s\n", exp.Port, exp.Protocol)
 		}
 	}
 

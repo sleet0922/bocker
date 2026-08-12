@@ -117,12 +117,23 @@ func ensureHostBridgeConnectivity(client *IncusClient, targets []bridgeRouteTarg
 	}
 	shimIP = shimIP.To4()
 
+	created := !linkExists(defaultHostBridgeName)
 	if err := ensureHostBridge(parent, defaultHostBridgeName); err != nil {
 		return err
 	}
-	if err := configureHostBridgeIsolation(parent, defaultHostBridgeName); err != nil {
+	restoreSysctl, err := configureHostBridgeIsolation(parent, defaultHostBridgeName)
+	if err != nil {
 		return err
 	}
+	completed := false
+	defer func() {
+		if !completed {
+			restoreSysctl()
+			if created {
+				_ = exec.Command("ip", "link", "del", defaultHostBridgeName).Run()
+			}
+		}
+	}()
 	if err := replaceAddr(defaultHostBridgeName, shimCIDR); err != nil {
 		return err
 	}
@@ -151,6 +162,7 @@ func ensureHostBridgeConnectivity(client *IncusClient, targets []bridgeRouteTarg
 			_ = replaceContainerStaticARP(client, target.Name, shimIP.String(), shimMAC, defaultNICName)
 		}
 	}
+	completed = true
 	return nil
 }
 
@@ -170,12 +182,23 @@ func ensureHostBridgeIPv6Connectivity(client *IncusClient, targets []bridgeIPv6R
 	if err != nil {
 		return err
 	}
+	created := !linkExists(defaultHostBridgeName)
 	if err := ensureHostBridge(parent, defaultHostBridgeName); err != nil {
 		return err
 	}
-	if err := configureHostBridgeIsolation(parent, defaultHostBridgeName); err != nil {
+	restoreSysctl, err := configureHostBridgeIsolation(parent, defaultHostBridgeName)
+	if err != nil {
 		return err
 	}
+	completed := false
+	defer func() {
+		if !completed {
+			restoreSysctl()
+			if created {
+				_ = exec.Command("ip", "link", "del", defaultHostBridgeName).Run()
+			}
+		}
+	}()
 	if err := linkUp(defaultHostBridgeName); err != nil {
 		return err
 	}
@@ -196,6 +219,7 @@ func ensureHostBridgeIPv6Connectivity(client *IncusClient, targets []bridgeIPv6R
 			}
 		}
 	}
+	completed = true
 	return nil
 }
 
@@ -467,7 +491,7 @@ func linkParent(ifname string) (string, bool) {
 // 同时对应物理网卡 MAC 和 bocker-br0 的虚拟 MAC（ARP flux）。
 //
 // 该函数只调整运行时 sysctl，不会修改物理网卡 MAC，也不会修改物理网卡 IPv4。
-func configureHostBridgeIsolation(parent, ifname string) error {
+func configureHostBridgeIsolation(parent, ifname string) (func(), error) {
 	settings := []struct {
 		path  string
 		value string
@@ -484,13 +508,28 @@ func configureHostBridgeIsolation(parent, ifname string) error {
 		{"/proc/sys/net/ipv6/conf/" + ifname + "/disable_ipv6", "0", ifname + " disable_ipv6"},
 	}
 
+	previous := make([]struct{ path, value string }, 0, len(settings))
 	for _, setting := range settings {
+		data, err := os.ReadFile(setting.path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, fmt.Errorf("读取 %s 失败: %w", setting.desc, err)
+		}
+		previous = append(previous, struct{ path, value string }{setting.path, strings.TrimSpace(string(data))})
 		if err := writeProcSysIfExists(setting.path, setting.value); err != nil {
-			return fmt.Errorf("配置 %s 失败: %w", setting.desc, err)
+			for i := len(previous) - 1; i >= 0; i-- {
+				_ = writeProcSysIfExists(previous[i].path, previous[i].value)
+			}
+			return nil, fmt.Errorf("配置 %s 失败: %w", setting.desc, err)
 		}
 	}
-
-	return nil
+	return func() {
+		for i := len(previous) - 1; i >= 0; i-- {
+			_ = writeProcSysIfExists(previous[i].path, previous[i].value)
+		}
+	}, nil
 }
 
 func writeProcSysIfExists(path, value string) error {

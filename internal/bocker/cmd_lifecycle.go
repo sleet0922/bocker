@@ -1,6 +1,8 @@
 package bocker
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,7 +16,10 @@ func CmdStart(name string) error {
 	client := NewIncusClient()
 
 	// 容器已在运行则跳过启动，继续处理域名逻辑
-	ct, _ := client.GetContainer(name)
+	ct, err := client.GetContainer(name)
+	if err != nil {
+		return fmt.Errorf("读取容器 %s 失败: %w", name, err)
+	}
 	if ct != nil && strings.EqualFold(ct.Status, "Running") {
 		fmt.Printf("ℹ 容器 %s 已在运行\n", name)
 	} else {
@@ -23,7 +28,10 @@ func CmdStart(name string) error {
 			return err
 		}
 		// 重新获取容器信息以读取域名配置
-		ct, _ = client.GetContainer(name)
+		ct, err = client.GetContainer(name)
+		if err != nil {
+			return fmt.Errorf("读取已启动容器 %s 失败: %w", name, err)
+		}
 	}
 
 	// 等待容器 IPv4；bridge 模式额外补齐宿主机侧 shim 路由。
@@ -37,12 +45,14 @@ func CmdStart(name string) error {
 		ip = waitForIP(client, name, 15)
 	}
 	if ip != "" && ct != nil && ct.NetworkMode() == string(NetworkBridge) {
-		warnAutoHostBridge(AutoConfigureHostBridge(client))
+		if err := AutoConfigureHostBridge(client); err != nil {
+			return fmt.Errorf("配置宿主机 bridge 互通失败: %w", err)
+		}
 	}
 
 	// 刷新端口映射的 connect 地址，应对 DHCP 重新分配导致容器 IP 变化的场景。
 	if refreshed, rerr := client.RefreshPortMappings(name); rerr != nil {
-		fmt.Printf("⚠ 刷新端口映射失败: %v\n", rerr)
+		return fmt.Errorf("刷新端口映射失败: %w", rerr)
 	} else if refreshed > 0 {
 		fmt.Printf("✔ 已刷新 %d 条端口映射的容器 IP (%s)\n", refreshed, ip)
 	}
@@ -52,8 +62,7 @@ func CmdStart(name string) error {
 		return nil
 	}
 	if ip == "" {
-		fmt.Printf("⚠ 容器未获取到 IPv4，跳过 hosts 更新\n")
-		return nil
+		return fmt.Errorf("容器 %s 未获取到 IPv4，无法更新域名 %s", name, domain)
 	}
 	addresses := waitForIPAddresses(client, name, 5, true)
 	if len(addresses) == 0 {
@@ -86,16 +95,21 @@ func CmdRemoveContainer(args []string) error {
 	}
 	client := NewIncusClient()
 	// 先获取容器信息用于清理路由
-	ct, _ := client.GetContainer(name)
+	ct, err := client.GetContainer(name)
+	if err != nil {
+		return fmt.Errorf("读取容器 %s 失败: %w", name, err)
+	}
 	fmt.Printf("停止容器 %s ...\n", name)
-	_ = client.Stop(name)
+	if err := client.Stop(name); err != nil {
+		return fmt.Errorf("停止容器 %s 失败: %w", name, err)
+	}
 	fmt.Printf("删除容器 %s ...\n", name)
 	if err := client.Delete(name); err != nil {
 		return err
 	}
 	// 清理 /etc/hosts 残留行
 	if err := removeHostsLine(name); err != nil {
-		fmt.Fprintf(os.Stderr, "⚠ 清理 /etc/hosts 失败: %v\n", err)
+		return fmt.Errorf("删除容器后清理 /etc/hosts 失败: %w", err)
 	}
 	// 清理 /32 路由残留
 	if ct != nil && ct.UsesBridgeNIC(defaultNICName) {
@@ -159,7 +173,10 @@ func CmdStop(name string) error {
 	fmt.Printf("停止容器 %s ...\n", name)
 	client := NewIncusClient()
 	// 先获取容器 IP 用于后续路由清理
-	ct, _ := client.GetContainer(name)
+	ct, err := client.GetContainer(name)
+	if err != nil {
+		return fmt.Errorf("读取容器 %s 失败: %w", name, err)
+	}
 	if err := client.Stop(name); err != nil {
 		return err
 	}
@@ -184,7 +201,10 @@ func CmdShell(name string) error {
 // 复用 CmdStop/CmdStart 以保证 /32 路由清理、端口映射刷新、域名 hosts 更新等副作用一致。
 func CmdRestart(name string) error {
 	client := NewIncusClient()
-	ct, _ := client.GetContainer(name)
+	ct, err := client.GetContainer(name)
+	if err != nil {
+		return fmt.Errorf("读取容器 %s 失败: %w", name, err)
+	}
 	if ct != nil && strings.EqualFold(ct.Status, "Running") {
 		if err := CmdStop(name); err != nil {
 			return fmt.Errorf("停止容器失败: %w", err)
@@ -199,17 +219,16 @@ func CmdRestart(name string) error {
 // 语法: bocker container exec <容器名> <命令...>
 // 示例: bocker container exec web ls -la /app
 //
-//	bocker container exec web "curl -s http://localhost/health"
+//	bocker container exec web curl -s http://localhost/health
 //
-// 命令通过 /bin/sh -c 执行，支持管道、重定向等 shell 特性。
+// 参数会原样传入容器进程，不经过 shell 重新解析。需要 shell 语法时请显式
+// 传入解释器，例如: bocker container exec web sh -c 'echo hi | cat'。
 func CmdExec(args []string) error {
 	if len(args) < 2 {
 		return fmt.Errorf("用法: bocker container exec <name> <command...>")
 	}
 	name := args[0]
-	cmdArgs := args[1:]
-	command := strings.Join(cmdArgs, " ")
-	if err := NewIncusClient().ExecStreaming(name, command, nil); err != nil {
+	if err := NewIncusClient().ExecStreamingArgs(name, args[1:], nil); err != nil {
 		return fmt.Errorf("exec %s 失败: %w", name, err)
 	}
 	return nil
@@ -229,10 +248,18 @@ func CmdExecInteractive() error {
 	return CmdExec([]string{name, command})
 }
 
-// CmdExport 导出容器为 ./容器名_YYYYMMDD_HHMMSS.tar.gz。
+// CmdExport 导出容器为当前目录中的唯一 tar.gz 文件。
 func CmdExport(name string) error {
 	ts := time.Now().Format("20060102_150405")
-	path := fmt.Sprintf("./%s_%s.tar.gz", name, ts)
+	suffix := make([]byte, 8)
+	if _, err := rand.Read(suffix); err != nil {
+		return fmt.Errorf("生成导出文件名失败: %w", err)
+	}
+	workingDirectory, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("读取当前工作目录失败: %w", err)
+	}
+	path := filepath.Join(workingDirectory, fmt.Sprintf("%s_%s_%s.tar.gz", name, ts, hex.EncodeToString(suffix)))
 	fmt.Printf("导出容器 %s -> %s ...\n", name, path)
 	if err := NewIncusClient().Export(name, path); err != nil {
 		return err
@@ -328,7 +355,9 @@ func CmdImport(args []string) error {
 			return err
 		}
 	}
-	warnAutoHostBridge(AutoConfigureHostBridge(client))
+	if err := AutoConfigureHostBridge(client); err != nil {
+		return fmt.Errorf("配置宿主机 bridge 互通失败: %w", err)
+	}
 	fmt.Printf("✔ 导入完成\n")
 	return nil
 }

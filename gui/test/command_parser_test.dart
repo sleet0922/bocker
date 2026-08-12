@@ -56,6 +56,17 @@ void main() {
     expect(containers, isEmpty);
   });
 
+  test('accepts unexpected JSON field types without crashing', () {
+    const output = '[{"name":123,"status":true,"ipv4":null}]';
+
+    final containers = parseContainers(output);
+
+    expect(containers, hasLength(1));
+    expect(containers.single.name, '123');
+    expect(containers.single.status, 'true');
+    expect(containers.single.ipv4, '');
+  });
+
   test('parses local image JSON', () {
     const output = '''[
       {"name":"web-image","size":"12.0M","created":"2026-08-07 10:20","fingerprint":"abc123def456"}

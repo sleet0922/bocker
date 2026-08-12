@@ -19,6 +19,9 @@ func TestPermissionModeFromArgs(t *testing.T) {
 func TestApplyPermissionConfig(t *testing.T) {
 	config := map[string]string{"security.privileged": "true", "raw.lxc": "lxc.apparmor.profile = unconfined\nlxc.cap.drop =\nlxc.mount.auto = proc\n"}
 	applyPermissionConfig(config, PermissionNormal)
+	if config["security.privileged"] != "false" {
+		t.Fatalf("normal permission must be unprivileged, got %q", config["security.privileged"])
+	}
 	if _, ok := config["security.nesting"]; ok {
 		t.Fatal("normal permission should not enable nesting")
 	}
@@ -30,5 +33,8 @@ func TestApplyPermissionConfig(t *testing.T) {
 		if config[key] == "" {
 			t.Fatalf("super permission missing %s", key)
 		}
+	}
+	if config["security.privileged"] != "true" {
+		t.Fatalf("super permission must be privileged, got %q", config["security.privileged"])
 	}
 }

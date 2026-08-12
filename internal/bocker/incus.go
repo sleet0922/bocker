@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strconv"
@@ -17,6 +18,7 @@ import (
 
 	incus "github.com/lxc/incus/v7/client"
 	"github.com/lxc/incus/v7/shared/api"
+	"golang.org/x/sys/unix"
 	"golang.org/x/term"
 )
 
@@ -495,7 +497,6 @@ func (c *IncusClient) LaunchWithNetworkAndPermission(imageRef, name string, mode
 		return err
 	}
 	config := map[string]string{
-		"security.privileged":  "true", // 保持原有 Bocker 行为
 		containerNetworkConfig: string(mode),
 	}
 	applyPermissionConfig(config, permission)
@@ -550,6 +551,10 @@ func (c *IncusClient) GetContainer(name string) (*Container, error) {
 	return convertContainer(instance), nil
 }
 
+func isInstanceNotFound(err error) bool {
+	return api.StatusErrorCheck(err, http.StatusNotFound)
+}
+
 func (c *IncusClient) SetBootAutostart(name string, on bool) error {
 	if err := c.ready(); err != nil {
 		return err
@@ -602,14 +607,21 @@ func (c *IncusClient) Export(name, path string) error {
 	if err := c.ready(); err != nil {
 		return err
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	f, err := openExclusiveExportFile(path)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
+	completed := false
+	defer func() {
+		if !completed {
+			_ = os.Remove(path)
+		}
+	}()
 	backup := api.InstanceBackupsPost{CompressionAlgorithm: "gzip"}
 	err = c.server.CreateInstanceBackupStream(name, backup, &incus.BackupFileRequest{BackupFile: f})
 	if err == nil {
+		completed = true
 		return nil
 	}
 	// Older servers may not expose direct_backup. Fall back to a temporary
@@ -631,7 +643,21 @@ func (c *IncusClient) Export(name, path string) error {
 		}
 	}()
 	_, downloadErr := c.server.GetInstanceBackupFile(name, backup.Name, &incus.BackupFileRequest{BackupFile: f})
+	if downloadErr == nil {
+		completed = true
+	}
 	return downloadErr
+}
+
+func openExclusiveExportFile(path string) (*os.File, error) {
+	if !filepath.IsAbs(path) {
+		return nil, fmt.Errorf("export path must be absolute")
+	}
+	fd, err := unix.Open(path, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	return os.NewFile(uintptr(fd), path), nil
 }
 
 func (c *IncusClient) Import(path, name string) error {
@@ -661,9 +687,7 @@ func (c *IncusClient) Import(path, name string) error {
 	if err := op.Wait(); err != nil {
 		return err
 	}
-	// 导入的容器也强制高权限，保持策略一致
-	_ = c.EnsurePrivileged(name)
-	return nil
+	return c.EnsurePermission(name, PermissionNormal)
 }
 
 // EnsurePrivileged 确保容器以高权限运行 (security.privileged=true)。
@@ -703,15 +727,11 @@ func (c *IncusClient) EnsurePermission(name string, mode PermissionMode) error {
 	if put.Config == nil {
 		put.Config = api.ConfigMap{}
 	}
-	put.Config["security.privileged"] = "true"
 	applyPermissionConfig(map[string]string(put.Config), mode)
 	return c.updateInstance(name, etag, put)
 }
 
 func (c *IncusClient) ConfigureImportedNetwork(name string) error {
-	if err := c.EnsurePrivileged(name); err != nil {
-		return err
-	}
 	ct, err := c.GetContainer(name)
 	if err != nil {
 		return err
@@ -724,9 +744,6 @@ func (c *IncusClient) ConfigureImportedNetwork(name string) error {
 }
 
 func (c *IncusClient) ConfigureImportedNetworkWithMode(name string, mode NetworkMode) error {
-	if err := c.EnsurePrivileged(name); err != nil {
-		return err
-	}
 	return c.SetContainerNetwork(name, mode, true)
 }
 
@@ -942,7 +959,6 @@ func (c *IncusClient) LaunchLocalImageWithNetworkAndPermission(alias, name strin
 		return err
 	}
 	config := map[string]string{
-		"security.privileged":  "true", // 默认高权限：便于 systemd/网络/设备访问
 		containerNetworkConfig: string(mode),
 	}
 	applyPermissionConfig(config, permission)
@@ -1160,6 +1176,19 @@ func crossContainerCopyPaths(srcPath, dstPath string, dstIsDir bool) (srcDir, sr
 // ExecStreaming 在容器内通过 /bin/sh -c 执行命令，stdout/stderr 实时输出到当前进程。
 // extraEnv 会与默认环境合并，使 Incusfile 的 ENV 指令对后续 RUN 生效。
 func (c *IncusClient) ExecStreaming(name, command string, extraEnv map[string]string) error {
+	return c.execStreaming(name, []string{"/bin/sh", "-c", command}, extraEnv)
+}
+
+// ExecStreamingArgs executes an argv vector without involving a shell. This
+// preserves argument boundaries for public `container exec` calls.
+func (c *IncusClient) ExecStreamingArgs(name string, args []string, extraEnv map[string]string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("执行命令不能为空")
+	}
+	return c.execStreaming(name, append([]string(nil), args...), extraEnv)
+}
+
+func (c *IncusClient) execStreaming(name string, command []string, extraEnv map[string]string) error {
 	if err := c.ready(); err != nil {
 		return err
 	}
@@ -1168,7 +1197,7 @@ func (c *IncusClient) ExecStreaming(name, command string, extraEnv map[string]st
 		env[k] = v
 	}
 	req := api.InstanceExecPost{
-		Command:     []string{"/bin/sh", "-c", command},
+		Command:     command,
 		Environment: env,
 		WaitForWS:   true,
 		Interactive: false,
@@ -1338,12 +1367,20 @@ func (c *IncusClient) ListLocalImageAliasesWithDetails() ([]ImageAliasInfo, erro
 	if err != nil {
 		return nil, err
 	}
+	images, err := c.server.GetImages()
+	if err != nil {
+		return nil, err
+	}
+	byFingerprint := make(map[string]api.Image, len(images))
+	for _, image := range images {
+		byFingerprint[image.Fingerprint] = image
+	}
 	infos := make([]ImageAliasInfo, 0, len(aliases))
 	for _, a := range aliases {
 		info := ImageAliasInfo{Name: a.Name, Target: a.Target}
-		if img, _, err := c.server.GetImage(a.Target); err == nil && img != nil {
-			info.Size = img.Size
-			info.CreatedAt = img.UploadedAt
+		if image, ok := byFingerprint[a.Target]; ok {
+			info.Size = image.Size
+			info.CreatedAt = image.UploadedAt
 		}
 		infos = append(infos, info)
 	}
@@ -1379,19 +1416,22 @@ func (c *IncusClient) DeleteImageByAlias(alias string) error {
 	}
 	// 检查镜像是否还有其他别名引用
 	aliases, err := c.server.GetImageAliases()
-	if err == nil {
-		for _, a := range aliases {
-			if a.Target == entry.Target {
-				return nil // 仍有其他别名引用，保留镜像
-			}
+	if err != nil {
+		return fmt.Errorf("删除别名后无法确认镜像引用关系；保留底层镜像: %w", err)
+	}
+	for _, a := range aliases {
+		if a.Target == entry.Target {
+			return nil // 仍有其他别名引用，保留镜像
 		}
 	}
 	// 无其他引用，删除孤儿镜像
 	op, err := c.server.DeleteImage(entry.Target)
 	if err != nil {
-		return nil // 镜像删除失败不阻断，别名已删
+		return fmt.Errorf("别名已删除，但删除未引用镜像失败: %w", err)
 	}
-	_ = op.Wait()
+	if err := op.Wait(); err != nil {
+		return fmt.Errorf("别名已删除，但等待镜像删除完成失败: %w", err)
+	}
 	return nil
 }
 

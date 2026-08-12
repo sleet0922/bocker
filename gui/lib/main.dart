@@ -58,6 +58,7 @@ class _BockerHomeState extends State<BockerHome> {
   bool _loading = false;
   String? _loadError;
   String _lastOutput = '';
+  int _refreshGeneration = 0;
 
   @override
   void initState() {
@@ -66,22 +67,26 @@ class _BockerHomeState extends State<BockerHome> {
   }
 
   Future<void> _refresh() async {
+    final generation = ++_refreshGeneration;
+    final section = _section;
     setState(() {
       _loading = true;
       _loadError = null;
     });
     final result = await _bocker.run(
-      _section == _Section.containers
+      section == _Section.containers
           ? ['container', 'list', '--json']
           : ['image', 'list', '--json'],
     );
-    if (!mounted) return;
+    if (!mounted || generation != _refreshGeneration || section != _section) {
+      return;
+    }
     setState(() {
       _loading = false;
       _lastOutput = result.output;
       if (result.ok) {
         _loadError = null;
-        if (_section == _Section.containers) {
+        if (section == _Section.containers) {
           _containers = parseContainers(result.output);
         } else {
           _images = parseImages(result.output);
@@ -158,7 +163,7 @@ class _BockerHomeState extends State<BockerHome> {
     final templates = await _loadImageTemplates();
     if (templates == null || !mounted) return;
     final name = TextEditingController();
-    var network = 'nat';
+    var network = 'bridge';
     var permission = 'normal';
     var distro = templates.first.distro;
     var template = templates.first;
@@ -275,6 +280,7 @@ class _BockerHomeState extends State<BockerHome> {
         ),
       ),
     );
+    name.dispose();
     if (values == null) return;
     final args = templateInstallArguments(
       image: values.image,
@@ -288,7 +294,7 @@ class _BockerHomeState extends State<BockerHome> {
   Future<void> _buildDialog() async {
     final path = TextEditingController(text: 'Incusfile');
     final name = TextEditingController();
-    var network = 'nat';
+    var network = 'bridge';
     final values = await showDialog<_BuildValues>(
       context: context,
       builder: (context) => StatefulBuilder(
@@ -337,6 +343,8 @@ class _BockerHomeState extends State<BockerHome> {
         ),
       ),
     );
+    path.dispose();
+    name.dispose();
     if (values == null || values.path.isEmpty) return;
     await _run('构建镜像', [
       'image',
@@ -426,6 +434,7 @@ class _BockerHomeState extends State<BockerHome> {
         ),
       ),
     );
+    name.dispose();
     if (values == null) return;
     if (values.name.isEmpty) {
       if (!mounted) return;
@@ -485,6 +494,8 @@ class _BockerHomeState extends State<BockerHome> {
         ],
       ),
     );
+    path.dispose();
+    name.dispose();
     if (values == null || values.path.isEmpty) return;
     await _run('导入备份', [
       'container',
@@ -522,6 +533,7 @@ class _BockerHomeState extends State<BockerHome> {
         ],
       ),
     );
+    command.dispose();
     if (value == null || value.isEmpty) return;
     final result = await _run('执行命令', [
       'container',
@@ -659,6 +671,9 @@ class _BockerHomeState extends State<BockerHome> {
         ),
       ),
     );
+    domain.dispose();
+    port.dispose();
+    removePort.dispose();
     if (values == null) return;
     var ok = true;
     if (values.domain.isNotEmpty) {
@@ -963,6 +978,7 @@ class _ContainersView extends StatelessWidget {
                   DataColumn(label: Text('状态')),
                   DataColumn(label: Text('网络')),
                   DataColumn(label: Text('IPv4')),
+                  DataColumn(label: Text('IPv6')),
                   DataColumn(label: Text('域名')),
                   DataColumn(label: Text('端口')),
                   DataColumn(label: Text('自启动')),
@@ -997,6 +1013,7 @@ class _ContainersView extends StatelessWidget {
                           ),
                           DataCell(Text(item.network)),
                           DataCell(CopyableText(text: item.ipv4)),
+                          DataCell(CopyableText(text: item.ipv6)),
                           DataCell(
                             ConstrainedBox(
                               constraints: const BoxConstraints(
@@ -1419,12 +1436,33 @@ class BockerCommand {
 
   Future<CommandResult> _runDirect(List<String> arguments) async {
     try {
-      final result = await Process.run(_binary, arguments, runInShell: false);
-      return CommandResult(
-        result.exitCode == 0,
-        '${result.stdout}${result.stderr}'.trim(),
-        result.exitCode,
+      final process = await Process.start(
+        _binary,
+        arguments,
+        runInShell: false,
       );
+      final output = StringBuffer();
+      const maxOutput = 1024 * 1024;
+      void appendOutput(String chunk) {
+        output.write(chunk);
+        if (output.length > maxOutput) {
+          final text = output.toString();
+          output
+            ..clear()
+            ..write('[较早输出已截断]\n')
+            ..write(text.substring(text.length - maxOutput));
+        }
+      }
+
+      final stdoutDone = process.stdout
+          .transform(utf8.decoder)
+          .forEach(appendOutput);
+      final stderrDone = process.stderr
+          .transform(utf8.decoder)
+          .forEach(appendOutput);
+      final exitCode = await process.exitCode;
+      await Future.wait([stdoutDone, stderrDone]);
+      return CommandResult(exitCode == 0, output.toString().trim(), exitCode);
     } on ProcessException catch (error) {
       return CommandResult(false, '无法启动 $_binary: ${error.message}', -1);
     }
@@ -1506,19 +1544,19 @@ List<ContainerInfo> parseContainers(String output) {
   try {
     final decoded = jsonDecode(output);
     if (decoded is! List) return const [];
-    return decoded.whereType<Map<String, dynamic>>().map((item) {
+    return decoded.whereType<Map>().map((item) {
       return ContainerInfo(
-        name: item['name'] as String? ?? '',
-        status: item['status'] as String? ?? '',
-        network: item['network'] as String? ?? '',
-        ipv4: item['ipv4'] as String? ?? '',
-        ipv6: item['ipv6'] as String? ?? '',
-        domain: item['domain'] as String? ?? '',
-        autostart: item['autostart'] as String? ?? '',
-        ports: item['ports'] as String? ?? '',
+        name: jsonText(item, 'name'),
+        status: jsonText(item, 'status'),
+        network: jsonText(item, 'network'),
+        ipv4: jsonText(item, 'ipv4'),
+        ipv6: jsonText(item, 'ipv6'),
+        domain: jsonText(item, 'domain'),
+        autostart: jsonText(item, 'autostart'),
+        ports: jsonText(item, 'ports'),
       );
     }).toList();
-  } on FormatException {
+  } catch (_) {
     return const [];
   }
 }
@@ -1527,15 +1565,15 @@ List<ImageInfo> parseImages(String output) {
   try {
     final decoded = jsonDecode(output);
     if (decoded is! List) return const [];
-    return decoded.whereType<Map<String, dynamic>>().map((item) {
+    return decoded.whereType<Map>().map((item) {
       return ImageInfo(
-        name: item['name'] as String? ?? '',
-        size: item['size'] as String? ?? '',
-        created: item['created'] as String? ?? '',
-        fingerprint: item['fingerprint'] as String? ?? '',
+        name: jsonText(item, 'name'),
+        size: jsonText(item, 'size'),
+        created: jsonText(item, 'created'),
+        fingerprint: jsonText(item, 'fingerprint'),
       );
     }).toList();
-  } on FormatException {
+  } catch (_) {
     return const [];
   }
 }
@@ -1544,17 +1582,19 @@ List<ImageTemplate> parseImageTemplates(String output) {
   try {
     final decoded = jsonDecode(output);
     if (decoded is! List) return const [];
-    return decoded.whereType<Map<String, dynamic>>().map((item) {
+    return decoded.whereType<Map>().map((item) {
       return ImageTemplate(
-        distro: item['distro'] as String? ?? '',
-        release: item['release'] as String? ?? '',
-        image: item['image'] as String? ?? '',
+        distro: jsonText(item, 'distro'),
+        release: jsonText(item, 'release'),
+        image: jsonText(item, 'image'),
       );
     }).toList();
-  } on FormatException {
+  } catch (_) {
     return const [];
   }
 }
+
+String jsonText(Map item, String key) => item[key]?.toString() ?? '';
 
 class _InstallValues {
   const _InstallValues(this.image, this.name, this.network, this.permission);

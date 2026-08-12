@@ -4,11 +4,12 @@ GOARCH ?= amd64
 CGO_ENABLED ?= 0
 LDFLAGS ?= -s -w
 VERSION ?= 3.0.8
-NFPM ?= go run github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+NFPM_VERSION ?= v2.45.0
+NFPM ?= go run github.com/goreleaser/nfpm/v2/cmd/nfpm@$(NFPM_VERSION)
 
 .DEFAULT_GOAL := help
 
-.PHONY: help build build-cli build-gui test test-completion vet check clean build-cli-deb build-gui-deb release
+.PHONY: help build build-cli build-gui test test-completion vet check clean build-cli-deb build-gui-deb release publish-release
 
 help:
 	@echo Targets:
@@ -17,7 +18,9 @@ help:
 	@echo "  make build-cli-deb  Build the CLI deb package using nfpm"
 	@echo "  make build-gui-deb  Build the GUI deb package using nfpm"
 	@echo "  make build          Alias for build-cli"
-	@echo "  make check          Run go test and go vet"
+	@echo "  make check          Run Go tests, completion tests, and go vet"
+	@echo "  make release        Build release packages without changing Git state"
+	@echo "  make publish-release PUBLISH=1  Publish already-built packages intentionally"
 	@echo "  make clean          Remove the standalone binary and deb artifacts"
 
 build: build-cli
@@ -56,22 +59,13 @@ build-gui-deb: build-gui
 	VERSION=$(VERSION) GOARCH=$(GOARCH) $(NFPM) package --config build/nfpm-gui.yaml --packager deb --target bocker-gui.deb
 
 release:
-	@echo "Current version: $(VERSION)"
-	@NEW_VERSION=$$(echo $(VERSION) | awk -F. '{print $$1"."$$2"."$$3+1}'); \
-	echo "Bumping version to $$NEW_VERSION..."; \
-	sed -i 's/^VERSION ?=.*/VERSION ?= '"$$NEW_VERSION"'/' Makefile; \
-	sed -i 's/const Version = ".*/const Version = "'$$NEW_VERSION'"/' internal/bocker/main.go; \
-	sed -i 's/version: .*/version: '$$NEW_VERSION'+1/' gui/pubspec.yaml; \
-	echo "Building deb packages..."; \
-	$(MAKE) clean; \
-	VERSION=$$NEW_VERSION $(MAKE) build-cli-deb; \
-	VERSION=$$NEW_VERSION PATH="$(PATH):$(HOME)/.local/flutter/bin" $(MAKE) build-gui-deb; \
-	echo "Committing and pushing to GitHub..."; \
-	git add .; \
-	git commit -m "chore: auto release v$$NEW_VERSION"; \
-	git push; \
-	echo "Creating git tag and GitHub release..."; \
-	git tag -a v$$NEW_VERSION -m "Release v$$NEW_VERSION"; \
-	git push origin v$$NEW_VERSION; \
-	gh release create v$$NEW_VERSION bocker.deb bocker-gui.deb -t "Release v$$NEW_VERSION" -n "Auto-generated release v$$NEW_VERSION"; \
-	echo "Release v$$NEW_VERSION published successfully!"
+	$(MAKE) build-cli-deb
+	$(MAKE) build-gui-deb
+
+publish-release:
+	@test "$(PUBLISH)" = "1" || (echo "Set PUBLISH=1 to publish a release" >&2; exit 2)
+	@test -f bocker.deb && test -f bocker-gui.deb || (echo "Run make release first" >&2; exit 2)
+	@git diff --quiet && git diff --cached --quiet || (echo "Commit or stash changes before publishing" >&2; exit 2)
+	@git tag -a "v$(VERSION)" -m "Release v$(VERSION)"
+	@git push origin "v$(VERSION)"
+	@gh release create "v$(VERSION)" bocker.deb bocker-gui.deb -t "Release v$(VERSION)"

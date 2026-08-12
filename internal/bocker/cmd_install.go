@@ -44,7 +44,9 @@ func CmdInstall(args []string) error {
 		}
 		ip := waitForIP(client, name, 15)
 		if ip != "" {
-			warnAutoHostBridge(AutoConfigureHostBridge(client))
+			if err := AutoConfigureHostBridge(client); err != nil {
+				return fmt.Errorf("配置宿主机 bridge 互通失败: %w", err)
+			}
 		}
 		fmt.Printf("✔ 容器 %s 已安装并启动!\n", name)
 		return nil
@@ -118,7 +120,9 @@ func CmdInstall(args []string) error {
 
 	ip := waitForIP(client, name, 15)
 	if ip != "" {
-		warnAutoHostBridge(AutoConfigureHostBridge(client))
+		if err := AutoConfigureHostBridge(client); err != nil {
+			return fmt.Errorf("配置宿主机 bridge 互通失败: %w", err)
+		}
 	}
 
 	fmt.Printf("✔ 容器 %s 已安装并启动!\n", name)

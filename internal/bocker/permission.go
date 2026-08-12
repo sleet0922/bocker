@@ -84,6 +84,7 @@ func selectPermissionMode(current PermissionMode) (PermissionMode, bool) {
 
 func applyPermissionConfig(config map[string]string, mode PermissionMode) {
 	if mode != PermissionSuper {
+		config["security.privileged"] = "false"
 		delete(config, "security.nesting")
 		if raw := strings.TrimSpace(config["raw.lxc"]); raw != "" {
 			kept := make([]string, 0)
@@ -103,6 +104,7 @@ func applyPermissionConfig(config map[string]string, mode PermissionMode) {
 		delete(config, permissionConfigKey)
 		return
 	}
+	config["security.privileged"] = "true"
 	config["security.nesting"] = "true"
 	lines := make([]string, 0)
 	for _, line := range strings.Split(config["raw.lxc"], "\n") {
