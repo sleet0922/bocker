@@ -462,6 +462,9 @@ func containsString(values []string, wanted string) bool {
 func extractEmbeddedRuntime(paths embeddedPaths) error {
 	marker := filepath.Join(paths.runtimeDir, ".ready")
 	if _, err := os.Stat(marker); err == nil {
+		if err := allowRuntimeHookAccess(paths); err != nil {
+			return err
+		}
 		return ensureLXCCompatibilityRootfs()
 	}
 
@@ -515,12 +518,27 @@ func extractEmbeddedRuntime(paths embeddedPaths) error {
 	if err := writeLXCFSConfig(paths); err != nil {
 		return err
 	}
+	if err := allowRuntimeHookAccess(paths); err != nil {
+		return err
+	}
 	if err := ensureLXCCompatibilityRootfs(); err != nil {
 		return err
 	}
 
 	if err := os.WriteFile(marker, []byte(embeddedIncusVersion+"\n"), 0o600); err != nil {
 		return fmt.Errorf("write embedded runtime marker: %w", err)
+	}
+	return nil
+}
+
+// LXC executes mount hooks after entering a user namespace. The hook must be
+// reachable by the namespace's mapped root, while the embedded runtime must
+// not be listable by ordinary users. Execute-only traversal is sufficient.
+func allowRuntimeHookAccess(paths embeddedPaths) error {
+	for _, dir := range []string{filepath.Dir(paths.runtimeDir), paths.runtimeDir} {
+		if err := os.Chmod(dir, 0o711); err != nil {
+			return fmt.Errorf("set runtime hook traversal permission on %s: %w", dir, err)
+		}
 	}
 	return nil
 }

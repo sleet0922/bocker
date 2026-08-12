@@ -466,6 +466,10 @@ func (c *IncusClient) LaunchWithNetwork(imageRef, name string, mode NetworkMode)
 }
 
 func (c *IncusClient) LaunchWithNetworkAndPermission(imageRef, name string, mode NetworkMode, permission PermissionMode) error {
+	return c.LaunchWithNetworkAndPermissionAndFingerprint(imageRef, "", name, mode, permission)
+}
+
+func (c *IncusClient) LaunchWithNetworkAndPermissionAndFingerprint(imageRef, fingerprint, name string, mode NetworkMode, permission PermissionMode) error {
 	if err := c.ready(); err != nil {
 		return err
 	}
@@ -476,20 +480,7 @@ func (c *IncusClient) LaunchWithNetworkAndPermission(imageRef, name string, mode
 	if err != nil {
 		return err
 	}
-	// 去掉可能的 remote 前缀（如 mirror-images:debian/12 -> debian/12）
-	// 必须在 normalizeImageRef 之前执行：否则 normalizeImageRef 会把
-	// "mirror-images:debian:12" 错误转换为 "mirror-images/debian:12"，
-	// 导致后续 remote 前缀剥离错误地截取为 "12"。
-	// 判断依据：: 前部分不含 / 且 : 后部分包含 / 或 : (即 after 是完整镜像引用而非单纯 tag)
-	alias := imageRef
-	if idx := strings.IndexByte(alias, ':'); idx >= 0 {
-		before := alias[:idx]
-		after := alias[idx+1:]
-		if !strings.Contains(before, "/") && after != "" &&
-			(strings.Contains(after, "/") || strings.Contains(after, ":")) {
-			alias = after
-		}
-	}
+	_, alias := splitImageRemote(imageRef)
 	// 规范化镜像引用：debian:12 -> debian/12，与镜像源 alias 一致
 	alias = normalizeImageRef(alias)
 	permission, err = ParsePermissionMode(string(permission))
@@ -500,6 +491,12 @@ func (c *IncusClient) LaunchWithNetworkAndPermission(imageRef, name string, mode
 		containerNetworkConfig: string(mode),
 	}
 	applyPermissionConfig(config, permission)
+	source := api.InstanceSource{Type: "image", Server: MirrorURL, Protocol: "simplestreams"}
+	if fingerprint != "" {
+		source.Fingerprint = fingerprint
+	} else {
+		source.Alias = alias
+	}
 	req := api.InstancesPost{
 		Name: name,
 		Type: api.InstanceTypeContainer,
@@ -507,10 +504,8 @@ func (c *IncusClient) LaunchWithNetworkAndPermission(imageRef, name string, mode
 			Config:  config,
 			Devices: apiDevices(map[string]map[string]string{defaultNICName: nic}),
 		},
-		Source: api.InstanceSource{
-			Type: "image", Alias: alias, Server: MirrorURL, Protocol: "simplestreams",
-		},
-		Start: false,
+		Source: source,
+		Start:  false,
 	}
 	op, err := c.server.CreateInstance(req)
 	if err != nil {
@@ -549,6 +544,20 @@ func (c *IncusClient) GetContainer(name string) (*Container, error) {
 		return nil, fmt.Errorf("获取容器 %q 失败: %w", name, err)
 	}
 	return convertContainer(instance), nil
+}
+
+// BaseImageFingerprint returns the immutable image fingerprint resolved by
+// Incus for a launched instance. Incus records this value even when the
+// request used a mutable remote alias.
+func (c *IncusClient) BaseImageFingerprint(name string) (string, error) {
+	if err := c.ready(); err != nil {
+		return "", err
+	}
+	full, _, err := c.server.GetInstanceFull(name)
+	if err != nil {
+		return "", err
+	}
+	return strings.ToLower(strings.TrimSpace(full.Config["volatile.base_image"])), nil
 }
 
 func isInstanceNotFound(err error) bool {

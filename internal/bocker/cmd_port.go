@@ -259,30 +259,29 @@ func (c *IncusClient) AddPortMapping(name string, hostPort, containerPort int, p
 	ct := convertContainer(full)
 	ip := ct.IPv4()
 	if ip == "" {
-		return fmt.Errorf("容器 %s 未运行或未获取到 IPv4，请先启动容器后再添加端口映射", name)
+		ip = ct.IPv6()
+	}
+	if ip == "" {
+		return fmt.Errorf("容器 %s 未运行或未获取到 IP 地址，请先启动容器后再添加端口映射", name)
 	}
 	put := writableInstance(full)
 	if put.Devices == nil {
 		put.Devices = api.DevicesMap{}
 	}
 	devName := portDeviceName(hostPort, protocol)
-	put.Devices[devName] = map[string]string{
-		"type":    "proxy",
-		"listen":  fmt.Sprintf("%s:0.0.0.0:%d", protocol, hostPort),
-		"connect": fmt.Sprintf("%s:%s:%d", protocol, ip, containerPort),
-	}
-	if ipv6 := ct.IPv6(); ipv6 != "" {
-		// Incus' proxy implementation binds an IPv6 wildcard as a dual-stack
-		// socket on normal Linux hosts. A second 0.0.0.0 listener would conflict,
-		// so one [::] proxy serves both client families and connects over IPv6.
-		put.Devices[devName] = map[string]string{
-			"type":    "proxy",
-			"listen":  fmt.Sprintf("%s:[::]:%d", protocol, hostPort),
-			"connect": proxyEndpoint(protocol, ipv6, containerPort),
-		}
-	}
+	put.Devices[devName] = portProxyDevice(protocol, hostPort, containerPort, ct.IPv4(), ct.IPv6())
 	delete(put.Devices, portDeviceNameForFamily(hostPort, protocol, "v6"))
 	return c.updateInstance(name, etag, put)
+}
+
+func portProxyDevice(protocol string, hostPort, containerPort int, ipv4, ipv6 string) map[string]string {
+	address := ipv4
+	listen := fmt.Sprintf("%s:0.0.0.0:%d", protocol, hostPort)
+	if address == "" {
+		address = ipv6
+		listen = fmt.Sprintf("%s:[::]:%d", protocol, hostPort)
+	}
+	return map[string]string{"type": "proxy", "listen": listen, "connect": proxyEndpoint(protocol, address, containerPort)}
 }
 
 // RefreshPortMappings 在容器启动后刷新所有 bocker 管理的端口映射的 connect 地址，
@@ -305,7 +304,7 @@ func (c *IncusClient) RefreshPortMappings(name string) (int, error) {
 	changed := false
 	refreshed := 0
 	for devName, dev := range full.Devices {
-		hostPort, proto, family, ok := parsePortDeviceNameWithFamily(devName)
+		_, proto, family, ok := parsePortDeviceNameWithFamily(devName)
 		if !ok || dev["type"] != "proxy" {
 			continue
 		}
@@ -314,10 +313,7 @@ func (c *IncusClient) RefreshPortMappings(name string) (int, error) {
 			continue
 		}
 		address := ipv4
-		if ipv6 != "" && family == "v4" && strings.Contains(dev["listen"], ":0.0.0.0:") {
-			dev["listen"] = fmt.Sprintf("%s:[::]:%d", proto, hostPort)
-			address = ipv6
-		} else if family == "v6" || strings.Contains(dev["listen"], ":[::]:") {
+		if address == "" && (family == "v6" || strings.Contains(dev["listen"], ":[::]:")) {
 			address = ipv6
 		}
 		if address == "" {

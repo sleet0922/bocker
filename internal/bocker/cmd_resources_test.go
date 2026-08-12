@@ -118,3 +118,32 @@ func TestRuntimeConfigFromImageProperties(t *testing.T) {
 		t.Fatal("invalid autostart unexpectedly succeeded")
 	}
 }
+
+func TestValidateRuntimePortMappings(t *testing.T) {
+	if err := validateRuntimePortMappings([]PortSpec{{Port: 80, Protocol: "tcp"}, {Port: 80, Protocol: "tcp"}}, nil); err == nil {
+		t.Fatal("duplicate requested ports should fail")
+	}
+	containers := []Container{{Name: "occupied", Devices: map[string]map[string]string{
+		portDeviceName(80, "tcp"): {"type": "proxy", "listen": "tcp:0.0.0.0:80", "connect": "tcp:10.0.0.2:80"},
+	}}}
+	if err := validateRuntimePortMappings([]PortSpec{{Port: 80, Protocol: "tcp"}}, containers); err == nil {
+		t.Fatal("port owned by another container should fail")
+	}
+	if err := validateRuntimePortMappings([]PortSpec{{Port: 53, Protocol: "udp"}}, containers); err != nil {
+		t.Fatalf("unoccupied port should succeed: %v", err)
+	}
+}
+
+func TestBuildImagePropertiesRecordResolvedBase(t *testing.T) {
+	f := &Incusfile{
+		From:   "images:alpine/3.24",
+		Stages: []Stage{{From: "images:alpine/3.24", BaseFingerprint: strings.Repeat("a", 64)}},
+	}
+	properties := buildImageProperties(f)
+	if properties["user.bocker.base_image"] != "images:alpine/3.24" {
+		t.Fatalf("base image property = %q", properties["user.bocker.base_image"])
+	}
+	if properties["user.bocker.base_fingerprint"] != strings.Repeat("a", 64) {
+		t.Fatalf("base fingerprint property = %q", properties["user.bocker.base_fingerprint"])
+	}
+}

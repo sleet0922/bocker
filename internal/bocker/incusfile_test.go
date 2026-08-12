@@ -6,6 +6,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 // writeIncusfile 写入临时 Incusfile 并返回其路径。
@@ -197,18 +199,91 @@ CMD ["--workers", "2"]
 	}
 }
 
-func TestCommandDirectiveShellFormAndValidation(t *testing.T) {
+func TestCommandDirectiveRequiresJSONExecForm(t *testing.T) {
 	p := writeIncusfile(t, "Incusfile", "FROM alpine/3.24\nCMD /usr/bin/app --message 'hello world'\n")
-	f, err := parseIncusfile(p)
-	if err != nil {
-		t.Fatalf("parse shell command: %v", err)
-	}
-	if got, want := f.Cmd, []string{"/usr/bin/app", "--message", "hello world"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("CMD = %#v, want %#v", got, want)
+	if _, err := parseIncusfile(p); err == nil {
+		t.Fatal("shell-form CMD should fail rather than silently change execution semantics")
 	}
 	p = writeIncusfile(t, "Incusfile", "FROM alpine/3.24\nENTRYPOINT []\n")
 	if _, err := parseIncusfile(p); err == nil {
 		t.Fatal("empty ENTRYPOINT should fail")
+	}
+}
+
+func TestRuntimeDirectivesMustBeInFinalStage(t *testing.T) {
+	p := writeIncusfile(t, "Incusfile", "FROM alpine/3.24 AS builder\nEXPOSE 8080\nFROM alpine/3.24\n")
+	if _, err := parseIncusfile(p); err == nil {
+		t.Fatal("runtime directive in a non-final stage should fail")
+	}
+}
+
+func TestNormalizeImageRefPreservesRemoteAndTag(t *testing.T) {
+	for input, want := range map[string]string{
+		"debian:12":             "debian/12",
+		"images:debian:12":      "images:debian/12",
+		"images:ubuntu/24.04":   "images:ubuntu/24.04",
+		"registry:5000/app:1.2": "registry:5000/app:1.2",
+	} {
+		if got := normalizeImageRef(input); got != want {
+			t.Errorf("normalizeImageRef(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
+func TestPinnedFromImageAndValidation(t *testing.T) {
+	fingerprint := strings.Repeat("a", 64)
+	p := writeIncusfile(t, "Incusfile", "FROM images:debian:12@"+fingerprint+"\n")
+	f, err := parseIncusfile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := f.Stages[0].From, "images:debian/12"; got != want {
+		t.Fatalf("From = %q, want %q", got, want)
+	}
+	if got := f.Stages[0].BaseFingerprint; got != fingerprint {
+		t.Fatalf("BaseFingerprint = %q", got)
+	}
+	p = writeIncusfile(t, "Incusfile", "FROM alpine/3.24@bad\n")
+	if _, err := parseIncusfile(p); err == nil {
+		t.Fatal("short fingerprint should fail")
+	}
+}
+
+func TestDuplicateExposeRejected(t *testing.T) {
+	p := writeIncusfile(t, "Incusfile", "FROM alpine/3.24\nEXPOSE 8080 8080/tcp\n")
+	if _, err := parseIncusfile(p); err == nil {
+		t.Fatal("duplicate EXPOSE should fail")
+	}
+}
+
+func TestCopyContextPathAndFallback(t *testing.T) {
+	for _, source := range []string{"../outside", "/etc/passwd", ".", "sub/../../outside"} {
+		if _, err := copyContextRelativePath("/tmp/context", source); err == nil {
+			t.Errorf("copyContextRelativePath(%q) should fail", source)
+		}
+	}
+	contextDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(contextDir, "nested"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(contextDir, "nested", "file"), []byte("ok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	contextFD, err := unix.Open(contextDir, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(contextFD)
+	fd, err := openContextEntryFallback(contextFD, "nested/file", unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unix.Close(fd)
+	if err := os.Symlink("file", filepath.Join(contextDir, "nested", "link")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if _, err := openContextEntryFallback(contextFD, "nested/link", unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW); err == nil {
+		t.Fatal("fallback should reject symlink")
 	}
 }
 
@@ -330,6 +405,20 @@ RUN printf \\`)
 	}
 }
 
+func TestContinuationPreservesShellSpacing(t *testing.T) {
+	p := writeIncusfile(t, "Incusfile", "FROM alpine/3.24\nRUN printf foo\\\n  bar\nRUN echo left && \\\n  echo right\n")
+	f, err := parseIncusfile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := f.Steps[0].Run, "printf foobar"; got != want {
+		t.Fatalf("first continued RUN = %q, want %q", got, want)
+	}
+	if got, want := f.Steps[1].Run, "echo left && echo right"; got != want {
+		t.Fatalf("second continued RUN = %q, want %q", got, want)
+	}
+}
+
 func TestRelativeWorkdirAndCopyDirectoryTarget(t *testing.T) {
 	p := writeIncusfile(t, "Incusfile", "FROM debian:12\nWORKDIR /srv\nWORKDIR app\nWORKDIR ../shared\nCOPY ./artifact bin/\n")
 	f, err := parseIncusfile(p)
@@ -373,7 +462,7 @@ func TestResolvePriorStageIsCaseInsensitiveAndRejectsForwardReferences(t *testin
 	}
 }
 
-func TestCopyRejectsPathTraversalAndIntermediateSymlink(t *testing.T) {
+func TestCopyRejectsPathTraversalAndSymlinkAtKernelBoundary(t *testing.T) {
 	contextDir := t.TempDir()
 	outside := filepath.Join(filepath.Dir(contextDir), "outside.txt")
 	if err := os.WriteFile(outside, []byte("outside"), 0o644); err != nil {
@@ -388,8 +477,13 @@ func TestCopyRejectsPathTraversalAndIntermediateSymlink(t *testing.T) {
 	if err := os.Symlink(realDir, link); err != nil {
 		t.Skipf("当前系统不能创建测试符号链接: %v", err)
 	}
-	if err := rejectSymlinkPath(contextDir, filepath.Join(link, "file")); err == nil {
-		t.Fatal("中间符号链接应被拒绝")
+	contextFD, err := unix.Open(contextDir, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(contextFD)
+	if _, err := openContextEntry(contextFD, "linked/file", unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW); err == nil {
+		t.Fatal("内核路径解析应拒绝中间符号链接")
 	}
 }
 

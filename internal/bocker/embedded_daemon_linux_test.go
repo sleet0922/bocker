@@ -3,7 +3,9 @@
 package bocker
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -42,5 +44,26 @@ func TestSignalProcessGroupTerminatesChildren(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		signalProcessGroup(cmd.Process, syscall.SIGKILL)
 		t.Fatal("process group did not stop after SIGTERM")
+	}
+}
+
+func TestAllowRuntimeHookAccessUsesTraverseOnlyPermissions(t *testing.T) {
+	root := t.TempDir()
+	runtimeParent := filepath.Join(root, "runtime")
+	runtimeDir := filepath.Join(runtimeParent, "current")
+	if err := os.MkdirAll(runtimeDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := allowRuntimeHookAccess(embeddedPaths{runtimeDir: runtimeDir}); err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{runtimeParent, runtimeDir} {
+		info, err := os.Stat(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != 0o711 {
+			t.Fatalf("%s permissions = %o, want 711", dir, got)
+		}
 	}
 }

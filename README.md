@@ -283,7 +283,7 @@ AppArmor 和 capability 隔离。`super` 会启用特权容器、嵌套 LXC、�
 
 | 指令 | 说明 |
 | --- | --- |
-| `FROM <image> [AS <stage>]` | 基础镜像并开始一个构建阶段 |
+| `FROM <image>[@<64位fingerprint>] [AS <stage>]` | 基础镜像并开始一个构建阶段；发布构建可用 fingerprint 固定基础镜像 |
 | `NAME <name>` | 最终镜像别名和默认容器名 |
 | `NETWORK bridge\|nat` | 构建和创建时的网络模式 |
 | `WORKDIR <path>` | 设置后续 `RUN` 和相对 `COPY` 的工作目录 |
@@ -294,8 +294,8 @@ AppArmor 和 capability 隔离。`super` 会启用特权容器、嵌套 LXC、�
 | `EXPOSE <port>[/tcp\|udp]` | 创建运行时端口映射 |
 | `DOMAIN <domain>` | 启动时更新宿主机 `/etc/hosts` |
 | `AUTOSTART on\|off` | 设置容器开机自启动 |
-| `ENTRYPOINT [...]` | 设置固定应用命令 |
-| `CMD [...]` | 设置默认命令或参数 |
+| `ENTRYPOINT ["..."]` | 设置固定应用命令（仅 JSON exec form） |
+| `CMD ["..."]` | 设置默认命令或参数（仅 JSON exec form） |
 | `TEMP <name> ... END` | 在临时阶段安装构建工具并复制产物 |
 
 ### 最小示例
@@ -332,8 +332,9 @@ DOMAIN web.test
 AUTOSTART on
 ```
 
-`ENTRYPOINT` 是固定命令，`CMD` 是追加参数。JSON 数组是推荐写法，也支持
-带引号的 shell-like 写法。应用需要监听 `0.0.0.0`；需要 IPv6 时还应监听
+`ENTRYPOINT` 是固定命令，`CMD` 是追加参数。仅支持 JSON 数组，避免 shell-like
+写法在服务中被当作字面参数执行；需要 shell 时请显式写为
+`["/bin/sh", "-c", "command"]`。应用需要监听 `0.0.0.0`；需要 IPv6 时还应监听
 `[::]`。
 
 ### 多阶段构建
@@ -358,7 +359,9 @@ EXPOSE 8080/tcp
 ```
 
 `COPY --from` 只能引用当前阶段之前的阶段。`TEMP name ... END` 适合单个
-基础镜像下隔离编译工具链，临时阶段不会进入最终镜像。
+基础镜像下隔离编译工具链，临时阶段不会进入最终镜像。`EXPOSE`、`DOMAIN`、
+`AUTOSTART`、`ENTRYPOINT` 和 `CMD` 只允许出现在最终阶段；`EXPOSE` 使用同号
+宿主机端口，因此同一宿主机上不能同时运行声明相同端口的两个实例。
 
 ## 8. 故障排查
 

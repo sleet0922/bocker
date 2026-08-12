@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // CmdBuild 从 Incusfile 构建镜像。
@@ -345,9 +347,19 @@ func buildImage(client *IncusClient, f *Incusfile, alias string, networkMode Net
 		fmt.Printf("\n▶ [%d/%d] %s %q (镜像 %s) ...\n", si+1, totalStages, role, stageLabel, stage.From)
 
 		// 启动阶段容器
-		if err := client.LaunchWithNetwork(stage.From, stageContainer, networkMode); err != nil {
+		if err := client.LaunchWithNetworkAndPermissionAndFingerprint(stage.From, stage.BaseFingerprint, stageContainer, networkMode, PermissionNormal); err != nil {
 			return fmt.Errorf("启动阶段 %d 容器失败: %w", si+1, err)
 		}
+		actualBase, err := client.BaseImageFingerprint(stageContainer)
+		if err != nil {
+			return fmt.Errorf("读取阶段 %d 基础镜像 fingerprint 失败: %w", si+1, err)
+		}
+		if actualBase == "" {
+			return fmt.Errorf("阶段 %d 未返回基础镜像 fingerprint", si+1)
+		}
+		f.Stages[si].BaseFingerprint = actualBase
+		stage.BaseFingerprint = actualBase
+		fmt.Printf("  阶段 %d 基础 fingerprint: %s\n", si+1, actualBase)
 
 		// 等待网络就绪
 		ip := waitForIP(client, stageContainer, 30)
@@ -507,6 +519,12 @@ func buildImageProperties(f *Incusfile) map[string]string {
 	if f.Network != "" {
 		p[containerNetworkConfig] = f.Network
 	}
+	if f.From != "" {
+		p["user.bocker.base_image"] = f.From
+	}
+	if len(f.Stages) > 0 && f.Stages[len(f.Stages)-1].BaseFingerprint != "" {
+		p["user.bocker.base_fingerprint"] = f.Stages[len(f.Stages)-1].BaseFingerprint
+	}
 	if data, err := json.Marshal(f.Entrypoint); err == nil && len(f.Entrypoint) > 0 {
 		p["user.bocker.entrypoint"] = string(data)
 	}
@@ -567,6 +585,10 @@ Wants=network-online.target
 Type=simple
 EnvironmentFile=-/etc/bocker.env
 ExecStart=/usr/local/lib/bocker-entrypoint
+Restart=on-failure
+RestartSec=5
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Install]
 WantedBy=multi-user.target
@@ -612,11 +634,34 @@ func runFromBuiltImage(client *IncusClient, alias string, f *Incusfile, networkM
 	} else if err != nil && !isInstanceNotFound(err) {
 		return fmt.Errorf("检查容器 %s 是否存在失败: %w", name, err)
 	}
+	if err := validateRuntimePortMappings(f.Exposes, nil); err != nil {
+		return err
+	}
+	containers, err := client.ListContainers()
+	if err != nil {
+		return fmt.Errorf("检查现有端口映射失败: %w", err)
+	}
+	if err := validateRuntimePortMappings(f.Exposes, containers); err != nil {
+		return err
+	}
 
 	fmt.Printf("▶ 启动容器 %s (镜像 %s) ...\n", name, alias)
 	if err := client.LaunchLocalImageWithNetworkAndPermission(alias, name, networkMode, permission); err != nil {
 		return fmt.Errorf("启动容器失败: %w", err)
 	}
+	completed := false
+	defer func() {
+		if completed {
+			return
+		}
+		_ = removeHostsLine(name)
+		if err := client.Stop(name); err != nil {
+			_ = client.StopForce(name)
+		}
+		if err := client.Delete(name); err != nil {
+			fmt.Fprintf(os.Stderr, "  ⚠ 回滚容器 %s 失败: %v\n", name, err)
+		}
+	}()
 
 	ip := waitForIP(client, name, 30)
 	if ip != "" {
@@ -662,6 +707,27 @@ func runFromBuiltImage(client *IncusClient, alias string, f *Incusfile, networkM
 		}
 	}
 
+	completed = true
+	return nil
+}
+
+func validateRuntimePortMappings(exposes []PortSpec, containers []Container) error {
+	requested := make(map[string]bool, len(exposes))
+	for _, exp := range exposes {
+		key := fmt.Sprintf("%d/%s", exp.Port, exp.Protocol)
+		if requested[key] {
+			return fmt.Errorf("EXPOSE 重复声明端口 %s", key)
+		}
+		requested[key] = true
+	}
+	for _, container := range containers {
+		for _, mapping := range container.PortMappings() {
+			key := fmt.Sprintf("%d/%s", mapping.HostPort, mapping.Protocol)
+			if requested[key] {
+				return fmt.Errorf("EXPOSE 端口 %s 已被容器 %s 使用", key, container.Name)
+			}
+		}
+	}
 	return nil
 }
 
@@ -736,119 +802,138 @@ func quoteEnvironmentValue(value string) string {
 	return `"` + value + `"`
 }
 
-// applyCopy 执行单条 COPY 指令，src 相对于 Incusfile 所在目录。
-// 安全约束：解析后的 src 必须位于 contextDir 之内，拒绝路径穿越 (如 ../../etc/passwd)。
+// applyCopy executes one COPY instruction from the Incusfile context.
 func applyCopy(client *IncusClient, name string, cp CopySpec, contextDir string) error {
 	return applyCopyDst(client, name, cp, contextDir, cp.Dst)
 }
 
-// applyCopyDst 与 applyCopy 相同，但使用调用方已解析的 dst (已结合 WORKDIR)。
-// 用于多阶段构建中 WORKDIR 影响目标路径的场景。
+// applyCopyDst resolves sources through a context directory file descriptor.
+// The kernel enforces both beneath-context traversal and no-symlink resolution,
+// so replacing a path after validation cannot make the root-owned builder read
+// a file outside the context.
 func applyCopyDst(client *IncusClient, name string, cp CopySpec, contextDir, dst string) error {
-	src := cp.Src
-	if !filepath.IsAbs(src) {
-		src = filepath.Join(contextDir, src)
-	}
-	src = filepath.Clean(src)
-	// 路径穿越防护：src 必须位于 contextDir 之内
 	absContext, err := filepath.Abs(contextDir)
 	if err != nil {
 		return fmt.Errorf("解析 contextDir 失败: %w", err)
 	}
-	absSrc, err := filepath.Abs(src)
+	rel, err := copyContextRelativePath(absContext, cp.Src)
 	if err != nil {
-		return fmt.Errorf("解析 src 失败: %w", err)
-	}
-	rel, err := filepath.Rel(absContext, absSrc)
-	if err != nil || filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return fmt.Errorf("COPY 源 %q 位于构建上下文之外 (路径穿越被拒绝)", cp.Src)
 	}
-	if err := rejectSymlinkPath(absContext, absSrc); err != nil {
-		return err
+	contextFD, err := unix.Open(absContext, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return fmt.Errorf("打开构建上下文失败: %w", err)
 	}
-	return copyToContainer(client, name, absSrc, dst)
+	defer unix.Close(contextFD)
+	return copyContextEntry(client, name, contextFD, rel, dst)
 }
 
-func rejectSymlinkPath(contextDir, source string) error {
-	rel, err := filepath.Rel(contextDir, source)
+func copyContextRelativePath(contextDir, source string) (string, error) {
+	if filepath.IsAbs(source) {
+		return "", fmt.Errorf("absolute COPY sources are not supported")
+	}
+	rel := filepath.Clean(source)
+	if rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("source escapes context %s", contextDir)
+	}
+	return filepath.ToSlash(rel), nil
+}
+
+func copyContextEntry(client *IncusClient, name string, contextFD int, source, dst string) error {
+	fd, err := openContextEntry(contextFD, source, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW)
 	if err != nil {
-		return err
+		return fmt.Errorf("打开 COPY 源 %s 失败: %w", source, err)
 	}
-	current := contextDir
-	if rel == "." {
-		return nil
+	defer unix.Close(fd)
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil {
+		return fmt.Errorf("读取 COPY 源 %s 元数据失败: %w", source, err)
 	}
-	for _, component := range strings.Split(rel, string(filepath.Separator)) {
-		current = filepath.Join(current, component)
-		info, err := os.Lstat(current)
-		if err != nil {
-			return fmt.Errorf("COPY 源 %s 不存在: %w", current, err)
+	mode := stat.Mode & unix.S_IFMT
+	switch mode {
+	case unix.S_IFREG:
+		return pushContextFile(client, name, fd, source, dst, os.FileMode(stat.Mode))
+	case unix.S_IFDIR:
+		return copyContextDirectory(client, name, contextFD, fd, source, dst)
+	default:
+		return fmt.Errorf("COPY 只支持普通文件和目录: %s", source)
+	}
+}
+
+func openContextEntry(contextFD int, source string, flags int) (int, error) {
+	how := &unix.OpenHow{Flags: uint64(flags), Resolve: unix.RESOLVE_BENEATH | unix.RESOLVE_NO_SYMLINKS}
+	fd, err := unix.Openat2(contextFD, source, how)
+	if err == nil || (err != unix.ENOSYS && err != unix.EINVAL) {
+		return fd, err
+	}
+	return openContextEntryFallback(contextFD, source, flags)
+}
+
+// openContextEntryFallback maintains the same no-symlink and beneath-context
+// invariant for kernels without openat2 by walking one component at a time
+// from an already-open context directory fd.
+func openContextEntryFallback(contextFD int, source string, flags int) (int, error) {
+	parts := strings.Split(source, "/")
+	current, err := unix.Dup(contextFD)
+	if err != nil {
+		return -1, err
+	}
+	for i, part := range parts {
+		if part == "" || part == "." || part == ".." {
+			unix.Close(current)
+			return -1, fmt.Errorf("invalid COPY path component")
 		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("COPY 不支持符号链接路径: %s", current)
+		openFlags := flags
+		if i < len(parts)-1 {
+			openFlags = unix.O_RDONLY | unix.O_DIRECTORY | unix.O_CLOEXEC | unix.O_NOFOLLOW
+		}
+		next, err := unix.Openat(current, part, openFlags, 0)
+		unix.Close(current)
+		if err != nil {
+			return -1, err
+		}
+		current = next
+	}
+	return current, nil
+}
+
+func copyContextDirectory(client *IncusClient, name string, contextFD, dirFD int, source, dst string) error {
+	dst = path.Clean(dst)
+	if dst != "/" {
+		if err := client.ExecStreaming(name, "mkdir -p "+shellQuote(dst), nil); err != nil {
+			return fmt.Errorf("创建目标目录 %s 失败: %w", dst, err)
+		}
+	}
+	dupFD, err := unix.Dup(dirFD)
+	if err != nil {
+		return fmt.Errorf("复制 COPY 目录描述符失败: %w", err)
+	}
+	dir := os.NewFile(uintptr(dupFD), source)
+	if dir == nil {
+		return fmt.Errorf("打开 COPY 目录 %s 失败", source)
+	}
+	defer dir.Close()
+	entries, err := dir.ReadDir(-1)
+	if err != nil {
+		return fmt.Errorf("读取 COPY 目录 %s 失败: %w", source, err)
+	}
+	for _, entry := range entries {
+		childDst := path.Join(dst, entry.Name())
+		if err := copyContextEntry(client, name, contextFD, path.Join(source, entry.Name()), childDst); err != nil {
+			return err
 		}
 	}
 	return nil
 }
 
-// copyToContainer 将宿主机文件/目录复制到容器。目录会递归复制。
-// 不跟随符号链接，避免绕过路径穿越校验。
-func copyToContainer(client *IncusClient, name, src, dst string) error {
-	info, err := os.Lstat(src)
+func pushContextFile(client *IncusClient, name string, fd int, source, dstPath string, mode os.FileMode) error {
+	dupFD, err := unix.Dup(fd)
 	if err != nil {
-		return fmt.Errorf("源文件 %s 不存在: %w", src, err)
+		return fmt.Errorf("复制 COPY 文件描述符失败: %w", err)
 	}
-	if info.IsDir() {
-		// 先创建目标根目录，保证后续子目录 mkdir -p 有父目录
-		dst = path.Clean(dst)
-		if dst != "/" {
-			if err := client.ExecStreaming(name, "mkdir -p "+shellQuote(dst), nil); err != nil {
-				return fmt.Errorf("创建目标目录 %s 失败: %w", dst, err)
-			}
-		}
-		return filepath.WalkDir(src, func(hostPath string, d os.DirEntry, walkErr error) error {
-			if walkErr != nil {
-				return walkErr
-			}
-			if d.IsDir() {
-				// 在容器内创建对应子目录，确保后续文件 push 的父目录存在
-				rel, err := filepath.Rel(src, hostPath)
-				if err != nil {
-					return err
-				}
-				targetDir := path.Join(dst, filepath.ToSlash(rel))
-				if err := client.ExecStreaming(name, "mkdir -p "+shellQuote(targetDir), nil); err != nil {
-					return fmt.Errorf("创建目标子目录 %s 失败: %w", targetDir, err)
-				}
-				return nil
-			}
-			// 拒绝符号链接，防止穿越
-			if d.Type()&os.ModeSymlink != 0 {
-				return fmt.Errorf("COPY 不支持符号链接: %s", hostPath)
-			}
-			fi, err := d.Info()
-			if err != nil {
-				return err
-			}
-			rel, err := filepath.Rel(src, hostPath)
-			if err != nil {
-				return err
-			}
-			target := path.Join(dst, filepath.ToSlash(rel))
-			return pushFileToContainer(client, name, hostPath, target, fi.Mode())
-		})
-	}
-	// 源是符号链接则拒绝
-	if info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("COPY 不支持符号链接: %s", src)
-	}
-	return pushFileToContainer(client, name, src, dst, info.Mode())
-}
-
-func pushFileToContainer(client *IncusClient, name, srcPath, dstPath string, mode os.FileMode) error {
-	file, err := os.Open(srcPath)
-	if err != nil {
-		return fmt.Errorf("打开 %s 失败: %w", srcPath, err)
+	file := os.NewFile(uintptr(dupFD), source)
+	if file == nil {
+		return fmt.Errorf("打开 COPY 文件 %s 失败", source)
 	}
 	defer file.Close()
 	explicitDirectory := strings.HasSuffix(dstPath, "/") || dstPath == "."
@@ -858,11 +943,11 @@ func pushFileToContainer(client *IncusClient, name, srcPath, dstPath string, mod
 	// 2. 容器内 test -d 成功 → 是目录
 	// 是目录则追加源文件名作为最终目标
 	if explicitDirectory {
-		dstPath = path.Join(dstPath, filepath.Base(srcPath))
+		dstPath = path.Join(dstPath, path.Base(source))
 	} else {
 		// 在容器内检查目标是否是已存在的目录
 		if _, err := client.execQuiet(name, "test", "-d", dstPath); err == nil {
-			dstPath = path.Join(dstPath, filepath.Base(srcPath))
+			dstPath = path.Join(dstPath, path.Base(source))
 		}
 	}
 	// 确保目标父目录存在 (与 Docker COPY 行为一致)

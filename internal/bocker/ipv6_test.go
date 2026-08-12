@@ -71,3 +71,20 @@ func TestDualStackPortMappings(t *testing.T) {
 		t.Fatalf("proxyEndpoint() = %q", got)
 	}
 }
+
+func TestPortProxyPrefersIPv4WhenBothFamiliesExist(t *testing.T) {
+	device := portProxyDevice("tcp", 8080, 80, "10.0.100.9", "fd42::9")
+	if got, want := device["listen"], "tcp:0.0.0.0:8080"; got != want {
+		t.Fatalf("listen = %q, want %q", got, want)
+	}
+	if got, want := device["connect"], "tcp:10.0.100.9:80"; got != want {
+		t.Fatalf("connect = %q, want %q", got, want)
+	}
+	device = portProxyDevice("tcp", 8080, 80, "", "fd42::9")
+	if got, want := device["listen"], "tcp:[::]:8080"; got != want {
+		t.Fatalf("IPv6 fallback listen = %q, want %q", got, want)
+	}
+	if got, want := device["connect"], "tcp:[fd42::9]:80"; got != want {
+		t.Fatalf("IPv6 fallback connect = %q, want %q", got, want)
+	}
+}

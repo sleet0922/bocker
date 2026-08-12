@@ -6,6 +6,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 // Incusfile 是 Dockerfile 风格的 Incus 镜像构建描述文件，支持多阶段构建。
@@ -45,14 +46,15 @@ type Incusfile struct {
 // Stage 表示一个构建阶段 (FROM ... AS ...)。
 // 多阶段构建时，中间阶段的容器在构建完成后清理，最终阶段发布为镜像。
 type Stage struct {
-	Name       string      // AS 后的名字，用于 COPY --from=<name> 引用
-	From       string      // 基础镜像 (已规范化)
-	Steps      []BuildStep // RUN/COPY/ENV/WORKDIR 按出现顺序执行
-	Exposes    []PortSpec  // EXPOSE (运行时指令，通常在最终阶段)
-	Domain     string      // DOMAIN
-	Autostart  *bool       // AUTOSTART
-	Entrypoint []string    // ENTRYPOINT executable and fixed arguments
-	Cmd        []string    // CMD executable/arguments or default ENTRYPOINT arguments
+	Name            string      // AS 后的名字，用于 COPY --from=<name> 引用
+	From            string      // 基础镜像 (已规范化)
+	BaseFingerprint string      // 可选的固定基础镜像 fingerprint
+	Steps           []BuildStep // RUN/COPY/ENV/WORKDIR 按出现顺序执行
+	Exposes         []PortSpec  // EXPOSE (运行时指令，通常在最终阶段)
+	Domain          string      // DOMAIN
+	Autostart       *bool       // AUTOSTART
+	Entrypoint      []string    // ENTRYPOINT executable and fixed arguments
+	Cmd             []string    // CMD executable/arguments or default ENTRYPOINT arguments
 }
 
 // BuildStep 是一个有序的构建步骤 (RUN/COPY/ENV/WORKDIR)。
@@ -133,7 +135,10 @@ func parseIncusfile(path string) (*Incusfile, error) {
 			if i >= len(rawLines) {
 				return nil, fmt.Errorf("line %d: 续行反斜杠后缺少内容", startNo)
 			}
-			cur += " " + strings.TrimLeft(rawLines[i], " \t")
+			// Preserve the bytes before the continuation marker. A space before
+			// the marker remains significant to shell commands, while `foo\\`
+			// followed by `bar` correctly becomes `foobar`.
+			cur += strings.TrimLeft(rawLines[i], " \t")
 		}
 		logical = append(logical, logicalLine{no: startNo, text: cur})
 	}
@@ -166,10 +171,11 @@ func parseIncusfile(path string) (*Incusfile, error) {
 			}
 			stageNameLines[key] = lineNo
 		}
-		currentStage = &Stage{
-			From: normalizeImageRef(fromImg),
-			Name: stageName,
+		image, fingerprint, err := splitPinnedImageRef(fromImg)
+		if err != nil {
+			return fmt.Errorf("line %d: %w", lineNo, err)
 		}
+		currentStage = &Stage{From: normalizeImageRef(image), BaseFingerprint: fingerprint, Name: stageName}
 		return nil
 	}
 
@@ -232,7 +238,7 @@ func parseIncusfile(path string) (*Incusfile, error) {
 			}
 			stageNameLines[key] = lineNo
 			inTemp = true
-			currentTemp = &Stage{Name: name, From: currentStage.From}
+			currentTemp = &Stage{Name: name, From: currentStage.From, BaseFingerprint: currentStage.BaseFingerprint}
 		case "END":
 			// END 关闭最近的 TEMP 块。
 			if !inTemp {
@@ -242,6 +248,9 @@ func parseIncusfile(path string) (*Incusfile, error) {
 			inTemp = false
 			currentTemp = nil
 		case "NAME":
+			if inTemp {
+				return nil, fmt.Errorf("line %d: NAME 不能位于 TEMP 块内", lineNo)
+			}
 			parts, err := shellSplit(payload)
 			if err != nil || len(parts) != 1 {
 				return nil, fmt.Errorf("line %d: NAME 只接受一个名称", lineNo)
@@ -368,6 +377,9 @@ func parseIncusfile(path string) (*Incusfile, error) {
 		// TEMP 块作为前置阶段，主 FROM 阶段作为最终阶段 (最后发布)
 		f.Stages = append(tempStages, f.Stages...)
 	}
+	if err := validateFinalStageRuntimeDirectives(f.Stages); err != nil {
+		return nil, err
+	}
 
 	// 同步最终阶段到顶层字段 (保持向后兼容，buildImageProperties 等函数直接读取)
 	last := &f.Stages[len(f.Stages)-1]
@@ -381,25 +393,20 @@ func parseIncusfile(path string) (*Incusfile, error) {
 	return f, nil
 }
 
-// parseCommandPayload accepts Docker-compatible JSON arrays and a shell-like
-// whitespace form. Both forms resolve to an argv array; shell execution is
-// intentionally not implied. Bocker runs the result as an automatic service.
+// parseCommandPayload accepts only Docker's JSON exec form. Shell form is not
+// accepted because it would otherwise look valid while being executed as a
+// literal argv vector by the generated service.
 func parseCommandPayload(payload string) ([]string, error) {
 	payload = strings.TrimSpace(payload)
 	if payload == "" {
 		return nil, fmt.Errorf("command cannot be empty")
 	}
+	if !strings.HasPrefix(payload, "[") {
+		return nil, fmt.Errorf("must use JSON argv form, for example [\"/bin/sh\", \"-c\", \"echo ok\"]")
+	}
 	var parts []string
-	if strings.HasPrefix(payload, "[") {
-		if err := json.Unmarshal([]byte(payload), &parts); err != nil {
-			return nil, fmt.Errorf("invalid JSON argv: %w", err)
-		}
-	} else {
-		var err error
-		parts, err = shellSplit(payload)
-		if err != nil {
-			return nil, err
-		}
+	if err := json.Unmarshal([]byte(payload), &parts); err != nil {
+		return nil, fmt.Errorf("invalid JSON argv: %w", err)
 	}
 	if len(parts) == 0 || strings.TrimSpace(parts[0]) == "" {
 		return nil, fmt.Errorf("command requires an executable")
@@ -477,10 +484,82 @@ func directivePayload(rawLine string) string {
 // 形如 "debian:12" -> "debian/12"；"debian/12" 不变。
 func normalizeImageRef(ref string) string {
 	ref = strings.TrimSpace(ref)
-	if strings.Contains(ref, ":") && !strings.Contains(ref, "/") {
-		return strings.Replace(ref, ":", "/", 1)
+	remote, image := splitImageRemote(ref)
+	if strings.Contains(image, ":") && !strings.Contains(image, "/") {
+		image = strings.Replace(image, ":", "/", 1)
 	}
-	return ref
+	if remote != "" {
+		return remote + ":" + image
+	}
+	return image
+}
+
+// splitPinnedImageRef separates an optional immutable 64-hex image
+// fingerprint. Pinning is explicit so aliases remain convenient for
+// exploratory builds while release builds can be reproducible.
+func splitPinnedImageRef(ref string) (image, fingerprint string, err error) {
+	image, fingerprint, pinned := strings.Cut(ref, "@")
+	if !pinned {
+		return ref, "", nil
+	}
+	if image == "" || len(fingerprint) != 64 {
+		return "", "", fmt.Errorf("镜像指纹必须是 64 位十六进制值")
+	}
+	for _, c := range fingerprint {
+		if !unicode.Is(unicode.ASCII_Hex_Digit, c) {
+			return "", "", fmt.Errorf("镜像指纹必须是 64 位十六进制值")
+		}
+	}
+	return image, strings.ToLower(fingerprint), nil
+}
+
+// splitImageRemote separates Bocker's optional Incus-style remote prefix from
+// the image reference. A second colon belongs to a Docker-style image tag.
+func splitImageRemote(ref string) (remote, image string) {
+	idx := strings.IndexByte(ref, ':')
+	if idx <= 0 {
+		return "", ref
+	}
+	prefix, rest := ref[:idx], ref[idx+1:]
+	firstPart := rest
+	if slash := strings.IndexByte(firstPart, '/'); slash >= 0 {
+		firstPart = firstPart[:slash]
+	}
+	isPort := firstPart != ""
+	for _, c := range firstPart {
+		if c < '0' || c > '9' {
+			isPort = false
+			break
+		}
+	}
+	if !strings.Contains(prefix, "/") && !isPort && rest != "" && (strings.Contains(rest, "/") || strings.Contains(rest, ":")) {
+		return prefix, rest
+	}
+	return "", ref
+}
+
+func validateFinalStageRuntimeDirectives(stages []Stage) error {
+	for i := 0; i < len(stages)-1; i++ {
+		stage := stages[i]
+		if len(stage.Exposes) > 0 || stage.Domain != "" || stage.Autostart != nil || len(stage.Entrypoint) > 0 || len(stage.Cmd) > 0 {
+			label := stage.Name
+			if label == "" {
+				label = strconv.Itoa(i)
+			}
+			return fmt.Errorf("阶段 %q 包含仅允许在最终阶段使用的运行时指令 (EXPOSE DOMAIN AUTOSTART ENTRYPOINT CMD)", label)
+		}
+	}
+	if len(stages) > 0 {
+		seen := make(map[string]bool)
+		for _, expose := range stages[len(stages)-1].Exposes {
+			key := strconv.Itoa(expose.Port) + "/" + expose.Protocol
+			if seen[key] {
+				return fmt.Errorf("最终阶段重复声明 EXPOSE %s", key)
+			}
+			seen[key] = true
+		}
+	}
+	return nil
 }
 
 // parseCopyPayload 解析 COPY 指令的 payload，支持 --from 标志和引号路径。
