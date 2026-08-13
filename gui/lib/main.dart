@@ -535,11 +535,13 @@ class _BockerHomeState extends State<BockerHome> {
     );
     command.dispose();
     if (value == null || value.isEmpty) return;
+    final words = splitShellWords(value);
+    if (words.isEmpty) return;
     final result = await _run('执行命令', [
       'container',
       'exec',
       container.name,
-      value,
+      ...words,
     ], refresh: false);
     if (!mounted) return;
     await showDialog<void>(
@@ -1400,23 +1402,25 @@ class BockerCommand {
   Future<CommandResult> openShell(String containerName) async {
     try {
       final shellArguments = [_binary, 'container', 'shell', containerName];
-      final nativeTerminal =
-          _findExecutable('ptyxis') ?? _findExecutable('gnome-terminal');
-      if (nativeTerminal != null) {
-        await Process.start(nativeTerminal, [
-          '-T',
-          'Bocker: $containerName',
-          '--',
-          ...shellArguments,
-        ], mode: ProcessStartMode.detached);
-      } else {
-        await Process.start('x-terminal-emulator', [
-          '-T',
-          'Bocker: $containerName',
-          '-e',
-          ...shellArguments,
-        ], mode: ProcessStartMode.detached);
+      final title = 'Bocker: $containerName';
+      // Each terminal takes slightly different option spellings:
+      //   ptyxis:           -T <title> -- <command...>
+      //   gnome-terminal:   --title <title> -- <command...>
+      //   x-terminal-*:     -T <title> -e <command...>
+      final ptyxis = _findExecutable('ptyxis');
+      if (ptyxis != null) {
+        await Process.start(ptyxis, ['-T', title, '--', ...shellArguments],
+            mode: ProcessStartMode.detached);
+        return const CommandResult(true, '', 0);
       }
+      final gnomeTerminal = _findExecutable('gnome-terminal');
+      if (gnomeTerminal != null) {
+        await Process.start(gnomeTerminal, ['--title', title, '--', ...shellArguments],
+            mode: ProcessStartMode.detached);
+        return const CommandResult(true, '', 0);
+      }
+      await Process.start('x-terminal-emulator', ['-T', title, '-e', ...shellArguments],
+          mode: ProcessStartMode.detached);
       return const CommandResult(true, '', 0);
     } on ProcessException catch (error) {
       return CommandResult(false, error.message, -1);
@@ -1595,6 +1599,62 @@ List<ImageTemplate> parseImageTemplates(String output) {
 }
 
 String jsonText(Map item, String key) => item[key]?.toString() ?? '';
+
+/// Splits a command line into argv entries the way a POSIX shell would,
+/// honoring single/double quotes and backslash escapes, without performing
+/// variable expansion. Used to pass the interactive exec input through the
+/// argv-based `container exec` API instead of a shell.
+List<String> splitShellWords(String input) {
+  final words = <String>[];
+  final buffer = StringBuffer();
+  var quote = '';
+  var escaped = false;
+  var hasToken = false;
+  for (final rune in input.runes) {
+    final ch = String.fromCharCode(rune);
+    if (escaped) {
+      buffer.write(ch);
+      escaped = false;
+      hasToken = true;
+      continue;
+    }
+    if (quote.isNotEmpty) {
+      if (ch == quote) {
+        quote = '';
+      } else if (ch == '\\' && quote == '"') {
+        escaped = true;
+      } else {
+        buffer.write(ch);
+      }
+      hasToken = true;
+      continue;
+    }
+    if (ch == '\\') {
+      escaped = true;
+      hasToken = true;
+      continue;
+    }
+    if (ch == "'" || ch == '"') {
+      quote = ch;
+      hasToken = true;
+      continue;
+    }
+    if (ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r') {
+      if (hasToken) {
+        words.add(buffer.toString());
+        buffer.clear();
+        hasToken = false;
+      }
+      continue;
+    }
+    buffer.write(ch);
+    hasToken = true;
+  }
+  if (escaped) buffer.write('\\');
+  // Tolerate unbalanced quotes by dropping the dangling quote character.
+  if (hasToken || buffer.isNotEmpty) words.add(buffer.toString());
+  return words;
+}
 
 class _InstallValues {
   const _InstallValues(this.image, this.name, this.network, this.permission);

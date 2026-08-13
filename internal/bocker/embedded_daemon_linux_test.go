@@ -47,6 +47,61 @@ func TestSignalProcessGroupTerminatesChildren(t *testing.T) {
 	}
 }
 
+func TestRotateDaemonLogInPlaceKeepsTailAndTruncates(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "incusd-internal.log")
+	// Write a log slightly larger than the rotation threshold. The marker
+	// must land inside the last daemonLogTailKeep bytes so it survives into
+	// the preserved backup.
+	payload := make([]byte, maxDaemonLogSize)
+	for i := range payload {
+		payload[i] = 'a'
+	}
+	payload = append(payload, []byte("tail-marker\n")...)
+	if err := os.WriteFile(logPath, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := rotateDaemonLogInPlace(logPath); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) != 0 {
+		t.Fatalf("live log size = %d, want 0 after truncation", len(data))
+	}
+	backup, err := os.ReadFile(logPath + ".1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(string(backup), "tail-marker\n") {
+		t.Fatalf("backup is missing the newest lines: %q", backup[len(backup)-80:])
+	}
+	if int64(len(backup)) > daemonLogTailKeep {
+		t.Fatalf("backup size %d exceeds tail budget %d", len(backup), daemonLogTailKeep)
+	}
+}
+
+func TestRotateDaemonLogInPlaceSkipsSmallAndMissingFiles(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "small.log")
+	if err := os.WriteFile(logPath, []byte("small"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := rotateDaemonLogInPlace(logPath); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(logPath)
+	if string(data) != "small" {
+		t.Fatalf("small log was modified: %q", data)
+	}
+	if _, err := os.Stat(logPath + ".1"); !os.IsNotExist(err) {
+		t.Fatal("small log must not create a backup")
+	}
+	if err := rotateDaemonLogInPlace(filepath.Join(t.TempDir(), "missing.log")); err != nil {
+		t.Fatalf("missing log must be a no-op: %v", err)
+	}
+}
+
 func TestAllowRuntimeHookAccessUsesTraverseOnlyPermissions(t *testing.T) {
 	root := t.TempDir()
 	runtimeParent := filepath.Join(root, "runtime")

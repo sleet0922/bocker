@@ -64,7 +64,12 @@ func (c *IncusClient) imageServer() (incus.ImageServer, error) {
 	if c.imageServ != nil || c.imageErr != nil {
 		return c.imageServ, c.imageErr
 	}
-	c.imageServ, c.imageErr = incus.ConnectSimpleStreams(MirrorURL, nil)
+	mirror := MirrorURL()
+	if err := validateMirrorServer(mirror); err != nil {
+		c.imageErr = err
+		return nil, err
+	}
+	c.imageServ, c.imageErr = incus.ConnectSimpleStreams(mirror, nil)
 	if c.imageErr != nil {
 		return nil, fmt.Errorf("连接镜像 SimpleStreams 服务失败: %w", c.imageErr)
 	}
@@ -303,15 +308,38 @@ func randomMAC() (string, error) {
 	return fmt.Sprintf("%02x:%02x:%02x:%02x:%02x:%02x", buf[0], buf[1], buf[2], buf[3], buf[4], buf[5]), nil
 }
 
+// stopSettleTimeout 等待容器离开 Starting/Stopping 过渡状态的最长时间。
+const stopSettleTimeout = 60 * time.Second
+
 func (c *IncusClient) Stop(name string) error {
 	if err := c.ready(); err != nil {
 		return err
 	}
-	op, err := c.server.UpdateInstanceState(name, api.InstanceStatePut{Action: "stop", Timeout: 30}, "")
-	if err != nil {
-		return err
+	// Stop 是幂等的。容器刚被守护进程自启动 (Starting) 或正在停止 (Stopping)
+	// 时，先等待状态稳定，避免对 Incus 发送冲突的 stop 请求，也避免在
+	// "Starting" 状态下误判为已停止而跳过真正的停止操作。
+	deadline := time.Now().Add(stopSettleTimeout)
+	for {
+		full, _, err := c.server.GetInstanceFull(name)
+		if err != nil {
+			return err
+		}
+		switch full.StatusCode {
+		case api.Stopped:
+			return nil
+		case api.Starting, api.Stopping:
+			if time.Now().After(deadline) {
+				return fmt.Errorf("等待容器 %s 状态稳定超时 (当前状态 %s)", name, full.Status)
+			}
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+		op, err := c.server.UpdateInstanceState(name, api.InstanceStatePut{Action: "stop", Timeout: 30}, "")
+		if err != nil {
+			return err
+		}
+		return op.Wait()
 	}
-	return op.Wait()
 }
 
 // StopForce 强制停止容器（Force=true, Timeout=0），用于构建容器的可靠清理。
@@ -494,7 +522,7 @@ func (c *IncusClient) LaunchWithNetworkAndPermissionAndFingerprint(imageRef, fin
 		containerNetworkConfig: string(mode),
 	}
 	applyPermissionConfig(config, permission)
-	source := api.InstanceSource{Type: "image", Server: MirrorURL, Protocol: "simplestreams"}
+	source := api.InstanceSource{Type: "image", Server: MirrorURL(), Protocol: "simplestreams"}
 	if fingerprint != "" {
 		source.Fingerprint = fingerprint
 	} else {

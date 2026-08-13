@@ -3,17 +3,48 @@ package bocker
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
+	"strings"
 )
 
 // Version 工具版本
-const Version = "3.1.2"
+const Version = "3.1.3"
 
 // MirrorRemote 镜像源在本地的 remote 名称
 const MirrorRemote = "mirror-images"
 
-// MirrorURL LXC 镜像源地址（清华源已失效，改用官方源）
-const MirrorURL = "https://images.linuxcontainers.org/"
+// imageServerEnv 允许通过环境变量覆盖 SimpleStreams 镜像源，便于在官方源
+// 不可达或较慢的地区（如国内）使用 TUNA 等镜像。
+const imageServerEnv = "BOCKER_IMAGE_SERVER"
+
+// defaultMirrorURL 是官方 Linux Containers SimpleStreams 镜像源。
+const defaultMirrorURL = "https://images.linuxcontainers.org/"
+
+// MirrorURL 返回 SimpleStreams 镜像源地址。默认使用官方
+// images.linuxcontainers.org；可通过 BOCKER_IMAGE_SERVER 覆盖为其他
+// SimpleStreams 镜像（例如 https://mirrors.tuna.tsinghua.edu.cn/lxc-images/）。
+func MirrorURL() string {
+	if server := strings.TrimSpace(os.Getenv(imageServerEnv)); server != "" {
+		return server
+	}
+	return defaultMirrorURL
+}
+
+// validateMirrorServer 校验 SimpleStreams 镜像源地址格式。
+func validateMirrorServer(server string) error {
+	parsed, err := url.Parse(server)
+	if err != nil {
+		return fmt.Errorf("%s=%q 不是合法的 URL: %w", imageServerEnv, server, err)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return fmt.Errorf("%s=%q 只支持 http/https 地址", imageServerEnv, server)
+	}
+	if parsed.Host == "" {
+		return fmt.Errorf("%s=%q 缺少主机名", imageServerEnv, server)
+	}
+	return nil
+}
 
 // Main is the process entry point used by cmd/bocker.
 func Main() {

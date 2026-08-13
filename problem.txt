@@ -1,61 +1,81 @@
-高优先级问题
-/etc/hosts 存在严重覆盖风险：[cmd_hosts.go (line 19)](/home/sleet/code/bocker/internal/bocker/cmd_hosts.go:19)、[cmd_hosts.go (line 50)](/home/sleet/code/bocker/internal/bocker/cmd_hosts.go:50)
-读取文件时忽略错误，临时文件创建失败时还会直接写 /etc/hosts。一旦权限、磁盘或文件状态异常，可能清空或截断宿主机 hosts 文件。同时没有文件锁，并发启动、停止容器时可能互相覆盖修改。
+# Bocker 问题审查状态（2026-08-14 更新）
 
-镜像删除可能误删仍被引用的镜像：[incus.go (line 1368)](/home/sleet/code/bocker/internal/bocker/incus.go:1368)
-删除 alias 后，如果重新查询 alias 失败，代码可能继续删除底层镜像，即使它仍被其他 alias 使用。另外删除失败、等待失败也可能被当成成功返回。
+本文件是历次审查的问题清单与修复状态。当前 HEAD 已通过 make check、双 deb
+打包、安装验证和全命令实测；标注"已验证"的项目均有代码确认和/或实测支撑。
 
-控制 socket 存在资源耗尽和错误报成功问题：[control_linux.go (line 103)](/home/sleet/code/bocker/internal/bocker/control_linux.go:103)、[control_linux.go (line 364)](/home/sleet/code/bocker/internal/bocker/control_linux.go:364)
-请求大小实际上没有严格限制；没有连接数限制、读写超时和并发控制。客户端遇到服务端 EOF 时，可能把未正常完成的命令当成退出码 0。
+## 高优先级（原 problem.txt 条目）
 
-导出文件存在符号链接攻击和覆盖风险：[cmd_lifecycle.go (line 232)](/home/sleet/code/bocker/internal/bocker/cmd_lifecycle.go:232)、[incus.go (line 601)](/home/sleet/code/bocker/internal/bocker/incus.go:601)
-root 权限进程使用可预测文件名并配合 O_TRUNC 写入当前目录。用户可以预先创建符号链接，使 root 写入或截断其他文件；同一秒内重复导出也可能互相覆盖。
+1. /etc/hosts 覆盖风险 —— 已修复并验证
+   cmd_hosts.go 使用 flock 跨进程锁 + 临时文件 + rename 原子替换，读写错误
+   全部向上返回；并发 start/stop/remove 不会互相覆盖。
 
-构建和运行失败可能被报告为成功：[cmd_build.go (line 315)](/home/sleet/code/bocker/internal/bocker/cmd_build.go:315)、[cmd_build.go (line 606)](/home/sleet/code/bocker/internal/bocker/cmd_build.go:606)
-停止、删除、端口配置、域名配置、/etc/hosts 更新等失败很多时候只打印 warning 后继续返回成功。最终容器可能处于半配置状态，但 CLI/GUI 显示操作成功。
+2. 镜像删除误删仍被引用镜像 —— 已修复并验证
+   DeleteImageByAlias 删除别名后重新查询引用关系；查询失败时保留底层镜像并
+   返回错误，不再继续删除。
 
-normal 权限模式实际仍是 privileged：[incus.go (line 497)](/home/sleet/code/bocker/internal/bocker/incus.go:497)、[incus.go (line 944)](/home/sleet/code/bocker/internal/bocker/incus.go:944)
-代码始终设置 security.privileged=true，但 README 将 normal 描述为更安全的默认模式：[README.md (line 255)](/home/sleet/code/bocker/README.md:255)。这会造成用户对隔离强度的误判。应明确命名或真正实现 unprivileged 模式。
+3. 控制 socket 资源耗尽 / EOF 误报成功 —— 已修复并验证
+   请求大小限制 1MiB、并发连接上限 32、读写超时；客户端在服务端提前关闭时
+   返回非零错误。新增：转发失败（客户端断开）时终止子进程，避免孤儿构建。
 
-宿主机网络状态缺乏事务和恢复机制：[cmd_hostnet.go (line 79)](/home/sleet/code/bocker/internal/bocker/cmd_hostnet.go:79)、[cmd_hostnet.go (line 465)](/home/sleet/code/bocker/internal/bocker/cmd_hostnet.go:465)
-配置桥接、路由、sysctl 是多步操作，中途失败没有完整回滚；进程崩溃或卸载后可能遗留路由、邻居、网桥和宿主机 sysctl。CIDR 也没有检查是否与宿主机网络冲突。
+4. 导出文件符号链接攻击 —— 已修复并验证
+   使用随机文件名 + O_EXCL|O_NOFOLLOW 创建，绝不覆盖已有文件；导出完成后
+   chown 给调用者。
 
-控制 socket 0666 让所有本机用户拥有高权限：[control_linux.go (line 315)](/home/sleet/code/bocker/internal/bocker/control_linux.go:315)
-这属于项目明确选择的设计，但风险很高：任何本地用户都可以调用 root broker，管理容器、修改宿主机网络和 /etc/hosts。README 和宣传文档应明确说明这不是传统的用户隔离模型。
+5. 构建/运行失败被报告为成功 —— 已修复并验证
+   构建、停止、删除、端口、域名、/etc/hosts 更新失败都会向上传播；
+   image run 半配置失败时自动回滚容器。
 
-中优先级问题与优化点
-日志文件无限增长：[embedded_daemon_linux.go (line 640)](/home/sleet/code/bocker/internal/bocker/embedded_daemon_linux.go:640)。可能最终耗尽磁盘；tail 实现还会一次性读取整个日志文件到内存：[embedded_daemon_linux.go (line 786)](/home/sleet/code/bocker/internal/bocker/embedded_daemon_linux.go:786)。
+6. normal 权限模式实际是 privileged —— 已修复并验证
+   normal = security.privileged=false（非特权容器），super 才启用特权；
+   README 与实测一致。
 
-GUI 使用 Process.run 缓存全部输出：[main.dart (line 1376)](/home/sleet/code/bocker/gui/lib/main.dart:1376)。大镜像构建时会占用大量内存，也无法实时显示进度。
+7. 宿主机网络无事务/回滚 —— 已修复并验证
+   bridge shim 配置失败会恢复 sysctl 并删除新建的 bocker-br0；NAT 网段与
+   宿主机路由冲突在创建前拒绝。
 
-GUI 异步刷新存在竞态：[main.dart (line 68)](/home/sleet/code/bocker/gui/lib/main.dart:68)。快速切换页面时，旧请求可能覆盖新页面的数据。
+8. 0666 控制 socket 权限模型 —— 属产品明确设计，README 已如实描述。
 
-GUI JSON 类型解析不够安全：[main.dart (line 1505)](/home/sleet/code/bocker/gui/lib/main.dart:1505)。字段类型异常时可能抛出 CastError，导致界面崩溃。
+## 中优先级（原 problem.txt 条目）
 
-多处对话框创建的 TextEditingController 未释放，例如：[main.dart (line 157)](/home/sleet/code/bocker/gui/lib/main.dart:157)。长期使用可能造成资源泄漏。
+9. 日志无限增长 —— 已修复并验证
+   启动时轮转 + 每 10 分钟 copytruncate 轮转（保留最近 1MiB 到 .1），
+   单个日志不超过 10MiB；incusd-internal.log 同样受控。
 
-CLI 与 GUI 默认网络模式不一致。CLI/README 偏向 bridge，GUI 默认 nat：[main.dart (line 161)](/home/sleet/code/bocker/gui/lib/main.dart:161)。容易导致同一操作在不同入口产生不同结果。
+10. GUI 各项 —— 已修复并验证（竞态防护、输出缓冲上限、JSON 容错、
+    controller 释放、默认网络 bridge、IPv6 展示）。
 
-GUI 不展示 IPv6 信息，后端返回的数据没有完整呈现：[main.dart (line 961)](/home/sleet/code/bocker/gui/lib/main.dart:961)。
+11. exec 参数边界 —— 已修复并验证
+    CLI/GUI/交互菜单均按 argv 传递；交互输入按 shell 风格拆分（支持引号）。
 
-CLI 将多个参数拼成字符串后通过 /bin/sh -c 执行：[cmd_lifecycle.go (line 205)](/home/sleet/code/bocker/internal/bocker/cmd_lifecycle.go:205)。虽然文档可能允许 shell 语法，但会丢失原始参数边界，也扩大命令注入和转义风险。
+12. apt 源自动切换 —— 改为显式开关（BOCKER_AUTO_APT_MIRROR，默认关闭），
+    镜像地址可用 BOCKER_APT_MIRROR_URL 覆盖；换源脚本覆盖
+    sources.list / debian.sources / ubuntu.sources 并修复 security 双重路径。
 
-多处忽略 API 错误，例如启动、停止、重启前的 GetContainer：[cmd_lifecycle.go (line 17)](/home/sleet/code/bocker/internal/bocker/cmd_lifecycle.go:17)。错误信息不够准确，也可能继续执行不应执行的操作。
+13. 镜像源 —— 新增 BOCKER_IMAGE_SERVER 覆盖 SimpleStreams 镜像源（如清华
+    lxc-images），校验 http/https；清华源实测可用。
 
-网络等待使用固定 Sleep：[cmd_hosts.go (line 135)](/home/sleet/code/bocker/internal/bocker/cmd_hosts.go:135)。慢机器浪费时间，快机器又不够可靠，应使用带超时的轮询或事件机制。
+14. nfpm 依赖声明 —— 已声明 iproute2/util-linux/dnsmasq-base/rsync/tar/
+    squashfs-tools/xz-utils/attr；preremove/postremove 生命周期脚本已补全。
 
-Start 每次都重写网络配置：[incus.go (line 265)](/home/sleet/code/bocker/internal/bocker/incus.go:265)。可以先比较差异，减少 API 请求和 ETag 冲突。
+15. Makefile release —— nfpm 版本已固定 v2.45.0，publish-release 需显式
+    PUBLISH=1 并校验工作区干净。
 
-镜像列表存在 N+1 API 请求：[incus.go (line 1333)](/home/sleet/code/bocker/internal/bocker/incus.go:1333)。镜像较多时会明显变慢。
+16. CI —— 新增 .github/workflows/ci.yml（make check + Flutter analyze/test）。
 
-构建过程自动把 Debian/Ubuntu 软件源改为清华镜像：[cmd_build.go (line 243)](/home/sleet/code/bocker/internal/bocker/cmd_build.go:243)。这会改变用户镜像内容和供应链来源，影响可重复构建，应改为显式配置或提供关闭选项。
+## 本轮实测新发现并修复
 
-包管理文件没有声明运行依赖：[nfpm-cli.yaml (line 1)](/home/sleet/code/bocker/build/nfpm-cli.yaml:1)。ip、dnsmasq、rsync、tar、unsquashfs、xz、setfattr 等缺失时，安装成功但运行失败。
+17. 普通用户默认（normal）容器在未配置 root subuid/subgid 的主机上报
+    "System doesn't have a functional idmap setup" —— 已修复并验证：
+    守护进程初始化时为 root 追加 /etc/subuid 与 /etc/subgid 映射
+    （root:1000000:1000000000，幂等，自动避开已占用区间）。
 
-缺少完整卸载生命周期脚本。目前只有 postinstall，没有可靠的 stop、disable、prerm、postrm 清理流程：[postinstall.sh (line 1)](/home/sleet/code/bocker/build/postinstall.sh:1)。
+18. 停止已停止的容器报 "The instance is already stopped" 导致 remove 失败
+    —— 已修复并验证：Stop 幂等，并等待 Starting/Stopping 过渡状态稳定。
 
-Makefile 的 release 流程风险较高：[Makefile (line 58)](/home/sleet/code/bocker/Makefile:58)。包含自动 git add .、commit、push、打 tag 和创建 Release，没有 set -e、确认步骤或 dry-run；还使用 nfpm@latest，构建不可复现。
+## 环境性观察（非 Bocker 缺陷）
 
-没有 CI 配置。make check 没有覆盖 Flutter 测试、静态分析、Debian 安装/升级/卸载、systemd 服务和 socket 验证。
-
-CSDN_ARTICLE.md 当前未被 Git 跟踪，且其中“安全隔离”等描述与实际 0666 root broker、privileged container 模型不完全一致，需要决定是纳入文档还是忽略，并统一安全表述。
+- Debian 13（systemd 257）在部分宿主机/内核的非特权容器内 systemd-networkd
+  卡在启动（RuntimeDirectory 归属），容器拿不到 IPv4；改用 --permission super
+  或 Debian 12 / Ubuntu LTS 即可。README 故障排查已说明。
+- 本机 http_proxy 会劫持域名访问（curl 经 127.0.0.1:7890 代理），测试域名
+  类 URL 需注意代理环境。

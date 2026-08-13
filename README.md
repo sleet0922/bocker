@@ -164,8 +164,11 @@ bocker template install
 所有操作都必须使用完整的资源命令，不提供顶层快捷命令。省略模板、镜像或
 容器名时，可交互操作会打开选择菜单。
 
-`container exec` 按参数数组直接执行，不会隐式经过 shell；需要管道、重定向等
-shell 语法时，显式使用 `sh -c`，例如 `bocker container exec demo sh -c 'id | cat'`。
+`container exec` 按参数数组直接执行，不会隐式经过宿主机 shell；需要管道、
+重定向等 shell 语法时，显式使用 `sh -c`，例如
+`bocker container exec demo sh -c 'id | cat'`。交互式菜单和 GUI 里输入的
+命令行会按 shell 风格拆分为参数（支持单双引号和反斜杠转义，不做变量展开），
+因此 `ls -la /tmp` 会得到 `ls`、`-la`、`/tmp` 三个独立参数。
 
 只输入 `bocker template`、`bocker image` 或 `bocker container` 会打开对应的
 动作菜单。列表命令的 `--json` 用于 GUI 和脚本，它会输出机器可解析的 JSON
@@ -238,10 +241,26 @@ BOCKER_BRIDGE_PARENT=<宿主机物理网卡>
 BOCKER_NAT_CIDR=<IPv4 CIDR>
 BOCKER_NAT_IPV6_CIDR=<IPv6 CIDR|auto|none>
 BOCKER_STATE_DIR=<状态目录>
+BOCKER_IMAGE_SERVER=<SimpleStreams 镜像源>
+BOCKER_AUTO_APT_MIRROR=on|off
+BOCKER_APT_MIRROR_URL=<apt 镜像站根地址>
 ```
 
 `--network` 用于模板安装、镜像构建/运行和容器导入；`--permission` 用于模板
 安装、镜像运行和容器导入。网络命令行选项优先于 `BOCKER_NETWORK` 环境变量。
+
+`BOCKER_IMAGE_SERVER` 覆盖模板列表和容器创建使用的 SimpleStreams 镜像源，
+默认是官方 `https://images.linuxcontainers.org/`；官方源不可达或较慢时，
+可以设为国内镜像，例如 `BOCKER_IMAGE_SERVER=https://mirrors.tuna.tsinghua.edu.cn/lxc-images/`。
+地址必须是 http/https。
+
+`BOCKER_AUTO_APT_MIRROR=on` 在 `image build` 的每个阶段容器内检测 Debian/Ubuntu
+官方 apt 源连通性，官方源不可达时自动把 `/etc/apt` 源切换到镜像站（默认清华 TUNA
+`https://mirrors.tuna.tsinghua.edu.cn`，可用 `BOCKER_APT_MIRROR_URL` 覆盖）。
+该开关默认关闭，保证默认构建内容可复现、供应链不被静默改变。
+
+服务日志位于 `/var/lib/bocker/logs/`，单个日志超过 10MB 会自动轮转：最新
+1MB 保留在 `.1` 备份文件，活动日志立即清空，不会无限增长。
 
 ## 5. 网络模式
 
@@ -386,7 +405,14 @@ tail -n 80 /var/lib/bocker/logs/incusd.log
 - 服务因 `setfattr` 退出：确认已安装 `attr`；root 首次运行会自动处理。
 - Bridge 无法创建：设置正确的 `BOCKER_BRIDGE_PARENT`，或改用 `--network nat`。
 - `image build` 找不到 `Incusfile`：检查文件路径和当前工作目录。
-- 镜像列表获取失败：检查宿主机能否访问 `https://images.linuxcontainers.org/`。
+- 镜像列表获取失败：检查宿主机能否访问 `https://images.linuxcontainers.org/`，
+  或设置 `BOCKER_IMAGE_SERVER` 指向国内 SimpleStreams 镜像
+  （如 `https://mirrors.tuna.tsinghua.edu.cn/lxc-images/`）。
+- Debian 13 等 systemd 257+ 发行版在部分宿主机/内核上，非特权（`normal`）容器内的
+  systemd-networkd 会因上游 RuntimeDirectory 归属问题卡在启动状态，容器拿不到 IPv4
+  （`journalctl` 里可见 `owned by 0:0 ... refusing`）。这是上游 systemd 在用户命名空间
+  中的问题，不是 Bocker 缺陷；改用 `--permission super`，或使用 Debian 12 / Ubuntu LTS
+  等 systemd 252~255 的模板即可。
 
 ## 9. 状态目录
 

@@ -16,6 +16,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -35,6 +36,8 @@ const (
 	daemonTermStop        = 5 * time.Second
 	daemonKillWait        = 2 * time.Second
 	maxDaemonLogSize      = 10 << 20
+	daemonLogRotateEvery  = 10 * time.Minute
+	daemonLogTailKeep     = 1 << 20
 )
 
 // incusRuntimeArchive contains the container-only Incus daemon, liblxc and
@@ -93,6 +96,14 @@ func ensureEmbeddedDaemonOnce() error {
 		return ensureDefaultIncusConfig(server)
 	}
 	if err := ensureHostSetfattr(); err != nil {
+		return err
+	}
+	// Unprivileged (normal permission) containers need a subuid/subgid map
+	// for the root user. Debian/Ubuntu Incus/LXD packages normally add one
+	// in their postinst; hosts that never installed them (or use a snap
+	// runtime) have none, which makes the default permission mode fail with
+	// "System doesn't have a functional idmap setup".
+	if err := ensureRootIdmap(); err != nil {
 		return err
 	}
 
@@ -668,6 +679,12 @@ func runEmbeddedDaemonSupervisor() error {
 	}
 	defer logFile.Close()
 
+	// Rotate the daemon's own log file before it is reopened by incusd, so a
+	// long-lived service does not grow without bound.
+	if err := rotateDaemonLogInPlace(filepath.Join(paths.logDir, "incusd-internal.log")); err != nil {
+		return fmt.Errorf("rotate incusd log: %w", err)
+	}
+
 	incusdPath := filepath.Join(paths.runtimeDir, "bin", "incusd")
 	cmdArgs := []string{"--logfile", filepath.Join(paths.logDir, "incusd-internal.log")}
 	cmd := exec.Command(incusdPath, cmdArgs...)
@@ -687,6 +704,13 @@ func runEmbeddedDaemonSupervisor() error {
 		return err
 	}
 	defer control.Close()
+
+	// Periodically rotate every daemon-owned log in place. All writers open
+	// their logs with O_APPEND, so truncation after preserving the tail is
+	// safe even while incusd/lxcfs keep their file descriptors open.
+	logRotationDone := make(chan struct{})
+	go rotateDaemonLogsPeriodically(paths, logRotationDone)
+	defer close(logRotationDone)
 	if err := os.WriteFile(filepath.Join(paths.stateDir, "daemon.pid"), []byte(fmt.Sprintf("%d\n", cmd.Process.Pid)), 0o600); err != nil {
 		stopProcess(cmd.Process)
 		return err
@@ -809,27 +833,92 @@ func normalizeDaemonExit(err error) error {
 }
 
 func tailFile(path string, limit int) string {
-	file, err := os.Open(path)
-	if err != nil {
-		return ""
-	}
-	defer file.Close()
-	info, err := file.Stat()
-	if err != nil || info.Size() == 0 {
-		return ""
-	}
-	start := info.Size() - int64(limit)
-	if start < 0 {
-		start = 0
-	}
-	if _, err := file.Seek(start, io.SeekStart); err != nil {
-		return ""
-	}
-	data, err := io.ReadAll(io.LimitReader(file, int64(limit)))
+	data, err := tailFileBytes(path, int64(limit))
 	if err != nil {
 		return ""
 	}
 	return strings.TrimSpace(string(data))
+}
+
+// tailFileBytes returns up to limit bytes from the end of the file.
+func tailFileBytes(path string, limit int64) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if info.Size() == 0 {
+		return nil, nil
+	}
+	start := info.Size() - limit
+	if start < 0 {
+		start = 0
+	}
+	if _, err := file.Seek(start, io.SeekStart); err != nil {
+		return nil, err
+	}
+	return io.ReadAll(io.LimitReader(file, limit))
+}
+
+// rotateDaemonLogsPeriodically checks every daemon-owned log on a timer and
+// rotates any file that reached maxDaemonLogSize.
+func rotateDaemonLogsPeriodically(paths embeddedPaths, done <-chan struct{}) {
+	ticker := time.NewTicker(daemonLogRotateEvery)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			for _, logPath := range []string{
+				filepath.Join(paths.logDir, "incusd.log"),
+				filepath.Join(paths.logDir, "incusd-internal.log"),
+				filepath.Join(paths.logDir, "lxcfs.log"),
+				filepath.Join(paths.logDir, "supervisor.log"),
+			} {
+				if err := rotateDaemonLogInPlace(logPath); err != nil {
+					fmt.Fprintf(os.Stderr, "bocker daemon: rotate %s: %v\n", logPath, err)
+				}
+			}
+		case <-done:
+			return
+		}
+	}
+}
+
+// rotateDaemonLogInPlace performs copytruncate-style rotation: when the log
+// is at least maxDaemonLogSize, the most recent daemonLogTailKeep bytes are
+// preserved in <path>.1 and the live file is truncated to zero. Every daemon
+// writer opens its log with O_APPEND, so subsequent writes land at the new
+// end of the file: no sparse hole is created and the log never grows
+// unbounded even while the owning process keeps its descriptor open.
+func rotateDaemonLogInPlace(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if info.Size() < maxDaemonLogSize {
+		return nil
+	}
+	tail, err := tailFileBytes(path, daemonLogTailKeep)
+	if err != nil {
+		return err
+	}
+	backup := path + ".1"
+	tmp := backup + fmt.Sprintf(".tmp-%d", os.Getpid())
+	if err := os.WriteFile(tmp, tail, 0o600); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, backup); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return os.Truncate(path, 0)
 }
 
 func openRotatedDaemonLog(path string) (*os.File, error) {
@@ -841,4 +930,97 @@ func openRotatedDaemonLog(path string) (*os.File, error) {
 		}
 	}
 	return os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+}
+
+// minSubidRange 是非特权容器至少需要的 subuid/subgid 映射长度。
+const minSubidRange = 65536
+
+// ensureRootIdmap 确保 root 用户在 /etc/subuid 和 /etc/subgid 中有映射，
+// 否则 incusd 创建 normal (非特权) 容器时会报
+// "System doesn't have a functional idmap setup"。该函数幂等：已有足够
+// 映射时不做任何修改。
+func ensureRootIdmap() error {
+	if os.Geteuid() != 0 {
+		return nil
+	}
+	for _, path := range []string{"/etc/subuid", "/etc/subgid"} {
+		if err := ensureRootSubidEntry(path); err != nil {
+			return fmt.Errorf("配置 %s 失败: %w", path, err)
+		}
+	}
+	return nil
+}
+
+type subidRange struct{ start, count int64 }
+
+// parseSubidFile 解析 /etc/subuid 或 /etc/subgid，返回每个用户的映射区间
+// (注释和空行忽略) 以及 root 是否已有足够大的映射。
+func parseSubidFile(data string) (ranges []subidRange, rootOK bool) {
+	for _, rawLine := range strings.Split(data, "\n") {
+		line := strings.TrimSpace(rawLine)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.SplitN(line, ":", 3)
+		if len(parts) != 3 {
+			continue
+		}
+		user := strings.TrimSpace(parts[0])
+		start, startErr := strconv.ParseInt(strings.TrimSpace(parts[1]), 10, 64)
+		count, countErr := strconv.ParseInt(strings.TrimSpace(parts[2]), 10, 64)
+		if startErr != nil || countErr != nil || start < 0 || count <= 0 {
+			continue
+		}
+		if (user == "root" || user == "0") && count >= minSubidRange {
+			rootOK = true
+		}
+		ranges = append(ranges, subidRange{start: start, count: count})
+	}
+	return ranges, rootOK
+}
+
+// ensureRootSubidEntry 在单个 subuid/subgid 文件中为 root 追加映射
+// (root:1000000:1000000000，与 LXD/Incus 包安装时的默认一致)。
+func ensureRootSubidEntry(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	_, rootOK := parseSubidFile(string(data))
+	if rootOK {
+		return nil
+	}
+
+	ranges, _ := parseSubidFile(string(data))
+	// 从 1000000 开始，跳过已被其他用户占用的区间。
+	const defaultStart = 1000000
+	start := int64(defaultStart)
+	for {
+		overlap := false
+		for _, r := range ranges {
+			end := r.start + r.count
+			if start < end && start+minSubidRange > r.start {
+				start = end
+				overlap = true
+			}
+		}
+		if !overlap {
+			break
+		}
+	}
+
+	line := fmt.Sprintf("root:%d:1000000000\n", start)
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	if _, err := file.WriteString(line); err != nil {
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		return err
+	}
+	fmt.Printf("首次启动：为 root 配置 %s 映射 (%s)\n", path, strings.TrimSpace(line))
+	return nil
 }

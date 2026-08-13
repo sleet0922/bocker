@@ -235,6 +235,8 @@ func CmdExec(args []string) error {
 }
 
 // CmdExecInteractive 选择容器并询问要执行的命令。
+// 输入按 shell 风格拆分为参数数组后原样传给容器进程（支持引号与转义，
+// 但不会经过宿主机 shell 执行，也不会做变量展开）。
 func CmdExecInteractive() error {
 	name, err := selectContainer("选择要执行命令的容器")
 	if err != nil || name == "" {
@@ -245,7 +247,15 @@ func CmdExecInteractive() error {
 		fmt.Println("未输入命令，已取消。")
 		return nil
 	}
-	return CmdExec([]string{name, command})
+	args, splitErr := shellSplit(command)
+	if splitErr != nil {
+		return fmt.Errorf("命令无法解析: %w", splitErr)
+	}
+	if len(args) == 0 {
+		fmt.Println("未输入命令，已取消。")
+		return nil
+	}
+	return CmdExec(append([]string{name}, args...))
 }
 
 // CmdExport 导出容器为当前目录中的唯一 tar.gz 文件。

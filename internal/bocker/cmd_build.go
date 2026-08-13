@@ -242,9 +242,36 @@ func CmdTemplateList(args []string) error {
 	return nil
 }
 
-// autoConfigureAptMirror 检测容器内 apt 官方源连通性，失败则自动换为清华镜像源。
+// apt 自动换源是显式开关，默认关闭，保证构建可复现、不改变用户镜像内容。
+// 开启: BOCKER_AUTO_APT_MIRROR=on|1|true (构建阶段容器内 Debian/Ubuntu 官方源
+// 不可达时自动切换)。镜像地址默认清华 TUNA，可用 BOCKER_APT_MIRROR_URL 覆盖。
+const (
+	aptMirrorEnv        = "BOCKER_AUTO_APT_MIRROR"
+	aptMirrorURLEnv     = "BOCKER_APT_MIRROR_URL"
+	defaultAptMirrorURL = "https://mirrors.tuna.tsinghua.edu.cn"
+)
+
+func aptMirrorAuto() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(aptMirrorEnv))) {
+	case "1", "true", "on", "yes":
+		return true
+	default:
+		return false
+	}
+}
+
+// aptMirrorBaseURL 返回自动换源使用的镜像站根地址（不含尾部斜杠）。
+func aptMirrorBaseURL() string {
+	base := strings.TrimSpace(os.Getenv(aptMirrorURLEnv))
+	if base == "" {
+		base = defaultAptMirrorURL
+	}
+	return strings.TrimRight(base, "/")
+}
+
+// autoConfigureAptMirror 仅在 BOCKER_AUTO_APT_MIRROR 显式开启时生效：
+// 检测容器内 apt 官方源连通性，失败则自动换为镜像站源。
 // 仅对 Debian/Ubuntu 系容器生效；其他发行版 (Alpine/CentOS 等) 跳过。
-// 这样用户无需在 Incusfile 里手动加 sed 换源命令。
 func autoConfigureAptMirror(client *IncusClient, name string) error {
 	// 检测是否为 Debian/Ubuntu
 	osRelease, err := client.ReadFile(name, "/etc/os-release")
@@ -279,31 +306,41 @@ exit 1`, officialHost, officialHost)
 		return nil // 官方源可访问，不换源
 	}
 
-	// 已确认官方源不可达，自动换为清华镜像源
-	fmt.Printf("  ⚠ 检测到 apt 官方源不可达，自动换为清华镜像源\n")
-
-	// Debian 12+ 使用 deb822 格式 (/etc/apt/sources.list.d/debian.sources)
-	// Debian 11 及更早使用传统格式 (/etc/apt/sources.list)
-	// Ubuntu 使用 /etc/apt/sources.list
-	// 用 sh 一次性处理所有可能的源文件格式
-	sedScript := `set -e
-# Debian deb822 格式 (12+)
-if [ -f /etc/apt/sources.list.d/debian.sources ]; then
-	sed -i 's|http://deb.debian.org|https://mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list.d/debian.sources
-	sed -i 's|http://security.debian.org|https://mirrors.tuna.tsinghua.edu.cn/debian-security|g' /etc/apt/sources.list.d/debian.sources
-fi
-# Debian 传统格式 (<=11) 与 Ubuntu
-if [ -f /etc/apt/sources.list ]; then
-	sed -i 's|http://deb.debian.org|https://mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list
-	sed -i 's|http://security.debian.org|https://mirrors.tuna.tsinghua.edu.cn/debian-security|g' /etc/apt/sources.list
-	sed -i 's|http://archive.ubuntu.com|https://mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list
-	sed -i 's|http://security.ubuntu.com|https://mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list
-fi
-echo "✔ 镜像源已切换为清华源"`
+	mirror := aptMirrorBaseURL()
+	// 已确认官方源不可达，自动换为镜像站源
+	fmt.Printf("  ⚠ 检测到 apt 官方源不可达，自动换为镜像源 %s\n", mirror)
+	sedScript := aptMirrorSedScript(mirror)
 	if err := client.ExecStreaming(name, sedScript, nil); err != nil {
 		return fmt.Errorf("切换镜像源失败: %w", err)
 	}
 	return nil
+}
+
+// aptMirrorSedScript 生成把 Debian/Ubuntu apt 源切换到镜像站的在容器内执行的
+// shell 脚本。
+// Debian 12+ 使用 deb822 格式 (/etc/apt/sources.list.d/debian.sources)
+// Debian 11 及更早使用传统格式 (/etc/apt/sources.list)
+// Ubuntu 24.04+ 使用 /etc/apt/sources.list.d/ubuntu.sources
+// 用 sh 一次性处理所有可能的源文件格式。
+// 注意: security.debian.org 的 URI 自带 /debian-security 路径，必须整段
+// 替换 (host+路径)，否则会得到 /debian-security/debian-security 双重路径。
+func aptMirrorSedScript(mirror string) string {
+	return aptMirrorSedScriptForRoot(mirror, "")
+}
+
+// aptMirrorSedScriptForRoot 与 aptMirrorSedScript 相同，但允许通过 root 前缀
+// 重定向文件路径，便于单元测试 (root="" 表示真实根目录)。
+func aptMirrorSedScriptForRoot(mirror, root string) string {
+	return fmt.Sprintf(`set -e
+for f in %s/etc/apt/sources.list %s/etc/apt/sources.list.d/debian.sources %s/etc/apt/sources.list.d/ubuntu.sources; do
+	[ -f "$f" ] || continue
+	sed -i 's|https\?://security.debian.org/debian-security|%s/debian-security|g' "$f"
+	sed -i 's|https\?://deb.debian.org|%s|g' "$f"
+	sed -i 's|https\?://archive.ubuntu.com|%s|g' "$f"
+	sed -i 's|https\?://security.ubuntu.com|%s|g' "$f"
+done
+echo "✔ 镜像源已切换为 %s"`,
+		root, root, root, mirror, mirror, mirror, mirror, mirror)
 }
 
 // buildImage 执行多阶段构建流程：按顺序构建各阶段，最终阶段发布为镜像。
@@ -367,6 +404,13 @@ func buildImage(client *IncusClient, f *Incusfile, alias string, networkMode Net
 			fmt.Printf("⚠ 阶段 %d 容器未获取 IPv4，RUN 命令可能因网络问题失败\n", si+1)
 		} else {
 			fmt.Printf("  阶段 %d IPv4: %s\n", si+1, ip)
+		}
+
+		// 仅在显式开启时自动换 apt 源 (默认关闭，保证构建可复现)
+		if aptMirrorAuto() {
+			if err := autoConfigureAptMirror(client, stageContainer); err != nil {
+				return fmt.Errorf("阶段 %d 自动配置 apt 镜像源失败: %w", si+1, err)
+			}
 		}
 
 		// 执行步骤

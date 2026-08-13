@@ -159,6 +159,14 @@ func handleBockerControlConnection(connection net.Conn) {
 		command.Env = setControlEnvironmentValue(command.Env, key, value)
 	}
 	stream := &bockerControlOutputStream{connection: connection}
+	// When the caller disconnects mid-command (window closed, GUI quit),
+	// forwarding writes fail. Kill the child so a build or shell cannot
+	// become an orphan that keeps running (and holding sockets) forever.
+	stream.onWriteError = func() {
+		if command.Process != nil {
+			_ = command.Process.Kill()
+		}
+	}
 	var processState *os.ProcessState
 	if request.Terminal {
 		processState, err = runBockerTerminalCommand(connection, command, reader, stream, request)
@@ -291,8 +299,10 @@ func closeBockerControlInput(connection net.Conn) {
 // bockerControlOutputStream forwards child output as newline-delimited JSON
 // messages so long-running builds remain visibly active in the caller.
 type bockerControlOutputStream struct {
-	connection net.Conn
-	mu         sync.Mutex
+	connection   net.Conn
+	mu           sync.Mutex
+	onWriteError func()
+	errorOnce    sync.Once
 }
 
 func (s *bockerControlOutputStream) Write(data []byte) (int, error) {
@@ -302,14 +312,23 @@ func (s *bockerControlOutputStream) Write(data []byte) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.connection.SetWriteDeadline(time.Now().Add(controlWriteTimeout)); err != nil {
+		s.notifyWriteError()
 		return 0, err
 	}
 	err := json.NewEncoder(s.connection).Encode(bockerControlResponse{Output: string(data)})
 	_ = s.connection.SetWriteDeadline(time.Time{})
 	if err != nil {
+		s.notifyWriteError()
 		return 0, err
 	}
 	return len(data), nil
+}
+
+func (s *bockerControlOutputStream) notifyWriteError() {
+	if s.onWriteError == nil {
+		return
+	}
+	s.errorOnce.Do(s.onWriteError)
 }
 
 func validatePrivilegedArguments(args []string) error {
@@ -376,7 +395,7 @@ func runPrivilegedBrokerCommand(args []string) (int, error) {
 		}
 	}
 	environment := make(map[string]string)
-	for _, key := range []string{networkModeEnv, bridgeParentEnv, natNetworkCIDREnv, natNetworkIPv6CIDREnv, hostShimCIDREnv, terminalWidthEnv, terminalHeightEnv} {
+	for _, key := range []string{networkModeEnv, bridgeParentEnv, natNetworkCIDREnv, natNetworkIPv6CIDREnv, hostShimCIDREnv, imageServerEnv, aptMirrorEnv, aptMirrorURLEnv, terminalWidthEnv, terminalHeightEnv} {
 		if value, ok := os.LookupEnv(key); ok {
 			environment[key] = value
 		}
@@ -427,6 +446,8 @@ func runPrivilegedBrokerCommand(args []string) (int, error) {
 func allowedBrokerEnvironment(key string) bool {
 	switch key {
 	case networkModeEnv, bridgeParentEnv, natNetworkCIDREnv, natNetworkIPv6CIDREnv, hostShimCIDREnv:
+		return true
+	case imageServerEnv, aptMirrorEnv, aptMirrorURLEnv:
 		return true
 	case terminalWidthEnv, terminalHeightEnv:
 		return true

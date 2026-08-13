@@ -116,6 +116,23 @@ void main() {
     ]);
   });
 
+  test('splits exec commands into argv like a shell', () {
+    expect(splitShellWords('uname -a'), ['uname', '-a']);
+    expect(splitShellWords("echo 'hello world'"), ['echo', 'hello world']);
+    expect(splitShellWords('cat "a b"'), ['cat', 'a b']);
+    expect(splitShellWords('sh -c \'echo hi | cat\''), [
+      'sh',
+      '-c',
+      'echo hi | cat',
+    ]);
+    expect(splitShellWords('  spaced   out  '), ['spaced', 'out']);
+    expect(splitShellWords(''), isEmpty);
+    expect(splitShellWords('   '), isEmpty);
+    expect(splitShellWords('a\\ b'), ['a b']);
+    // Unbalanced quotes degrade gracefully instead of crashing.
+    expect(splitShellWords('echo "oops'), ['echo', 'oops']);
+  });
+
   test('builds canonical image run arguments', () {
     final defaults = imageRunArguments(
       image: 'web-image',

@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  go:
+    name: Go checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Go tests, completion tests, vet
+        run: make check
+      - name: Whitespace check
+        run: git diff --check
+
+  gui:
+    name: Flutter GUI checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Dependencies
+        working-directory: gui
+        run: flutter pub get
+      - name: Static analysis
+        working-directory: gui
+        run: flutter analyze
+      - name: Tests
+        working-directory: gui
+        run: flutter test
