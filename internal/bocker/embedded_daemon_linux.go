@@ -27,7 +27,7 @@ import (
 )
 
 const (
-	embeddedIncusVersion  = "7.2-container"
+	embeddedIncusVersion  = "7.3-container"
 	defaultBockerState    = "/var/lib/bocker"
 	embeddedSocketWait    = 90 * time.Second
 	hostDependencyTimeout = 5 * time.Minute
@@ -84,6 +84,12 @@ func ensureEmbeddedDaemonOnce() error {
 		if connectErr != nil {
 			return fmt.Errorf("无法连接 Bocker 后台服务（请确认 bocker.service 已启动）: %w", connectErr)
 		}
+		return ensureDefaultIncusConfig(server)
+	}
+	// A root caller may be a control-socket child or maintenance command. When
+	// this state directory already has a reachable Bocker daemon, use it rather
+	// than reinstalling the system-wide supervisor unit.
+	if server, connectErr := connectEmbeddedServer(paths.socket); connectErr == nil {
 		return ensureDefaultIncusConfig(server)
 	}
 	if err := ensureHostSetfattr(); err != nil {

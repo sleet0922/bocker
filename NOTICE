@@ -1,5 +1,6 @@
 Bocker links the Incus Go client library (github.com/lxc/incus/v7) and embeds
-the Zabbly container-only build of the Incus daemon and liblxc runtime. Incus
+an Incus daemon built from the official lxc/incus v7.3.0 source plus an LXC
+runtime. Incus
 is licensed under the Apache License 2.0. The bundled runtime also contains
 third-party libraries distributed by the upstream Incus package; their source
 and license information are available from https://github.com/lxc/incus and
