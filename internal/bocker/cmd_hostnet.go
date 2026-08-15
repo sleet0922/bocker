@@ -85,6 +85,9 @@ func ensureHostBridgeConnectivity(client *IncusClient, targets []bridgeRouteTarg
 	if err != nil {
 		return err
 	}
+	if isWirelessInterface(parent) {
+		return nil
+	}
 
 	reservedIPs := make([]net.IP, 0, len(targets))
 	for i := range targets {
@@ -177,6 +180,9 @@ func ensureHostBridgeIPv6Connectivity(client *IncusClient, targets []bridgeIPv6R
 	parent, err := detectBridgeParent()
 	if err != nil {
 		return err
+	}
+	if isWirelessInterface(parent) {
+		return nil
 	}
 	hostIP, err := firstGlobalIPv6(parent)
 	if err != nil {

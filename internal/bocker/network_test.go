@@ -117,3 +117,26 @@ func TestContainerNetworkModeDetectsManagedBridgeDevice(t *testing.T) {
 		t.Fatalf("managed bridge mode = %q, %v", mode, err)
 	}
 }
+
+func TestContainerNetworkModeDetectsBockerBr0Bridge(t *testing.T) {
+	ct := &Container{
+		Devices: map[string]map[string]string{
+			defaultNICName: {
+				"type":    "nic",
+				"name":    defaultNICName,
+				"network": bridgeNetworkName,
+			},
+		},
+	}
+	mode, err := networkModeFromContainer(ct)
+	if err != nil || mode != NetworkBridge {
+		t.Fatalf("bocker-br0 bridge mode = %q, %v", mode, err)
+	}
+}
+
+func TestIsWirelessInterface(t *testing.T) {
+	if isWirelessInterface("lo") {
+		t.Error("lo interface should not be wireless")
+	}
+}
+

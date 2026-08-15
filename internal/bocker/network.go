@@ -27,6 +27,9 @@ const (
 	natNetworkCIDREnv                  = "BOCKER_NAT_CIDR"
 	natNetworkIPv6CIDR                 = "auto"
 	natNetworkIPv6CIDREnv              = "BOCKER_NAT_IPV6_CIDR"
+	bridgeNetworkName                  = "bocker-br0"
+	bridgeNetworkCIDR                  = "10.0.200.1/24"
+	bridgeNetworkCIDREnv               = "BOCKER_BRIDGE_CIDR"
 	containerNetworkConfig             = "user.bocker.network"
 )
 
@@ -131,14 +134,17 @@ func networkModeFromContainer(ct *Container) (NetworkMode, error) {
 			dev = ct.Devices[defaultNICName]
 		}
 		if dev != nil && dev["type"] == "nic" {
-			if dev["network"] == natNetworkName {
-				return NetworkNAT, nil
+			if dev["network"] == natNetworkName || dev["network"] == bridgeNetworkName {
+				if dev["network"] == natNetworkName {
+					return NetworkNAT, nil
+				}
+				return NetworkBridge, nil
 			}
 			switch dev["nictype"] {
 			case "macvlan":
 				return NetworkBridge, nil
 			case "bridged":
-				return NetworkNAT, nil
+				return NetworkBridge, nil
 			}
 		}
 	}
@@ -306,6 +312,78 @@ func rejectHostNetworkConflict(cidr string) error {
 	return nil
 }
 
+func (c *IncusClient) ensureBridgeNetwork() error {
+	if err := c.ready(); err != nil {
+		return err
+	}
+	cidr := strings.TrimSpace(os.Getenv(bridgeNetworkCIDREnv))
+	if cidr == "" {
+		cidr = bridgeNetworkCIDR
+	}
+	if err := validateCIDR(cidr); err != nil {
+		return fmt.Errorf("%s=%q 无效: %w", bridgeNetworkCIDREnv, cidr, err)
+	}
+	ipv6CIDR, ipv6Explicit, err := configuredNATIPv6CIDR()
+	if err != nil {
+		return err
+	}
+	network, etag, err := c.server.GetNetwork(bridgeNetworkName)
+	if err != nil {
+		if !api.StatusErrorCheck(err, 404) {
+			return fmt.Errorf("读取 Bridge 网络 %s 失败: %w", bridgeNetworkName, err)
+		}
+		if err := rejectHostNetworkConflict(cidr); err != nil {
+			return err
+		}
+		config := api.ConfigMap{
+			"ipv4.address": cidr,
+			"ipv4.nat":     "true",
+		}
+		applyNATIPv6Config(config, ipv6CIDR)
+		if err := c.server.CreateNetwork(api.NetworksPost{
+			Name: bridgeNetworkName,
+			Type: "bridge",
+			NetworkPut: api.NetworkPut{
+				Config:      config,
+				Description: "Bocker Bridge network",
+			},
+		}); err != nil {
+			return fmt.Errorf("创建 Bridge 网络 %s 失败: %w", bridgeNetworkName, err)
+		}
+		return nil
+	}
+	if network == nil || network.Type != "bridge" || !network.Managed {
+		return nil
+	}
+	config := cloneConfig(network.Config)
+	changed := false
+	for key, value := range map[string]string{
+		"ipv4.address": cidr,
+		"ipv4.nat":     "true",
+	} {
+		if config[key] != value {
+			config[key] = value
+			changed = true
+		}
+	}
+	if (ipv6Explicit && ipv6CIDR != "auto") || config["ipv6.address"] == "" || config["ipv6.address"] == "none" {
+		before := cloneConfig(api.ConfigMap(config))
+		applyNATIPv6Config(api.ConfigMap(config), ipv6CIDR)
+		for _, key := range []string{"ipv6.address", "ipv6.nat", "ipv6.dhcp", "ipv6.dhcp.stateful"} {
+			if before[key] != config[key] {
+				changed = true
+			}
+		}
+	}
+	if !changed {
+		return nil
+	}
+	if err := c.server.UpdateNetwork(bridgeNetworkName, api.NetworkPut{Config: apiConfig(config), Description: network.Description}, etag); err != nil {
+		return fmt.Errorf("更新 Bridge 网络 %s 失败: %w", bridgeNetworkName, err)
+	}
+	return nil
+}
+
 // EnsureNetworkMode validates or creates only the backing network needed by
 // Bocker. NICs are always attached locally to each container so bridge and NAT
 // containers can coexist without mutating a shared profile.
@@ -318,8 +396,14 @@ func (c *IncusClient) EnsureNetworkMode(mode NetworkMode) error {
 		return err
 	}
 	if parsed == NetworkBridge {
-		_, err = detectBridgeParent()
-		return err
+		parent, err := detectBridgeParent()
+		if err != nil {
+			return err
+		}
+		if isWirelessInterface(parent) {
+			return c.ensureBridgeNetwork()
+		}
+		return nil
 	}
 	return c.ensureNATNetwork()
 }
@@ -338,6 +422,13 @@ func (c *IncusClient) newContainerNetworkDevice(mode NetworkMode) (map[string]st
 	parent, err := detectBridgeParent()
 	if err != nil {
 		return nil, err
+	}
+	if isWirelessInterface(parent) {
+		return map[string]string{
+			"type":    "nic",
+			"name":    defaultNICName,
+			"network": bridgeNetworkName,
+		}, nil
 	}
 	mac, err := randomMAC()
 	if err != nil {
@@ -362,9 +453,6 @@ func (c *IncusClient) SetContainerNetwork(name string, mode NetworkMode, forceNe
 	if !forceNewMAC {
 		currentMode, modeErr := networkModeFromContainer(current)
 		if modeErr == nil && currentMode == parsed && current.Devices[defaultNICName] != nil {
-			if parsed != NetworkNAT {
-				return nil
-			}
 			if err := c.EnsureNetworkMode(parsed); err != nil {
 				return err
 			}
@@ -389,14 +477,23 @@ func (c *IncusClient) SetContainerNetwork(name string, mode NetworkMode, forceNe
 	if devices == nil {
 		devices = map[string]map[string]string{}
 	}
-	parent := ""
 	if parsed == NetworkBridge {
-		parent, err = detectBridgeParent()
+		parent, err := detectBridgeParent()
 		if err != nil {
 			return err
 		}
+		if isWirelessInterface(parent) {
+			devices[defaultNICName] = map[string]string{
+				"type":    "nic",
+				"name":    defaultNICName,
+				"network": bridgeNetworkName,
+			}
+		} else {
+			devices[defaultNICName] = networkDevice(parsed, parent, mac)
+		}
+	} else {
+		devices[defaultNICName] = networkDevice(parsed, "", "")
 	}
-	devices[defaultNICName] = networkDevice(parsed, parent, mac)
 	put.Devices = apiDevices(devices)
 	if put.Config == nil {
 		put.Config = api.ConfigMap{}

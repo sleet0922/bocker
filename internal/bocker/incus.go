@@ -113,6 +113,23 @@ func detectBridgeParent() (string, error) {
 	return "", fmt.Errorf("无法自动识别默认出口网卡，请设置 %s=网卡名", bridgeParentEnv)
 }
 
+// isWirelessInterface 检查指定网卡接口是否为 Wi-Fi / 无线网卡。
+// Linux 内核会在 sysfs 下为无线接口提供 /sys/class/net/<ifname>/wireless 或 /sys/class/net/<ifname>/phy80211。
+func isWirelessInterface(ifname string) bool {
+	if ifname == "" {
+		return false
+	}
+	for _, sysPath := range []string{
+		filepath.Join("/sys/class/net", ifname, "wireless"),
+		filepath.Join("/sys/class/net", ifname, "phy80211"),
+	} {
+		if _, err := os.Stat(sysPath); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
 func defaultIPv4RouteParent() (string, error) {
 	out, err := exec.Command("ip", "-4", "route", "show", "default").Output()
 	if err == nil {
@@ -811,7 +828,7 @@ func (ct *Container) UsesBridgeNIC(nic string) bool {
 	if dev == nil {
 		dev = ct.Devices[nic]
 	}
-	return dev != nil && dev["type"] == "nic" && dev["nictype"] == "macvlan"
+	return dev != nil && dev["type"] == "nic" && (dev["nictype"] == "macvlan" || dev["network"] == bridgeNetworkName)
 }
 
 func (ct *Container) NetworkMode() string {
