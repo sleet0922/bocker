@@ -101,9 +101,13 @@ class _BockerHomeState extends State<BockerHome> {
     String label,
     List<String> arguments, {
     bool refresh = true,
+    String? workingDirectory,
   }) async {
     setState(() => _loading = true);
-    final result = await _bocker.run(arguments);
+    final result = await _bocker.run(
+      arguments,
+      workingDirectory: workingDirectory,
+    );
     if (!mounted) return result;
     setState(() {
       _loading = false;
@@ -806,8 +810,11 @@ class _BockerHomeState extends State<BockerHome> {
             onStop: (item) => _run('停止容器', ['container', 'stop', item.name]),
             onRestart: (item) =>
                 _run('重启容器', ['container', 'restart', item.name]),
-            onExport: (item) =>
-                _run('导出容器', ['container', 'export', item.name]),
+            onExport: (item) => _run('导出容器', [
+              'container',
+              'export',
+              item.name,
+            ], workingDirectory: _bocker.userHomeDirectory),
             onOpenShell: _openContainerShell,
             onExec: _execDialog,
             onSettings: _settingsDialog,
@@ -1395,8 +1402,17 @@ class _StatusChip extends StatelessWidget {
 class BockerCommand {
   BockerCommand();
 
-  Future<CommandResult> run(List<String> arguments) async {
-    return _runDirect(arguments);
+  String get userHomeDirectory {
+    final home = Platform.environment['HOME']?.trim();
+    if (home != null && home.isNotEmpty) return home;
+    return Directory.current.path;
+  }
+
+  Future<CommandResult> run(
+    List<String> arguments, {
+    String? workingDirectory,
+  }) async {
+    return _runDirect(arguments, workingDirectory: workingDirectory);
   }
 
   Future<CommandResult> openShell(String containerName) async {
@@ -1438,12 +1454,16 @@ class BockerCommand {
     return null;
   }
 
-  Future<CommandResult> _runDirect(List<String> arguments) async {
+  Future<CommandResult> _runDirect(
+    List<String> arguments, {
+    String? workingDirectory,
+  }) async {
     try {
       final process = await Process.start(
         _binary,
         arguments,
         runInShell: false,
+        workingDirectory: workingDirectory,
       );
       final output = StringBuffer();
       const maxOutput = 1024 * 1024;
