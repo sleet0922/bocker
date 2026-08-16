@@ -42,11 +42,9 @@ func CmdInstall(args []string) error {
 		if err := client.LaunchWithNetworkAndPermission(imageRef, name, mode, permissionMode); err != nil {
 			return err
 		}
-		ip := waitForIP(client, name, 15)
-		if ip != "" {
-			if err := AutoConfigureHostBridge(client); err != nil {
-				return fmt.Errorf("配置宿主机 bridge 互通失败: %w", err)
-			}
+		if err := finishContainerInstall(client, name, mode); err != nil {
+			rollbackFailedInstall(client, name)
+			return err
 		}
 		fmt.Printf("✔ 容器 %s 已安装并启动!\n", name)
 		return nil
@@ -118,15 +116,32 @@ func CmdInstall(args []string) error {
 		return err
 	}
 
-	ip := waitForIP(client, name, 15)
-	if ip != "" {
-		if err := AutoConfigureHostBridge(client); err != nil {
-			return fmt.Errorf("配置宿主机 bridge 互通失败: %w", err)
-		}
+	if err := finishContainerInstall(client, name, mode); err != nil {
+		rollbackFailedInstall(client, name)
+		return err
 	}
 
 	fmt.Printf("✔ 容器 %s 已安装并启动!\n", name)
 	return nil
+}
+
+func finishContainerInstall(client *IncusClient, name string, mode NetworkMode) error {
+	if ip := waitForIP(client, name, 30); ip == "" {
+		return fmt.Errorf("容器 %s 在 30 秒内未获取 IPv4（网络模式: %s）；安装已回滚，请检查 DHCP、DNS 和宿主机网络配置", name, mode)
+	}
+	if err := AutoConfigureHostBridge(client); err != nil {
+		return fmt.Errorf("配置宿主机 bridge 互通失败: %w", err)
+	}
+	return nil
+}
+
+func rollbackFailedInstall(client *IncusClient, name string) {
+	if err := client.Stop(name); err != nil {
+		_ = client.StopForce(name)
+	}
+	if err := client.Delete(name); err != nil {
+		fmt.Printf("⚠ 回滚失败安装的容器 %s 失败: %v\n", name, err)
+	}
 }
 
 // defaultNameFromImage 由镜像引用生成合法容器名。

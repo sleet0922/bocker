@@ -116,12 +116,13 @@ sudo systemctl daemon-reload
 ```
 
 如果曾配置容器域名，先备份 `/etc/hosts`，再删除包含 `# bocker:` 标记的行；
-停止服务后，若仍有 Bocker 专用网络设备，再确认名称后删除 `bocker-br0` 或
-`bocker-nat`，不要删除其他网络设备：
+停止服务后，若仍有 Bocker 专用网络设备，再确认名称后删除 Ethernet shim
+`bocker-shim0`、Wi-Fi 回退桥 `bocker-br0` 或 NAT 桥 `bocker-nat`，不要删除其他网络设备：
 
 ```bash
 sudo cp -a /etc/hosts /etc/hosts.bocker-uninstall-backup
 sudo sed -i '/# bocker:/d' /etc/hosts
+ip link show bocker-shim0 2>/dev/null && sudo ip link delete bocker-shim0 || true
 ip link show bocker-br0 2>/dev/null && sudo ip link delete bocker-br0 || true
 ip link show bocker-nat 2>/dev/null && sudo ip link delete bocker-nat || true
 ```
@@ -238,6 +239,7 @@ bocker container set <name> network nat
 --permission normal|super
 BOCKER_NETWORK=bridge|nat
 BOCKER_BRIDGE_PARENT=<宿主机物理网卡>
+BOCKER_BRIDGE_CIDR=<无线回退 Bridge 的 IPv4 CIDR>
 BOCKER_NAT_CIDR=<IPv4 CIDR>
 BOCKER_NAT_IPV6_CIDR=<IPv6 CIDR|auto|none>
 BOCKER_STATE_DIR=<状态目录>
@@ -272,7 +274,9 @@ BOCKER_APT_MIRROR_URL=<apt 镜像站根地址>
 默认模式是 `bridge`，可用 `BOCKER_NETWORK=nat` 改为 NAT。Bridge 模式会
 自动探测默认路由的物理网卡；探测失败时设置 `BOCKER_BRIDGE_PARENT`。
 
-NAT 默认使用 `10.0.100.0/24`，并自动创建 IPv6 ULA 网络。可用
+在 Wi-Fi 等不支持 macvlan 的网卡上，Bridge 模式自动回退到 Bocker 管理的
+`bocker-br0`，默认使用 `10.0.200.0/24` 和 NAT，以保证容器仍可联网；可用
+`BOCKER_BRIDGE_CIDR` 调整该网段。NAT 默认使用 `10.0.100.0/24`，并自动创建 IPv6 ULA 网络。可用
 `BOCKER_NAT_CIDR` 和 `BOCKER_NAT_IPV6_CIDR` 调整，IPv6 设为 `none` 可关闭。
 Bocker 对外只接受 `bridge` 和 `nat`，不接受底层 Incus 名称如 `macvlan`、
 `bridged` 或 `ovn`。

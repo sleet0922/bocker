@@ -393,6 +393,20 @@ func TestEOFContinuationIsRejected(t *testing.T) {
 	}
 }
 
+func TestNULInInstructionIsRejected(t *testing.T) {
+	for _, directive := range []string{
+		"FROM alpine/3.24\x00bad",
+		"RUN printf 'bad\x00value'",
+		"COPY bad\x00name /tmp/out",
+		"ENV VALUE=bad\x00value",
+	} {
+		p := writeIncusfile(t, "Incusfile", "FROM alpine/3.24\n"+directive+"\n")
+		if _, err := parseIncusfile(p); err == nil || !strings.Contains(err.Error(), "NUL") {
+			t.Fatalf("%q should reject NUL, got %v", directive, err)
+		}
+	}
+}
+
 func TestEvenTrailingBackslashesAreNotContinuation(t *testing.T) {
 	p := writeIncusfile(t, "Incusfile", `FROM debian:12
 RUN printf \\`)

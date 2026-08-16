@@ -244,7 +244,7 @@ func portFamilyLabel(m PortMapping) string {
 // 实现说明：bocker 的 bridge 容器使用局域网直连网卡，Incus 守护进程不跟踪该模式的
 // IP 地址（无 volatile.<nic>.last_state.ip_addresses），因此 nat=true 的 proxy 设备
 // 无法工作。这里改用非 NAT 的用户态 proxy，并在 connect 中写入容器当前 IPv4。
-// bocker 已经在宿主机侧创建了 bridge shim（bocker-br0），宿主机可以直达容器 IP。
+// bocker 已经在宿主机侧创建了 bridge shim（bocker-shim0），宿主机可以直达容器 IP。
 //
 // 容器运行时立即生效；容器未运行或未获取到 IPv4 时返回错误。
 // 容器重启后若 IPv4 发生变化，CmdStart 会调用 RefreshPortMappings 自动刷新。

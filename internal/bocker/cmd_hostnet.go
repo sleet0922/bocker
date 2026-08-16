@@ -12,8 +12,9 @@ import (
 )
 
 const (
-	defaultHostBridgeName = "bocker-br0"
-	hostShimCIDREnv       = "BOCKER_HOST_SHIM_CIDR"
+	defaultHostShimName = "bocker-shim0"
+	legacyHostShimName  = "bocker-br0"
+	hostShimCIDREnv     = "BOCKER_HOST_SHIM_CIDR"
 )
 
 // AutoConfigureHostBridge 配置 bridge 模式的宿主机 shim，让宿主机可以访问
@@ -39,22 +40,29 @@ func AutoConfigureHostBridge(client *IncusClient) error {
 	return nil
 }
 
-// removeHostBridgeRoute 移除宿主机侧 bocker-br0 上指向指定 IP 的 /32 路由。
+// removeHostBridgeRoute 移除宿主机侧 macvlan shim 上指向指定 IP 的 /32 路由。
 // 容器停止/删除时调用，避免死路由堆积。
 func removeHostBridgeRoute(ip string) {
 	if ip == "" {
 		return
 	}
 	// 静默执行，路由不存在不算错误
-	_ = exec.Command("ip", "route", "del", ip+"/32", "dev", defaultHostBridgeName).Run()
+	_ = exec.Command("ip", "route", "del", ip+"/32", "dev", defaultHostShimName).Run()
+	if legacyHostShimExists() {
+		_ = exec.Command("ip", "route", "del", ip+"/32", "dev", legacyHostShimName).Run()
+	}
 }
 
 func removeHostBridgeIPv6Route(ip string) {
 	if ip == "" {
 		return
 	}
-	_ = exec.Command("ip", "-6", "route", "del", ip+"/128", "dev", defaultHostBridgeName).Run()
-	_ = exec.Command("ip", "-6", "neigh", "del", ip, "dev", defaultHostBridgeName).Run()
+	_ = exec.Command("ip", "-6", "route", "del", ip+"/128", "dev", defaultHostShimName).Run()
+	_ = exec.Command("ip", "-6", "neigh", "del", ip, "dev", defaultHostShimName).Run()
+	if legacyHostShimExists() {
+		_ = exec.Command("ip", "-6", "route", "del", ip+"/128", "dev", legacyHostShimName).Run()
+		_ = exec.Command("ip", "-6", "neigh", "del", ip, "dev", legacyHostShimName).Run()
+	}
 }
 
 func warnAutoHostBridge(err error) {
@@ -120,11 +128,11 @@ func ensureHostBridgeConnectivity(client *IncusClient, targets []bridgeRouteTarg
 	}
 	shimIP = shimIP.To4()
 
-	created := !linkExists(defaultHostBridgeName)
-	if err := ensureHostBridge(parent, defaultHostBridgeName); err != nil {
+	created := !linkExists(defaultHostShimName)
+	if err := ensureHostBridge(parent, defaultHostShimName); err != nil {
 		return err
 	}
-	restoreSysctl, err := configureHostBridgeIsolation(parent, defaultHostBridgeName)
+	restoreSysctl, err := configureHostBridgeIsolation(parent, defaultHostShimName)
 	if err != nil {
 		return err
 	}
@@ -133,14 +141,14 @@ func ensureHostBridgeConnectivity(client *IncusClient, targets []bridgeRouteTarg
 		if !completed {
 			restoreSysctl()
 			if created {
-				_ = exec.Command("ip", "link", "del", defaultHostBridgeName).Run()
+				_ = exec.Command("ip", "link", "del", defaultHostShimName).Run()
 			}
 		}
 	}()
-	if err := replaceAddr(defaultHostBridgeName, shimCIDR); err != nil {
+	if err := replaceAddr(defaultHostShimName, shimCIDR); err != nil {
 		return err
 	}
-	if err := linkUp(defaultHostBridgeName); err != nil {
+	if err := linkUp(defaultHostShimName); err != nil {
 		return err
 	}
 
@@ -149,14 +157,14 @@ func ensureHostBridgeConnectivity(client *IncusClient, targets []bridgeRouteTarg
 	if hostIP != nil {
 		hostIPStr = hostIP.String()
 	}
-	shimMAC, _ := linkMAC(defaultHostBridgeName)
+	shimMAC, _ := linkMAC(defaultHostShimName)
 
 	for _, target := range targets {
-		if err := replaceRoute(target.Route, defaultHostBridgeName, shimIP.String()); err != nil {
+		if err := replaceRoute(target.Route, defaultHostShimName, shimIP.String()); err != nil {
 			return err
 		}
 		if target.IP != nil && strings.TrimSpace(target.MAC) != "" {
-			if err := replaceStaticARP(target.IP.String(), target.MAC, defaultHostBridgeName); err != nil {
+			if err := replaceStaticARP(target.IP.String(), target.MAC, defaultHostShimName); err != nil {
 				return err
 			}
 		}
@@ -166,12 +174,13 @@ func ensureHostBridgeConnectivity(client *IncusClient, targets []bridgeRouteTarg
 		}
 	}
 	completed = true
+	removeLegacyHostShim()
 	return nil
 }
 
 // ensureHostBridgeIPv6Connectivity mirrors the IPv4 macvlan shim behavior.
 // The host keeps its existing IPv6 address on the physical parent and routes
-// each container /128 through bocker-br0, with static NDP entries on both
+// each container /128 through bocker-shim0, with static NDP entries on both
 // sides. This avoids relying on an additional globally routed shim address.
 func ensureHostBridgeIPv6Connectivity(client *IncusClient, targets []bridgeIPv6RouteTarget) error {
 	if err := ensureCommand("ip"); err != nil {
@@ -188,11 +197,11 @@ func ensureHostBridgeIPv6Connectivity(client *IncusClient, targets []bridgeIPv6R
 	if err != nil {
 		return err
 	}
-	created := !linkExists(defaultHostBridgeName)
-	if err := ensureHostBridge(parent, defaultHostBridgeName); err != nil {
+	created := !linkExists(defaultHostShimName)
+	if err := ensureHostBridge(parent, defaultHostShimName); err != nil {
 		return err
 	}
-	restoreSysctl, err := configureHostBridgeIsolation(parent, defaultHostBridgeName)
+	restoreSysctl, err := configureHostBridgeIsolation(parent, defaultHostShimName)
 	if err != nil {
 		return err
 	}
@@ -201,22 +210,22 @@ func ensureHostBridgeIPv6Connectivity(client *IncusClient, targets []bridgeIPv6R
 		if !completed {
 			restoreSysctl()
 			if created {
-				_ = exec.Command("ip", "link", "del", defaultHostBridgeName).Run()
+				_ = exec.Command("ip", "link", "del", defaultHostShimName).Run()
 			}
 		}
 	}()
-	if err := linkUp(defaultHostBridgeName); err != nil {
+	if err := linkUp(defaultHostShimName); err != nil {
 		return err
 	}
-	shimMAC, _ := linkMAC(defaultHostBridgeName)
+	shimMAC, _ := linkMAC(defaultHostShimName)
 	for _, target := range targets {
 		if target.IP == nil || target.IP.To4() != nil {
 			continue
 		}
-		if err := replaceIPv6Route(target.IP.String()+"/128", defaultHostBridgeName, hostIP.String()); err != nil {
+		if err := replaceIPv6Route(target.IP.String()+"/128", defaultHostShimName, hostIP.String()); err != nil {
 			return err
 		}
-		if err := replaceStaticNDP(target.IP.String(), target.MAC, defaultHostBridgeName); err != nil {
+		if err := replaceStaticNDP(target.IP.String(), target.MAC, defaultHostShimName); err != nil {
 			return err
 		}
 		if client != nil && target.Name != "" && shimMAC != "" {
@@ -226,6 +235,7 @@ func ensureHostBridgeIPv6Connectivity(client *IncusClient, targets []bridgeIPv6R
 		}
 	}
 	completed = true
+	removeLegacyHostShim()
 	return nil
 }
 
@@ -282,10 +292,20 @@ func autoHostShimCIDR(parent string, reserved []net.IP) (string, error) {
 	return candidate.String() + "/32", nil
 }
 
-// existingShimCIDR 返回 bocker-br0 接口上已配置的全局 /32 IPv4 CIDR。
+// existingShimCIDR 返回 shim 接口上已配置的全局 /32 IPv4 CIDR。
 // 不存在或非 /32 时返回空串，触发重新选择。
 func existingShimCIDR() string {
-	out, err := exec.Command("ip", "-4", "-o", "addr", "show", "dev", defaultHostBridgeName, "scope", "global").Output()
+	if cidr := existingShimCIDROn(defaultHostShimName); cidr != "" {
+		return cidr
+	}
+	if legacyHostShimExists() {
+		return existingShimCIDROn(legacyHostShimName)
+	}
+	return ""
+}
+
+func existingShimCIDROn(ifname string) string {
+	out, err := exec.Command("ip", "-4", "-o", "addr", "show", "dev", ifname, "scope", "global").Output()
 	if err != nil {
 		return ""
 	}
@@ -460,10 +480,15 @@ func ensureHostBridge(parent, ifname string) error {
 	}
 
 	if err := exec.Command("ip", "link", "show", ifname).Run(); err == nil {
-		if existingParent, ok := linkParent(ifname); ok && existingParent != parent {
-			_ = exec.Command("ip", "link", "del", ifname).Run()
-		} else {
+		existingParent, hasParent := linkParent(ifname)
+		if !hasParent || !linkIsMacvlan(ifname) {
+			return fmt.Errorf("网络设备 %s 已存在但不是 Bocker macvlan shim，拒绝修改", ifname)
+		}
+		if existingParent == parent {
 			return nil
+		}
+		if out, err := exec.Command("ip", "link", "del", ifname).CombinedOutput(); err != nil {
+			return fmt.Errorf("移除旧 shim %s 失败: %w\n%s", ifname, err, strings.TrimSpace(string(out)))
 		}
 	}
 
@@ -474,13 +499,17 @@ func ensureHostBridge(parent, ifname string) error {
 	return nil
 }
 
-// linkParent 返回类似 "bocker-br0@ens18" 中的父接口名 "ens18"。
+// linkParent 返回类似 "bocker-shim0@ens18" 中的父接口名 "ens18"。
 func linkParent(ifname string) (string, bool) {
 	out, err := exec.Command("ip", "-o", "link", "show", ifname).Output()
 	if err != nil {
 		return "", false
 	}
-	fields := strings.Fields(string(out))
+	return parseLinkParent(string(out))
+}
+
+func parseLinkParent(output string) (string, bool) {
+	fields := strings.Fields(output)
 	if len(fields) < 2 {
 		return "", false
 	}
@@ -492,9 +521,38 @@ func linkParent(ifname string) (string, bool) {
 	return name[idx+1:], true
 }
 
+func linkIsMacvlan(ifname string) bool {
+	out, err := exec.Command("ip", "-d", "-o", "link", "show", ifname).Output()
+	return err == nil && detailedLinkIsMacvlan(string(out))
+}
+
+func detailedLinkIsMacvlan(output string) bool {
+	for _, field := range strings.Fields(output) {
+		if field == "macvlan" {
+			return true
+		}
+	}
+	return false
+}
+
+// legacyHostShimExists deliberately requires both a parent link and macvlan
+// metadata. The same bocker-br0 name is also used by the managed Wi-Fi bridge,
+// which must never be removed or have its routes altered by shim migration.
+func legacyHostShimExists() bool {
+	_, hasParent := linkParent(legacyHostShimName)
+	return hasParent && linkIsMacvlan(legacyHostShimName)
+}
+
+func removeLegacyHostShim() {
+	if !legacyHostShimExists() {
+		return
+	}
+	_ = exec.Command("ip", "link", "del", legacyHostShimName).Run()
+}
+
 // configureHostBridgeIsolation 避免宿主机物理网卡和 macvlan shim 在同一二层
 // 网络内互相替对方的 IPv4 地址响应 ARP。否则路由器可能会看到同一个宿主机 IP
-// 同时对应物理网卡 MAC 和 bocker-br0 的虚拟 MAC（ARP flux）。
+// 同时对应物理网卡 MAC 和 bocker-shim0 的虚拟 MAC（ARP flux）。
 //
 // 该函数只调整运行时 sysctl，不会修改物理网卡 MAC，也不会修改物理网卡 IPv4。
 func configureHostBridgeIsolation(parent, ifname string) (func(), error) {

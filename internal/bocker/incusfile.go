@@ -191,6 +191,9 @@ func parseIncusfile(path string) (*Incusfile, error) {
 	for _, ll := range logical {
 		lineNo := ll.no
 		raw := ll.text
+		if strings.IndexByte(raw, 0) >= 0 {
+			return nil, fmt.Errorf("line %d: 指令不能包含 NUL 字符", lineNo)
+		}
 		line := strings.TrimSpace(raw)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue

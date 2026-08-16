@@ -38,8 +38,8 @@ For an uninstalled development binary, set its path:
 BOCKER_BINARY="$PWD/../bocker" flutter run -d linux
 ```
 
-The desktop session needs a PolicyKit authentication agent, which is included
-by default on standard Ubuntu desktop installations.
+The desktop session does not need PolicyKit or sudo prompts. It only needs the
+system `bocker.service` installed and running.
 
 ## Build a release
 

@@ -42,7 +42,10 @@ func CmdStart(name string) error {
 		domain = ct.Domain()
 	}
 	if ip == "" {
-		ip = waitForIP(client, name, 15)
+		ip = waitForIP(client, name, 30)
+	}
+	if ip == "" {
+		return fmt.Errorf("容器 %s 在 30 秒内未获取 IPv4；请检查容器网络模式、DHCP 和宿主机网络配置", name)
 	}
 	if ip != "" && ct != nil && ct.NetworkMode() == string(NetworkBridge) {
 		if err := AutoConfigureHostBridge(client); err != nil {
@@ -168,7 +171,8 @@ func CmdRemoveImage(args []string) error {
 	return nil
 }
 
-// CmdStop 停止容器，并清理对应的 /32 路由避免死路由堆积。
+// CmdStop 停止容器，并清理域名映射与对应的 /32 路由，避免宿主机
+// 继续把请求发往已离线的容器。
 func CmdStop(name string) error {
 	fmt.Printf("停止容器 %s ...\n", name)
 	client := NewIncusClient()
@@ -179,6 +183,9 @@ func CmdStop(name string) error {
 	}
 	if err := client.Stop(name); err != nil {
 		return err
+	}
+	if err := removeHostsLine(name); err != nil {
+		return fmt.Errorf("停止容器后清理 /etc/hosts 失败: %w", err)
 	}
 	// 清理 /32 路由
 	if ct != nil && ct.UsesBridgeNIC(defaultNICName) {

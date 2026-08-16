@@ -161,7 +161,7 @@ func firstRouteDev(output string) string {
 				continue
 			}
 			dev := strings.TrimSpace(fields[i+1])
-			if dev != "" && dev != "lo" && dev != defaultHostBridgeName {
+			if dev != "" && dev != "lo" && dev != defaultHostShimName && dev != bridgeNetworkName {
 				return dev
 			}
 		}
@@ -346,7 +346,7 @@ func (c *IncusClient) Stop(name string) error {
 			return nil
 		case api.Starting, api.Stopping:
 			if time.Now().After(deadline) {
-				return fmt.Errorf("等待容器 %s 状态稳定超时 (当前状态 %s)", name, full.Status)
+				return c.forceStopAfterError(name, fmt.Errorf("等待容器 %s 状态稳定超时 (当前状态 %s)", name, full.Status))
 			}
 			time.Sleep(500 * time.Millisecond)
 			continue
@@ -355,12 +355,27 @@ func (c *IncusClient) Stop(name string) error {
 		if err != nil {
 			return err
 		}
-		return op.Wait()
+		if err := op.Wait(); err != nil {
+			return c.forceStopAfterError(name, err)
+		}
+		return nil
 	}
 }
 
-// StopForce 强制停止容器（Force=true, Timeout=0），用于构建容器的可靠清理。
-// 即使容器内进程挂起或 Stop 超时，ForceStop 也能确保容器停止，避免后续 Delete 失败导致资源泄漏。
+func (c *IncusClient) forceStopAfterError(name string, gracefulErr error) error {
+	// The operation can report a timeout just after the instance reached
+	// Stopped. Recheck before escalating to a forced stop.
+	if full, _, err := c.server.GetInstanceFull(name); err == nil && full.StatusCode == api.Stopped {
+		return nil
+	}
+	if err := c.StopForce(name); err != nil {
+		return fmt.Errorf("优雅停止容器 %s 失败: %v；强制停止也失败: %w", name, gracefulErr, err)
+	}
+	return nil
+}
+
+// StopForce 强制停止容器（Force=true, Timeout=0），用于可靠清理。
+// 即使容器内进程挂起或优雅停止超时，也能确保容器停止，避免后续 Delete 失败导致资源泄漏。
 func (c *IncusClient) StopForce(name string) error {
 	if err := c.ready(); err != nil {
 		return err

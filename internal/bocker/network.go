@@ -255,6 +255,11 @@ func (c *IncusClient) ensureNATNetwork() error {
 	}
 	config := cloneConfig(network.Config)
 	changed := false
+	if config["ipv4.address"] != cidr {
+		if err := rejectHostNetworkConflict(cidr, natNetworkName); err != nil {
+			return fmt.Errorf("%s=%q 无法应用: %w", natNetworkCIDREnv, cidr, err)
+		}
+	}
 	for key, value := range map[string]string{
 		"ipv4.address": cidr,
 		"ipv4.nat":     "true",
@@ -287,18 +292,39 @@ func (c *IncusClient) ensureNATNetwork() error {
 // rejectHostNetworkConflict prevents a managed NAT bridge from stealing a
 // subnet already routed by the host. Incus otherwise reports this only after
 // partially creating the network.
-func rejectHostNetworkConflict(cidr string) error {
-	_, requested, err := net.ParseCIDR(cidr)
-	if err != nil {
-		return err
-	}
+func rejectHostNetworkConflict(cidr string, ignoredDevices ...string) error {
 	out, err := exec.Command("ip", "-4", "route", "show").Output()
 	if err != nil {
 		return fmt.Errorf("读取宿主机 IPv4 路由失败: %w", err)
 	}
-	for _, line := range strings.Split(string(out), "\n") {
+	if existing, conflict, err := conflictingIPv4Route(cidr, string(out), ignoredDevices...); err != nil {
+		return err
+	} else if conflict {
+		return fmt.Errorf("网段 %s 与宿主机路由 %s 冲突；请设置未使用的 IPv4 网段", cidr, existing)
+	}
+	return nil
+}
+
+func conflictingIPv4Route(cidr, routeOutput string, ignoredDevices ...string) (*net.IPNet, bool, error) {
+	_, requested, err := net.ParseCIDR(cidr)
+	if err != nil {
+		return nil, false, err
+	}
+	for _, line := range strings.Split(routeOutput, "\n") {
 		fields := strings.Fields(line)
 		if len(fields) == 0 || fields[0] == "default" {
+			continue
+		}
+		ignored := false
+		for i := 0; i+1 < len(fields); i++ {
+			if fields[i] != "dev" {
+				continue
+			}
+			for _, device := range ignoredDevices {
+				ignored = ignored || fields[i+1] == device
+			}
+		}
+		if ignored {
 			continue
 		}
 		_, existing, parseErr := net.ParseCIDR(fields[0])
@@ -306,10 +332,10 @@ func rejectHostNetworkConflict(cidr string) error {
 			continue
 		}
 		if requested.Contains(existing.IP) || existing.Contains(requested.IP) {
-			return fmt.Errorf("NAT 网段 %s 与宿主机路由 %s 冲突；请设置 %s 为未使用网段", requested, existing, natNetworkCIDREnv)
+			return existing, true, nil
 		}
 	}
-	return nil
+	return nil, false, nil
 }
 
 func (c *IncusClient) ensureBridgeNetwork() error {
@@ -353,10 +379,15 @@ func (c *IncusClient) ensureBridgeNetwork() error {
 		return nil
 	}
 	if network == nil || network.Type != "bridge" || !network.Managed {
-		return nil
+		return fmt.Errorf("网络 %s 已存在但不是 Bocker 可管理的 bridge", bridgeNetworkName)
 	}
 	config := cloneConfig(network.Config)
 	changed := false
+	if config["ipv4.address"] != cidr {
+		if err := rejectHostNetworkConflict(cidr, bridgeNetworkName); err != nil {
+			return fmt.Errorf("%s=%q 无法应用: %w", bridgeNetworkCIDREnv, cidr, err)
+		}
+	}
 	for key, value := range map[string]string{
 		"ipv4.address": cidr,
 		"ipv4.nat":     "true",

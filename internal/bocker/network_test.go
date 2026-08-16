@@ -140,3 +140,32 @@ func TestIsWirelessInterface(t *testing.T) {
 	}
 }
 
+func TestConflictingIPv4Route(t *testing.T) {
+	routes := `default via 192.168.10.1 dev eth0
+10.0.100.0/24 dev existing proto kernel scope link src 10.0.100.1
+172.16.0.0/16 via 192.168.10.2 dev eth0
+`
+	for _, test := range []struct {
+		cidr     string
+		conflict bool
+	}{
+		{cidr: "10.0.100.1/24", conflict: true},
+		{cidr: "10.0.100.129/25", conflict: true},
+		{cidr: "172.16.20.1/24", conflict: true},
+		{cidr: "10.0.200.1/24", conflict: false},
+	} {
+		_, conflict, err := conflictingIPv4Route(test.cidr, routes)
+		if err != nil {
+			t.Fatalf("conflictingIPv4Route(%q): %v", test.cidr, err)
+		}
+		if conflict != test.conflict {
+			t.Errorf("conflictingIPv4Route(%q) = %v, want %v", test.cidr, conflict, test.conflict)
+		}
+	}
+	if _, _, err := conflictingIPv4Route("not-a-cidr", routes); err == nil {
+		t.Fatal("invalid CIDR should fail")
+	}
+	if _, conflict, err := conflictingIPv4Route("10.0.100.1/24", routes, "existing"); err != nil || conflict {
+		t.Fatalf("own network route should be ignored: conflict=%v err=%v", conflict, err)
+	}
+}

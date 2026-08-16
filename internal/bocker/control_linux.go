@@ -395,7 +395,7 @@ func runPrivilegedBrokerCommand(args []string) (int, error) {
 		}
 	}
 	environment := make(map[string]string)
-	for _, key := range []string{networkModeEnv, bridgeParentEnv, natNetworkCIDREnv, natNetworkIPv6CIDREnv, hostShimCIDREnv, imageServerEnv, aptMirrorEnv, aptMirrorURLEnv, terminalWidthEnv, terminalHeightEnv} {
+	for _, key := range []string{networkModeEnv, bridgeParentEnv, natNetworkCIDREnv, natNetworkIPv6CIDREnv, bridgeNetworkCIDREnv, hostShimCIDREnv, imageServerEnv, aptMirrorEnv, aptMirrorURLEnv, terminalWidthEnv, terminalHeightEnv} {
 		if value, ok := os.LookupEnv(key); ok {
 			environment[key] = value
 		}
@@ -445,7 +445,7 @@ func runPrivilegedBrokerCommand(args []string) (int, error) {
 
 func allowedBrokerEnvironment(key string) bool {
 	switch key {
-	case networkModeEnv, bridgeParentEnv, natNetworkCIDREnv, natNetworkIPv6CIDREnv, hostShimCIDREnv:
+	case networkModeEnv, bridgeParentEnv, natNetworkCIDREnv, natNetworkIPv6CIDREnv, bridgeNetworkCIDREnv, hostShimCIDREnv:
 		return true
 	case imageServerEnv, aptMirrorEnv, aptMirrorURLEnv:
 		return true

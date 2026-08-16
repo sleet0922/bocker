@@ -133,7 +133,7 @@ CLI deb 优先使用 `/usr/bin/bocker`，GUI-only 安装时可回退到
 /opt/incus/lib/lxc/rootfs
 ```
 
-还可能创建 Bocker 专用网络设备 `bocker-br0`、`bocker-nat`、路由，以及在
+还可能创建 Bocker 专用网络设备 `bocker-shim0`、`bocker-br0`、`bocker-nat`、路由，以及在
 `/etc/hosts` 中写入带 `# bocker:<container>` 标记的域名行。
 
 不要删除整个 `/opt/incus` 或其他 Incus 数据目录；只处理 Bocker 明确创建的路径。

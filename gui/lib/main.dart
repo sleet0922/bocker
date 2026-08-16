@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -14,26 +15,22 @@ class BockerGuiApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    const seed = Color(0xff006c51);
+    const seed = Color(0xff0b57d0);
     return MaterialApp(
       title: 'Bocker',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: seed),
-        useMaterial3: true,
-        scaffoldBackgroundColor: const Color(0xfff7faf8),
-        appBarTheme: const AppBarTheme(centerTitle: false),
-        inputDecorationTheme: const InputDecorationTheme(
-          border: OutlineInputBorder(),
-          isDense: true,
+      theme: _bockerTheme(
+        ColorScheme.fromSeed(
+          seedColor: seed,
+          dynamicSchemeVariant: DynamicSchemeVariant.tonalSpot,
         ),
       ),
-      darkTheme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
+      darkTheme: _bockerTheme(
+        ColorScheme.fromSeed(
           seedColor: seed,
           brightness: Brightness.dark,
+          dynamicSchemeVariant: DynamicSchemeVariant.tonalSpot,
         ),
-        useMaterial3: true,
       ),
       themeMode: ThemeMode.system,
       home: const BockerHome(),
@@ -41,21 +38,78 @@ class BockerGuiApp extends StatelessWidget {
   }
 }
 
+ThemeData _bockerTheme(ColorScheme colors) {
+  final light = colors.brightness == Brightness.light;
+  return ThemeData(
+    colorScheme: colors,
+    useMaterial3: true,
+    scaffoldBackgroundColor: light ? const Color(0xfff8f9fa) : colors.surface,
+    appBarTheme: AppBarTheme(
+      centerTitle: false,
+      elevation: 0,
+      scrolledUnderElevation: 0,
+      backgroundColor: light ? const Color(0xffffffff) : colors.surface,
+      surfaceTintColor: Colors.transparent,
+    ),
+    cardTheme: CardThemeData(
+      elevation: 0,
+      margin: EdgeInsets.zero,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(8),
+        side: BorderSide(color: colors.outlineVariant),
+      ),
+    ),
+    dialogTheme: DialogThemeData(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+    ),
+    inputDecorationTheme: InputDecorationTheme(
+      border: const OutlineInputBorder(),
+      enabledBorder: OutlineInputBorder(
+        borderSide: BorderSide(color: colors.outlineVariant),
+      ),
+      filled: true,
+      fillColor: colors.surfaceContainerLowest,
+      isDense: true,
+    ),
+    navigationRailTheme: NavigationRailThemeData(
+      backgroundColor: light ? const Color(0xffffffff) : colors.surface,
+      indicatorColor: colors.secondaryContainer,
+      useIndicator: true,
+    ),
+    dataTableTheme: DataTableThemeData(
+      headingRowColor: WidgetStatePropertyAll(colors.surfaceContainerLow),
+      dividerThickness: 1,
+    ),
+    dividerTheme: DividerThemeData(color: colors.outlineVariant, space: 1),
+    tooltipTheme: TooltipThemeData(
+      waitDuration: const Duration(milliseconds: 450),
+      decoration: BoxDecoration(
+        color: colors.inverseSurface,
+        borderRadius: BorderRadius.circular(4),
+      ),
+      textStyle: TextStyle(color: colors.onInverseSurface),
+    ),
+  );
+}
+
 enum _Section { containers, images }
 
 class BockerHome extends StatefulWidget {
-  const BockerHome({super.key});
+  const BockerHome({super.key, this.command});
+
+  final BockerCommand? command;
 
   @override
   State<BockerHome> createState() => _BockerHomeState();
 }
 
 class _BockerHomeState extends State<BockerHome> {
-  final _bocker = BockerCommand();
+  late final BockerCommand _bocker;
   _Section _section = _Section.containers;
   List<ContainerInfo> _containers = const [];
   List<ImageInfo> _images = const [];
   bool _loading = false;
+  String? _busyLabel;
   String? _loadError;
   String _lastOutput = '';
   int _refreshGeneration = 0;
@@ -63,6 +117,7 @@ class _BockerHomeState extends State<BockerHome> {
   @override
   void initState() {
     super.initState();
+    _bocker = widget.command ?? BockerCommand();
     _refresh();
   }
 
@@ -71,6 +126,7 @@ class _BockerHomeState extends State<BockerHome> {
     final section = _section;
     setState(() {
       _loading = true;
+      _busyLabel = '正在刷新';
       _loadError = null;
     });
     final result = await _bocker.run(
@@ -83,6 +139,7 @@ class _BockerHomeState extends State<BockerHome> {
     }
     setState(() {
       _loading = false;
+      _busyLabel = null;
       _lastOutput = result.output;
       if (result.ok) {
         _loadError = null;
@@ -103,14 +160,21 @@ class _BockerHomeState extends State<BockerHome> {
     bool refresh = true,
     String? workingDirectory,
   }) async {
-    setState(() => _loading = true);
+    setState(() {
+      _loading = true;
+      _busyLabel = label;
+    });
     final result = await _bocker.run(
       arguments,
       workingDirectory: workingDirectory,
+      onOutput: (output) {
+        if (mounted) setState(() => _lastOutput = output);
+      },
     );
     if (!mounted) return result;
     setState(() {
       _loading = false;
+      _busyLabel = null;
       _lastOutput = result.output;
     });
     ScaffoldMessenger.of(context).showSnackBar(
@@ -133,11 +197,15 @@ class _BockerHomeState extends State<BockerHome> {
   }
 
   Future<List<ImageTemplate>?> _loadImageTemplates() async {
-    setState(() => _loading = true);
+    setState(() {
+      _loading = true;
+      _busyLabel = '正在加载模板';
+    });
     final result = await _bocker.run(['template', 'list', '--json']);
     if (!mounted) return null;
     setState(() {
       _loading = false;
+      _busyLabel = null;
       _lastOutput = result.output;
     });
     if (!result.ok) {
@@ -163,11 +231,31 @@ class _BockerHomeState extends State<BockerHome> {
     return templates;
   }
 
+  void _showInputError(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        behavior: SnackBarBehavior.floating,
+        backgroundColor: Theme.of(context).colorScheme.error,
+      ),
+    );
+  }
+
+  Future<String?> _selectFile({bool backup = false}) async {
+    final groups = backup
+        ? const [
+            XTypeGroup(label: 'Bocker 备份', extensions: ['gz']),
+          ]
+        : const <XTypeGroup>[];
+    final file = await openFile(acceptedTypeGroups: groups);
+    return file?.path;
+  }
+
   Future<void> _installDialog() async {
     final templates = await _loadImageTemplates();
     if (templates == null || !mounted) return;
     final name = TextEditingController();
-    var network = 'bridge';
+    var network = 'nat';
     var permission = 'normal';
     var distro = templates.first.distro;
     var template = templates.first;
@@ -177,90 +265,77 @@ class _BockerHomeState extends State<BockerHome> {
       builder: (context) => StatefulBuilder(
         builder: (context, setDialogState) => AlertDialog(
           title: const Text('安装容器'),
-          content: SizedBox(
-            width: 440,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                DropdownButtonFormField<String>(
-                  initialValue: distro,
-                  autofocus: true,
-                  decoration: const InputDecoration(labelText: '发行版'),
-                  items: distros
-                      .map(
-                        (item) =>
-                            DropdownMenuItem(value: item, child: Text(item)),
-                      )
-                      .toList(),
-                  onChanged: (value) => setDialogState(() {
-                    distro = value!;
-                    template = templates.firstWhere(
-                      (item) => item.distro == distro,
-                    );
-                  }),
-                ),
-                const SizedBox(height: 16),
-                DropdownButtonFormField<String>(
-                  key: ValueKey(distro),
-                  initialValue: template.image,
-                  decoration: const InputDecoration(labelText: '版本'),
-                  items: templates
-                      .where((item) => item.distro == distro)
-                      .map(
-                        (item) => DropdownMenuItem(
-                          value: item.image,
-                          child: Text('${item.release}  (${item.image})'),
-                        ),
-                      )
-                      .toList(),
-                  onChanged: (value) => setDialogState(() {
-                    template = templates.firstWhere(
-                      (item) => item.image == value,
-                    );
-                  }),
-                ),
-                const SizedBox(height: 16),
-                TextField(
-                  controller: name,
-                  decoration: const InputDecoration(
-                    labelText: '容器名称',
-                    hintText: '留空则由 Bocker 自动生成',
+          content: SingleChildScrollView(
+            child: SizedBox(
+              width: 440,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  DropdownButtonFormField<String>(
+                    initialValue: distro,
+                    autofocus: true,
+                    decoration: const InputDecoration(labelText: '发行版'),
+                    items: distros
+                        .map(
+                          (item) =>
+                              DropdownMenuItem(value: item, child: Text(item)),
+                        )
+                        .toList(),
+                    onChanged: (value) => setDialogState(() {
+                      distro = value!;
+                      template = templates.firstWhere(
+                        (item) => item.distro == distro,
+                      );
+                    }),
                   ),
-                ),
-                const SizedBox(height: 16),
-                Row(
-                  children: [
-                    Expanded(
-                      child: DropdownButtonFormField<String>(
-                        initialValue: network,
-                        decoration: const InputDecoration(labelText: '网络模式'),
-                        items: const [
-                          DropdownMenuItem(value: 'nat', child: Text('NAT')),
-                          DropdownMenuItem(
-                            value: 'bridge',
-                            child: Text('Bridge'),
+                  const SizedBox(height: 16),
+                  DropdownButtonFormField<String>(
+                    key: ValueKey(distro),
+                    initialValue: template.image,
+                    decoration: const InputDecoration(labelText: '版本'),
+                    items: templates
+                        .where((item) => item.distro == distro)
+                        .map(
+                          (item) => DropdownMenuItem(
+                            value: item.image,
+                            child: Text('${item.release}  (${item.image})'),
                           ),
-                        ],
-                        onChanged: (value) =>
-                            setDialogState(() => network = value!),
-                      ),
+                        )
+                        .toList(),
+                    onChanged: (value) => setDialogState(() {
+                      template = templates.firstWhere(
+                        (item) => item.image == value,
+                      );
+                    }),
+                  ),
+                  const SizedBox(height: 16),
+                  TextField(
+                    controller: name,
+                    decoration: const InputDecoration(
+                      labelText: '容器名称',
+                      hintText: '留空则由 Bocker 自动生成',
                     ),
-                    const SizedBox(width: 16),
-                    Expanded(
-                      child: DropdownButtonFormField<String>(
-                        initialValue: permission,
-                        decoration: const InputDecoration(labelText: '容器权限'),
-                        items: const [
-                          DropdownMenuItem(value: 'normal', child: Text('普通')),
-                          DropdownMenuItem(value: 'super', child: Text('超级')),
-                        ],
-                        onChanged: (value) =>
-                            setDialogState(() => permission = value!),
-                      ),
+                  ),
+                  const SizedBox(height: 16),
+                  _ChoiceSection(
+                    label: '网络模式',
+                    child: _NetworkSelector(
+                      value: network,
+                      onChanged: (value) =>
+                          setDialogState(() => network = value),
                     ),
-                  ],
-                ),
-              ],
+                  ),
+                  const SizedBox(height: 16),
+                  _ChoiceSection(
+                    label: '容器权限',
+                    child: _PermissionSelector(
+                      value: permission,
+                      onChanged: (value) =>
+                          setDialogState(() => permission = value),
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
           actions: [
@@ -286,6 +361,10 @@ class _BockerHomeState extends State<BockerHome> {
     );
     name.dispose();
     if (values == null) return;
+    if (values.name.isNotEmpty && !isValidBockerName(values.name)) {
+      _showInputError('容器名称需为 1-63 位小写字母、数字或连字符，且不能以连字符开头或结尾。');
+      return;
+    }
     final args = templateInstallArguments(
       image: values.image,
       name: values.name,
@@ -298,37 +377,51 @@ class _BockerHomeState extends State<BockerHome> {
   Future<void> _buildDialog() async {
     final path = TextEditingController(text: 'Incusfile');
     final name = TextEditingController();
-    var network = 'bridge';
+    var network = 'nat';
     final values = await showDialog<_BuildValues>(
       context: context,
       builder: (context) => StatefulBuilder(
         builder: (context, setDialogState) => AlertDialog(
           title: const Text('构建镜像'),
-          content: SizedBox(
-            width: 440,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextField(
-                  controller: path,
-                  decoration: const InputDecoration(labelText: 'Incusfile 路径'),
-                ),
-                const SizedBox(height: 16),
-                TextField(
-                  controller: name,
-                  decoration: const InputDecoration(labelText: '镜像别名（可选）'),
-                ),
-                const SizedBox(height: 16),
-                DropdownButtonFormField<String>(
-                  initialValue: network,
-                  decoration: const InputDecoration(labelText: '构建网络'),
-                  items: const [
-                    DropdownMenuItem(value: 'nat', child: Text('NAT')),
-                    DropdownMenuItem(value: 'bridge', child: Text('Bridge')),
-                  ],
-                  onChanged: (value) => setDialogState(() => network = value!),
-                ),
-              ],
+          content: SingleChildScrollView(
+            child: SizedBox(
+              width: 440,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextField(
+                    controller: path,
+                    decoration: InputDecoration(
+                      labelText: 'Incusfile 路径',
+                      suffixIcon: IconButton(
+                        tooltip: '选择 Incusfile',
+                        onPressed: () async {
+                          final selected = await _selectFile();
+                          if (selected != null) {
+                            path.text = selected;
+                            setDialogState(() {});
+                          }
+                        },
+                        icon: const Icon(Icons.folder_open_outlined),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  TextField(
+                    controller: name,
+                    decoration: const InputDecoration(labelText: '镜像别名（可选）'),
+                  ),
+                  const SizedBox(height: 16),
+                  _ChoiceSection(
+                    label: '构建网络',
+                    child: _NetworkSelector(
+                      value: network,
+                      onChanged: (value) =>
+                          setDialogState(() => network = value),
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
           actions: [
@@ -350,6 +443,14 @@ class _BockerHomeState extends State<BockerHome> {
     path.dispose();
     name.dispose();
     if (values == null || values.path.isEmpty) return;
+    if (!File(values.path).existsSync()) {
+      _showInputError('找不到 Incusfile：${values.path}');
+      return;
+    }
+    if (values.name.isNotEmpty && !isValidBockerName(values.name)) {
+      _showInputError('镜像别名需为 1-63 位小写字母、数字或连字符。');
+      return;
+    }
     await _run('构建镜像', [
       'image',
       'build',
@@ -372,54 +473,43 @@ class _BockerHomeState extends State<BockerHome> {
       builder: (context) => StatefulBuilder(
         builder: (context, setDialogState) => AlertDialog(
           title: Text('运行镜像 ${image.name}'),
-          content: SizedBox(
-            width: 440,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextField(
-                  controller: name,
-                  autofocus: true,
-                  decoration: const InputDecoration(labelText: '容器名称'),
-                ),
-                const SizedBox(height: 16),
-                Row(
-                  children: [
-                    Expanded(
-                      child: DropdownButtonFormField<String>(
-                        initialValue: network,
-                        decoration: const InputDecoration(labelText: '网络模式'),
-                        items: const [
-                          DropdownMenuItem(
-                            value: 'default',
-                            child: Text('使用镜像设置'),
-                          ),
-                          DropdownMenuItem(value: 'nat', child: Text('NAT')),
-                          DropdownMenuItem(
-                            value: 'bridge',
-                            child: Text('Bridge'),
-                          ),
-                        ],
-                        onChanged: (value) =>
-                            setDialogState(() => network = value!),
-                      ),
+          content: SingleChildScrollView(
+            child: SizedBox(
+              width: 440,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextField(
+                    controller: name,
+                    autofocus: true,
+                    decoration: const InputDecoration(labelText: '容器名称'),
+                  ),
+                  const SizedBox(height: 16),
+                  _ChoiceSection(
+                    label: '网络模式',
+                    child: SegmentedButton<String>(
+                      showSelectedIcon: false,
+                      segments: const [
+                        ButtonSegment(value: 'default', label: Text('镜像设置')),
+                        ButtonSegment(value: 'nat', label: Text('NAT')),
+                        ButtonSegment(value: 'bridge', label: Text('Bridge')),
+                      ],
+                      selected: {network},
+                      onSelectionChanged: (value) =>
+                          setDialogState(() => network = value.first),
                     ),
-                    const SizedBox(width: 16),
-                    Expanded(
-                      child: DropdownButtonFormField<String>(
-                        initialValue: permission,
-                        decoration: const InputDecoration(labelText: '容器权限'),
-                        items: const [
-                          DropdownMenuItem(value: 'normal', child: Text('普通')),
-                          DropdownMenuItem(value: 'super', child: Text('超级')),
-                        ],
-                        onChanged: (value) =>
-                            setDialogState(() => permission = value!),
-                      ),
+                  ),
+                  const SizedBox(height: 16),
+                  _ChoiceSection(
+                    label: '容器权限',
+                    child: _PermissionSelector(
+                      value: permission,
+                      onChanged: (value) =>
+                          setDialogState(() => permission = value),
                     ),
-                  ],
-                ),
-              ],
+                  ),
+                ],
+              ),
             ),
           ),
           actions: [
@@ -440,11 +530,9 @@ class _BockerHomeState extends State<BockerHome> {
     );
     name.dispose();
     if (values == null) return;
-    if (values.name.isEmpty) {
+    if (!isValidBockerName(values.name)) {
       if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('容器名称不能为空。')));
+      _showInputError('容器名称需为 1-63 位小写字母、数字或连字符。');
       return;
     }
     await _run(
@@ -461,51 +549,105 @@ class _BockerHomeState extends State<BockerHome> {
   Future<void> _importDialog() async {
     final path = TextEditingController();
     final name = TextEditingController();
+    var network = 'nat';
+    var permission = 'normal';
     final values = await showDialog<_ImportValues>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('导入备份'),
-        content: SizedBox(
-          width: 440,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: path,
-                autofocus: true,
-                decoration: const InputDecoration(labelText: '备份文件路径'),
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('导入备份'),
+          content: SingleChildScrollView(
+            child: SizedBox(
+              width: 440,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextField(
+                    controller: path,
+                    autofocus: true,
+                    decoration: InputDecoration(
+                      labelText: '备份文件路径',
+                      suffixIcon: IconButton(
+                        tooltip: '选择备份文件',
+                        onPressed: () async {
+                          final selected = await _selectFile(backup: true);
+                          if (selected != null) {
+                            path.text = selected;
+                            setDialogState(() {});
+                          }
+                        },
+                        icon: const Icon(Icons.folder_open_outlined),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  TextField(
+                    controller: name,
+                    decoration: const InputDecoration(labelText: '容器名称（可选）'),
+                  ),
+                  const SizedBox(height: 16),
+                  _ChoiceSection(
+                    label: '网络模式',
+                    child: _NetworkSelector(
+                      value: network,
+                      onChanged: (value) =>
+                          setDialogState(() => network = value),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  _ChoiceSection(
+                    label: '容器权限',
+                    child: _PermissionSelector(
+                      value: permission,
+                      onChanged: (value) =>
+                          setDialogState(() => permission = value),
+                    ),
+                  ),
+                ],
               ),
-              const SizedBox(height: 16),
-              TextField(
-                controller: name,
-                decoration: const InputDecoration(labelText: '容器名称（可选）'),
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(
-              context,
-              _ImportValues(path.text.trim(), name.text.trim()),
             ),
-            child: const Text('导入'),
           ),
-        ],
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(
+                context,
+                _ImportValues(
+                  path.text.trim(),
+                  name.text.trim(),
+                  network,
+                  permission,
+                ),
+              ),
+              child: const Text('导入'),
+            ),
+          ],
+        ),
       ),
     );
     path.dispose();
     name.dispose();
     if (values == null || values.path.isEmpty) return;
+    if (!File(values.path).existsSync()) {
+      _showInputError('找不到备份文件：${values.path}');
+      return;
+    }
+    if (values.name.isNotEmpty && !isValidBockerName(values.name)) {
+      _showInputError('容器名称需为 1-63 位小写字母、数字或连字符。');
+      return;
+    }
     await _run('导入备份', [
       'container',
       'import',
       values.path,
       if (values.name.isNotEmpty) values.name,
+      '--network',
+      values.network,
+      '--permission',
+      values.permission,
     ]);
   }
 
@@ -587,72 +729,83 @@ class _BockerHomeState extends State<BockerHome> {
   Future<void> _settingsDialog(ContainerInfo container) async {
     final domain = TextEditingController(text: container.domain);
     final port = TextEditingController();
-    final removePort = TextEditingController();
+    final removablePorts = removablePortSpecs(container.ports);
+    var removePort = '';
     var autostart = container.autostart == 'on';
-    var network = container.network;
+    var network = container.network == 'bridge' ? 'bridge' : 'nat';
     final values = await showDialog<_SettingsValues>(
       context: context,
       builder: (context) => StatefulBuilder(
         builder: (context, setDialogState) => AlertDialog(
           title: Text('${container.name} 设置'),
-          content: SizedBox(
-            width: 460,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                TextField(
-                  controller: domain,
-                  decoration: const InputDecoration(
-                    labelText: '域名映射',
-                    hintText: '例如 app.test；输入 - 取消映射',
+          content: SingleChildScrollView(
+            child: SizedBox(
+              width: 480,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('访问', style: Theme.of(context).textTheme.titleSmall),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: domain,
+                    decoration: const InputDecoration(
+                      labelText: '域名映射',
+                      hintText: '例如 app.test；留空可取消映射',
+                    ),
                   ),
-                ),
-                const SizedBox(height: 16),
-                TextField(
-                  controller: port,
-                  decoration: const InputDecoration(
-                    labelText: '新增端口映射',
-                    hintText: '例如 8080:80/tcp',
+                  const SizedBox(height: 16),
+                  TextField(
+                    controller: port,
+                    decoration: const InputDecoration(
+                      labelText: '新增端口映射',
+                      hintText: '例如 8080:80/tcp',
+                    ),
                   ),
-                ),
-                const SizedBox(height: 16),
-                TextField(
-                  controller: removePort,
-                  decoration: const InputDecoration(
-                    labelText: '删除端口映射',
-                    hintText: '例如 8080/tcp',
-                  ),
-                ),
-                const SizedBox(height: 12),
-                SwitchListTile(
-                  contentPadding: EdgeInsets.zero,
-                  title: const Text('开机自启动'),
-                  value: autostart,
-                  onChanged: (value) => setDialogState(() => autostart = value),
-                ),
-                DropdownButtonFormField<String>(
-                  initialValue: network,
-                  decoration: InputDecoration(
-                    labelText: '网络模式',
-                    helperText: container.isRunning ? '运行中的容器不能切换网络模式' : null,
-                  ),
-                  items: const [
-                    DropdownMenuItem(value: 'nat', child: Text('NAT')),
-                    DropdownMenuItem(value: 'bridge', child: Text('Bridge')),
+                  if (removablePorts.isNotEmpty) ...[
+                    const SizedBox(height: 16),
+                    DropdownButtonFormField<String>(
+                      initialValue: null,
+                      decoration: const InputDecoration(labelText: '删除已有端口映射'),
+                      items: removablePorts
+                          .map(
+                            (item) => DropdownMenuItem(
+                              value: item,
+                              child: Text(item),
+                            ),
+                          )
+                          .toList(),
+                      onChanged: (value) =>
+                          setDialogState(() => removePort = value ?? ''),
+                    ),
                   ],
-                  onChanged: container.isRunning
-                      ? null
-                      : (value) => setDialogState(() => network = value!),
-                ),
-                if (container.ports != '-' && container.ports.isNotEmpty) ...[
-                  const SizedBox(height: 14),
-                  Text(
-                    '当前端口: ${container.ports}',
-                    style: Theme.of(context).textTheme.bodySmall,
+                  const SizedBox(height: 20),
+                  Divider(color: Theme.of(context).colorScheme.outlineVariant),
+                  const SizedBox(height: 16),
+                  Text('运行', style: Theme.of(context).textTheme.titleSmall),
+                  const SizedBox(height: 4),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('开机自启动'),
+                    value: autostart,
+                    onChanged: (value) =>
+                        setDialogState(() => autostart = value),
+                  ),
+                  const SizedBox(height: 8),
+                  _ChoiceSection(
+                    label: '网络模式',
+                    supportingText: container.isRunning
+                        ? '停止容器后才能切换网络模式'
+                        : null,
+                    child: _NetworkSelector(
+                      value: network,
+                      enabled: !container.isRunning,
+                      onChanged: (value) =>
+                          setDialogState(() => network = value),
+                    ),
                   ),
                 ],
-              ],
+              ),
             ),
           ),
           actions: [
@@ -666,7 +819,7 @@ class _BockerHomeState extends State<BockerHome> {
                 _SettingsValues(
                   domain.text.trim(),
                   port.text.trim(),
-                  removePort.text.trim(),
+                  removePort,
                   autostart,
                   network,
                 ),
@@ -679,16 +832,27 @@ class _BockerHomeState extends State<BockerHome> {
     );
     domain.dispose();
     port.dispose();
-    removePort.dispose();
     if (values == null) return;
+    if (values.domain.isNotEmpty &&
+        values.domain != '-' &&
+        !isValidDomain(values.domain)) {
+      _showInputError('域名格式无效，例如可填写 app.test。');
+      return;
+    }
+    if (values.port.isNotEmpty && !isValidPortMapping(values.port)) {
+      _showInputError('端口映射格式无效，例如 8080:80/tcp。');
+      return;
+    }
     var ok = true;
-    if (values.domain.isNotEmpty) {
+    if (values.domain != container.domain) {
       ok = (await _run('保存域名', [
         'container',
         'set',
         container.name,
         'domain',
-        values.domain == '-' ? '--unset' : values.domain,
+        values.domain.isEmpty || values.domain == '-'
+            ? '--unset'
+            : values.domain,
       ], refresh: false)).ok;
     }
     if (ok && values.port.isNotEmpty) {
@@ -766,8 +930,12 @@ class _BockerHomeState extends State<BockerHome> {
                 onPressed: () => Navigator.pop(context, false),
                 child: const Text('取消'),
               ),
-              FilledButton.tonal(
+              FilledButton(
                 onPressed: () => Navigator.pop(context, true),
+                style: FilledButton.styleFrom(
+                  backgroundColor: Theme.of(context).colorScheme.error,
+                  foregroundColor: Theme.of(context).colorScheme.onError,
+                ),
                 child: Text(confirmLabel),
               ),
             ],
@@ -803,6 +971,7 @@ class _BockerHomeState extends State<BockerHome> {
             containers: _containers,
             loading: _loading,
             error: _loadError,
+            onRetry: _refresh,
             onInstall: _installDialog,
             onBuild: _buildDialog,
             onImport: _importDialog,
@@ -824,6 +993,7 @@ class _BockerHomeState extends State<BockerHome> {
             images: _images,
             loading: _loading,
             error: _loadError,
+            onRetry: _refresh,
             onBuild: _buildDialog,
             onRun: _runImageDialog,
             onDelete: _deleteImage,
@@ -870,44 +1040,166 @@ class _BockerHomeState extends State<BockerHome> {
       ),
       drawer: wide
           ? null
-          : Drawer(
-              child: SafeArea(
-                child: Column(
-                  children: [
-                    const ListTile(
-                      leading: Icon(Icons.developer_board),
-                      title: Text('Bocker'),
-                    ),
-                    const Divider(),
-                    ListTile(
-                      leading: const Icon(Icons.inventory_2_outlined),
-                      selected: _section == _Section.containers,
-                      title: const Text('容器'),
-                      onTap: () {
-                        Navigator.pop(context);
-                        _changeSection(_Section.containers);
-                      },
-                    ),
-                    ListTile(
-                      leading: const Icon(Icons.layers_outlined),
-                      selected: _section == _Section.images,
-                      title: const Text('镜像'),
-                      onTap: () {
-                        Navigator.pop(context);
-                        _changeSection(_Section.images);
-                      },
-                    ),
-                  ],
+          : NavigationDrawer(
+              selectedIndex: _section.index,
+              onDestinationSelected: (index) {
+                Navigator.pop(context);
+                _changeSection(_Section.values[index]);
+              },
+              children: const [
+                Padding(
+                  padding: EdgeInsets.fromLTRB(28, 24, 16, 14),
+                  child: Text('管理'),
                 ),
+                NavigationDrawerDestination(
+                  icon: Icon(Icons.inventory_2_outlined),
+                  selectedIcon: Icon(Icons.inventory_2),
+                  label: Text('容器'),
+                ),
+                NavigationDrawerDestination(
+                  icon: Icon(Icons.layers_outlined),
+                  selectedIcon: Icon(Icons.layers),
+                  label: Text('镜像'),
+                ),
+              ],
+            ),
+      body: Column(
+        children: [
+          if (_loading)
+            Container(
+              height: 36,
+              width: double.infinity,
+              color: Theme.of(context).colorScheme.secondaryContainer,
+              padding: const EdgeInsets.symmetric(horizontal: 18),
+              child: Row(
+                children: [
+                  const SizedBox.square(
+                    dimension: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(child: Text(_busyLabel ?? '正在处理')),
+                  if (_busyLabel != '正在刷新' && _busyLabel != '正在加载模板')
+                    IconButton(
+                      tooltip: '取消当前操作',
+                      onPressed: () {
+                        _bocker.cancelActive();
+                        setState(() => _busyLabel = '正在取消');
+                      },
+                      icon: const Icon(Icons.close),
+                    ),
+                ],
               ),
             ),
-      body: Row(
-        children: [
-          if (wide) rail,
-          if (wide) const VerticalDivider(width: 1),
-          Expanded(child: body),
+          Expanded(
+            child: Row(
+              children: [
+                if (wide) rail,
+                if (wide) const VerticalDivider(width: 1),
+                Expanded(child: body),
+              ],
+            ),
+          ),
         ],
       ),
+    );
+  }
+}
+
+class _ChoiceSection extends StatelessWidget {
+  const _ChoiceSection({
+    required this.label,
+    required this.child,
+    this.supportingText,
+  });
+
+  final String label;
+  final String? supportingText;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(label, style: Theme.of(context).textTheme.labelLarge),
+        const SizedBox(height: 8),
+        child,
+        if (supportingText != null) ...[
+          const SizedBox(height: 6),
+          Text(
+            supportingText!,
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+class _NetworkSelector extends StatelessWidget {
+  const _NetworkSelector({
+    required this.value,
+    required this.onChanged,
+    this.enabled = true,
+  });
+
+  final String value;
+  final ValueChanged<String> onChanged;
+  final bool enabled;
+
+  @override
+  Widget build(BuildContext context) {
+    return SegmentedButton<String>(
+      showSelectedIcon: false,
+      expandedInsets: EdgeInsets.zero,
+      segments: const [
+        ButtonSegment(
+          value: 'nat',
+          icon: Icon(Icons.public),
+          label: Text('NAT'),
+        ),
+        ButtonSegment(
+          value: 'bridge',
+          icon: Icon(Icons.lan_outlined),
+          label: Text('Bridge'),
+        ),
+      ],
+      selected: {value},
+      onSelectionChanged: enabled
+          ? (selected) => onChanged(selected.first)
+          : null,
+    );
+  }
+}
+
+class _PermissionSelector extends StatelessWidget {
+  const _PermissionSelector({required this.value, required this.onChanged});
+
+  final String value;
+  final ValueChanged<String> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return SegmentedButton<String>(
+      showSelectedIcon: false,
+      expandedInsets: EdgeInsets.zero,
+      segments: const [
+        ButtonSegment(
+          value: 'normal',
+          icon: Icon(Icons.shield_outlined),
+          label: Text('普通'),
+        ),
+        ButtonSegment(
+          value: 'super',
+          icon: Icon(Icons.admin_panel_settings_outlined),
+          label: Text('超级'),
+        ),
+      ],
+      selected: {value},
+      onSelectionChanged: (selected) => onChanged(selected.first),
     );
   }
 }
@@ -917,6 +1209,7 @@ class _ContainersView extends StatelessWidget {
     required this.containers,
     required this.loading,
     required this.error,
+    required this.onRetry,
     required this.onInstall,
     required this.onBuild,
     required this.onImport,
@@ -933,6 +1226,7 @@ class _ContainersView extends StatelessWidget {
   final List<ContainerInfo> containers;
   final bool loading;
   final String? error;
+  final VoidCallback onRetry;
   final VoidCallback onInstall;
   final VoidCallback onBuild;
   final VoidCallback onImport;
@@ -970,186 +1264,407 @@ class _ContainersView extends StatelessWidget {
       child: _ContentState(
         loading: loading,
         error: error,
+        onRetry: onRetry,
         empty: containers.isEmpty,
         emptyIcon: Icons.inventory_2_outlined,
         emptyText: '还没有容器',
         child: LayoutBuilder(
-          builder: (context, constraints) => SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: ConstrainedBox(
-              constraints: BoxConstraints(minWidth: constraints.maxWidth),
-              child: DataTable(
-                columnSpacing: 20,
-                dataRowMinHeight: 56,
-                dataRowMaxHeight: 160,
-                columns: const [
-                  DataColumn(label: Text('名称')),
-                  DataColumn(label: Text('状态')),
-                  DataColumn(label: Text('网络')),
-                  DataColumn(label: Text('IPv4')),
-                  DataColumn(label: Text('IPv6')),
-                  DataColumn(label: Text('域名')),
-                  DataColumn(label: Text('端口')),
-                  DataColumn(label: Text('自启动')),
-                  DataColumn(label: Text('操作')),
-                ],
-                rows: containers
-                    .map(
-                      (item) => DataRow(
-                        cells: [
-                          DataCell(
-                            InkWell(
-                              onTap: item.isRunning && !loading
-                                  ? () => onOpenShell(item)
-                                  : null,
-                              child: Row(
+          builder: (context, constraints) {
+            if (constraints.maxWidth < 1180) {
+              return ListView.separated(
+                padding: const EdgeInsets.only(bottom: 12),
+                itemCount: containers.length,
+                separatorBuilder: (context, index) =>
+                    const SizedBox(height: 10),
+                itemBuilder: (context, index) => _ContainerCard(
+                  container: containers[index],
+                  loading: loading,
+                  onStart: onStart,
+                  onStop: onStop,
+                  onRestart: onRestart,
+                  onExport: onExport,
+                  onOpenShell: onOpenShell,
+                  onExec: onExec,
+                  onSettings: onSettings,
+                  onDelete: onDelete,
+                ),
+              );
+            }
+            return SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: ConstrainedBox(
+                constraints: BoxConstraints(minWidth: constraints.maxWidth),
+                child: DataTable(
+                  columnSpacing: 20,
+                  dataRowMinHeight: 56,
+                  dataRowMaxHeight: 160,
+                  columns: const [
+                    DataColumn(label: Text('名称')),
+                    DataColumn(label: Text('状态')),
+                    DataColumn(label: Text('网络')),
+                    DataColumn(label: Text('IPv4')),
+                    DataColumn(label: Text('IPv6')),
+                    DataColumn(label: Text('域名')),
+                    DataColumn(label: Text('端口')),
+                    DataColumn(label: Text('自启动')),
+                    DataColumn(label: Text('操作')),
+                  ],
+                  rows: containers
+                      .map(
+                        (item) => DataRow(
+                          cells: [
+                            DataCell(
+                              InkWell(
+                                onTap: item.isRunning && !loading
+                                    ? () => onOpenShell(item)
+                                    : null,
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Text(item.name),
+                                    if (item.isRunning) ...[
+                                      const SizedBox(width: 6),
+                                      const Icon(Icons.terminal, size: 16),
+                                    ],
+                                  ],
+                                ),
+                              ),
+                            ),
+                            DataCell(
+                              _StatusChip(
+                                running: item.isRunning,
+                                label: item.status,
+                              ),
+                            ),
+                            DataCell(Text(item.network)),
+                            DataCell(CopyableText(text: item.ipv4)),
+                            DataCell(CopyableText(text: item.ipv6)),
+                            DataCell(
+                              ConstrainedBox(
+                                constraints: const BoxConstraints(
+                                  minWidth: 100,
+                                  maxWidth: 180,
+                                ),
+                                child: CopyableText(text: item.domain),
+                              ),
+                            ),
+                            DataCell(
+                              Tooltip(
+                                message: item.ports.isEmpty ? '-' : item.ports,
+                                child: ConstrainedBox(
+                                  constraints: const BoxConstraints(
+                                    minWidth: 190,
+                                    maxWidth: 250,
+                                  ),
+                                  child: Text(
+                                    item.portsDisplay,
+                                    softWrap: true,
+                                  ),
+                                ),
+                              ),
+                            ),
+                            DataCell(
+                              Icon(
+                                item.autostart == 'on'
+                                    ? Icons.check_circle_outline
+                                    : Icons.remove_circle_outline,
+                                size: 19,
+                                color: item.autostart == 'on'
+                                    ? Theme.of(context).colorScheme.primary
+                                    : null,
+                              ),
+                            ),
+                            DataCell(
+                              Row(
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
-                                  Text(item.name),
                                   if (item.isRunning) ...[
-                                    const SizedBox(width: 6),
-                                    const Icon(Icons.terminal, size: 16),
-                                  ],
+                                    IconButton(
+                                      tooltip: '进入容器终端',
+                                      onPressed: loading
+                                          ? null
+                                          : () => onOpenShell(item),
+                                      icon: const Icon(Icons.terminal),
+                                    ),
+                                    IconButton(
+                                      tooltip: '停止',
+                                      onPressed: loading
+                                          ? null
+                                          : () => onStop(item),
+                                      icon: const Icon(
+                                        Icons.stop_circle_outlined,
+                                      ),
+                                    ),
+                                    IconButton(
+                                      tooltip: '重启',
+                                      onPressed: loading
+                                          ? null
+                                          : () => onRestart(item),
+                                      icon: const Icon(Icons.restart_alt),
+                                    ),
+                                  ] else
+                                    IconButton(
+                                      tooltip: '启动',
+                                      onPressed: loading
+                                          ? null
+                                          : () => onStart(item),
+                                      icon: const Icon(
+                                        Icons.play_circle_outline,
+                                      ),
+                                    ),
+                                  PopupMenuButton<_ContainerAction>(
+                                    tooltip: '更多操作',
+                                    onSelected: (action) {
+                                      switch (action) {
+                                        case _ContainerAction.exec:
+                                          onExec(item);
+                                        case _ContainerAction.settings:
+                                          onSettings(item);
+                                        case _ContainerAction.export:
+                                          onExport(item);
+                                        case _ContainerAction.delete:
+                                          onDelete(item);
+                                      }
+                                    },
+                                    itemBuilder: (context) => const [
+                                      PopupMenuItem(
+                                        value: _ContainerAction.exec,
+                                        child: ListTile(
+                                          leading: Icon(Icons.terminal),
+                                          title: Text('执行命令'),
+                                        ),
+                                      ),
+                                      PopupMenuItem(
+                                        value: _ContainerAction.settings,
+                                        child: ListTile(
+                                          leading: Icon(Icons.tune),
+                                          title: Text('设置'),
+                                        ),
+                                      ),
+                                      PopupMenuItem(
+                                        value: _ContainerAction.export,
+                                        child: ListTile(
+                                          leading: Icon(
+                                            Icons.file_download_outlined,
+                                          ),
+                                          title: Text('导出备份'),
+                                        ),
+                                      ),
+                                      PopupMenuDivider(),
+                                      PopupMenuItem(
+                                        value: _ContainerAction.delete,
+                                        child: ListTile(
+                                          leading: Icon(Icons.delete_outline),
+                                          title: Text('删除'),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
                                 ],
                               ),
                             ),
-                          ),
-                          DataCell(
-                            _StatusChip(
-                              running: item.isRunning,
-                              label: item.status,
-                            ),
-                          ),
-                          DataCell(Text(item.network)),
-                          DataCell(CopyableText(text: item.ipv4)),
-                          DataCell(CopyableText(text: item.ipv6)),
-                          DataCell(
-                            ConstrainedBox(
-                              constraints: const BoxConstraints(
-                                minWidth: 100,
-                                maxWidth: 180,
-                              ),
-                              child: CopyableText(text: item.domain),
-                            ),
-                          ),
-                          DataCell(
-                            Tooltip(
-                              message: item.ports.isEmpty ? '-' : item.ports,
-                              child: ConstrainedBox(
-                                constraints: const BoxConstraints(
-                                  minWidth: 190,
-                                  maxWidth: 250,
-                                ),
-                                child: Text(item.portsDisplay, softWrap: true),
-                              ),
-                            ),
-                          ),
-                          DataCell(
-                            Icon(
-                              item.autostart == 'on'
-                                  ? Icons.check_circle_outline
-                                  : Icons.remove_circle_outline,
-                              size: 19,
-                              color: item.autostart == 'on'
-                                  ? Theme.of(context).colorScheme.primary
-                                  : null,
-                            ),
-                          ),
-                          DataCell(
-                            Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                if (item.isRunning) ...[
-                                  IconButton(
-                                    tooltip: '进入容器终端',
-                                    onPressed: loading
-                                        ? null
-                                        : () => onOpenShell(item),
-                                    icon: const Icon(Icons.terminal),
-                                  ),
-                                  IconButton(
-                                    tooltip: '停止',
-                                    onPressed: loading
-                                        ? null
-                                        : () => onStop(item),
-                                    icon: const Icon(
-                                      Icons.stop_circle_outlined,
-                                    ),
-                                  ),
-                                  IconButton(
-                                    tooltip: '重启',
-                                    onPressed: loading
-                                        ? null
-                                        : () => onRestart(item),
-                                    icon: const Icon(Icons.restart_alt),
-                                  ),
-                                ] else
-                                  IconButton(
-                                    tooltip: '启动',
-                                    onPressed: loading
-                                        ? null
-                                        : () => onStart(item),
-                                    icon: const Icon(Icons.play_circle_outline),
-                                  ),
-                                PopupMenuButton<_ContainerAction>(
-                                  tooltip: '更多操作',
-                                  onSelected: (action) {
-                                    switch (action) {
-                                      case _ContainerAction.exec:
-                                        onExec(item);
-                                      case _ContainerAction.settings:
-                                        onSettings(item);
-                                      case _ContainerAction.export:
-                                        onExport(item);
-                                      case _ContainerAction.delete:
-                                        onDelete(item);
-                                    }
-                                  },
-                                  itemBuilder: (context) => const [
-                                    PopupMenuItem(
-                                      value: _ContainerAction.exec,
-                                      child: ListTile(
-                                        leading: Icon(Icons.terminal),
-                                        title: Text('执行命令'),
-                                      ),
-                                    ),
-                                    PopupMenuItem(
-                                      value: _ContainerAction.settings,
-                                      child: ListTile(
-                                        leading: Icon(Icons.tune),
-                                        title: Text('设置'),
-                                      ),
-                                    ),
-                                    PopupMenuItem(
-                                      value: _ContainerAction.export,
-                                      child: ListTile(
-                                        leading: Icon(
-                                          Icons.file_download_outlined,
-                                        ),
-                                        title: Text('导出备份'),
-                                      ),
-                                    ),
-                                    PopupMenuDivider(),
-                                    PopupMenuItem(
-                                      value: _ContainerAction.delete,
-                                      child: ListTile(
-                                        leading: Icon(Icons.delete_outline),
-                                        title: Text('删除'),
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ],
-                            ),
-                          ),
-                        ],
-                      ),
-                    )
-                    .toList(),
+                          ],
+                        ),
+                      )
+                      .toList(),
+                ),
               ),
-            ),
-          ),
+            );
+          },
         ),
+      ),
+    );
+  }
+}
+
+class _ContainerCard extends StatelessWidget {
+  const _ContainerCard({
+    required this.container,
+    required this.loading,
+    required this.onStart,
+    required this.onStop,
+    required this.onRestart,
+    required this.onExport,
+    required this.onOpenShell,
+    required this.onExec,
+    required this.onSettings,
+    required this.onDelete,
+  });
+
+  final ContainerInfo container;
+  final bool loading;
+  final ValueChanged<ContainerInfo> onStart;
+  final ValueChanged<ContainerInfo> onStop;
+  final ValueChanged<ContainerInfo> onRestart;
+  final ValueChanged<ContainerInfo> onExport;
+  final ValueChanged<ContainerInfo> onOpenShell;
+  final ValueChanged<ContainerInfo> onExec;
+  final ValueChanged<ContainerInfo> onSettings;
+  final ValueChanged<ContainerInfo> onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 14, 8, 12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    container.name,
+                    style: Theme.of(context).textTheme.titleMedium,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                _StatusChip(
+                  running: container.isRunning,
+                  label: container.status,
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 18,
+              runSpacing: 10,
+              children: [
+                _ContainerDetail(
+                  icon: Icons.lan_outlined,
+                  label: container.network,
+                ),
+                _ContainerDetail(
+                  icon: Icons.language,
+                  label: container.ipv4.isEmpty ? '无 IPv4' : container.ipv4,
+                ),
+                if (container.ipv6.isNotEmpty)
+                  _ContainerDetail(
+                    icon: Icons.language_outlined,
+                    label: container.ipv6,
+                  ),
+                if (container.domain.isNotEmpty)
+                  _ContainerDetail(
+                    icon: Icons.alternate_email,
+                    label: container.domain,
+                  ),
+                if (container.ports.isNotEmpty && container.ports != '-')
+                  _ContainerDetail(
+                    icon: Icons.swap_horiz,
+                    label: container.ports,
+                  ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                if (container.isRunning) ...[
+                  IconButton(
+                    tooltip: '进入容器终端',
+                    onPressed: loading ? null : () => onOpenShell(container),
+                    icon: const Icon(Icons.terminal),
+                  ),
+                  IconButton(
+                    tooltip: '停止',
+                    onPressed: loading ? null : () => onStop(container),
+                    icon: const Icon(Icons.stop_circle_outlined),
+                  ),
+                  IconButton(
+                    tooltip: '重启',
+                    onPressed: loading ? null : () => onRestart(container),
+                    icon: const Icon(Icons.restart_alt),
+                  ),
+                ] else
+                  IconButton(
+                    tooltip: '启动',
+                    onPressed: loading ? null : () => onStart(container),
+                    icon: const Icon(Icons.play_circle_outline),
+                  ),
+                PopupMenuButton<_ContainerAction>(
+                  tooltip: '更多操作',
+                  enabled: !loading,
+                  onSelected: (action) {
+                    switch (action) {
+                      case _ContainerAction.exec:
+                        onExec(container);
+                      case _ContainerAction.settings:
+                        onSettings(container);
+                      case _ContainerAction.export:
+                        onExport(container);
+                      case _ContainerAction.delete:
+                        onDelete(container);
+                    }
+                  },
+                  itemBuilder: (context) => [
+                    const PopupMenuItem(
+                      value: _ContainerAction.exec,
+                      child: ListTile(
+                        leading: Icon(Icons.terminal),
+                        title: Text('执行命令'),
+                      ),
+                    ),
+                    const PopupMenuItem(
+                      value: _ContainerAction.settings,
+                      child: ListTile(
+                        leading: Icon(Icons.tune),
+                        title: Text('设置'),
+                      ),
+                    ),
+                    const PopupMenuItem(
+                      value: _ContainerAction.export,
+                      child: ListTile(
+                        leading: Icon(Icons.file_download_outlined),
+                        title: Text('导出备份'),
+                      ),
+                    ),
+                    const PopupMenuDivider(),
+                    PopupMenuItem(
+                      value: _ContainerAction.delete,
+                      child: ListTile(
+                        leading: Icon(
+                          Icons.delete_outline,
+                          color: colors.error,
+                        ),
+                        title: Text(
+                          '删除',
+                          style: TextStyle(color: colors.error),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ContainerDetail extends StatelessWidget {
+  const _ContainerDetail({required this.icon, required this.label});
+
+  final IconData icon;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 300),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            icon,
+            size: 17,
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+          ),
+          const SizedBox(width: 6),
+          Flexible(child: Text(label, overflow: TextOverflow.ellipsis)),
+        ],
       ),
     );
   }
@@ -1192,6 +1707,7 @@ class _ImagesView extends StatelessWidget {
     required this.images,
     required this.loading,
     required this.error,
+    required this.onRetry,
     required this.onBuild,
     required this.onRun,
     required this.onDelete,
@@ -1200,6 +1716,7 @@ class _ImagesView extends StatelessWidget {
   final List<ImageInfo> images;
   final bool loading;
   final String? error;
+  final VoidCallback onRetry;
   final VoidCallback onBuild;
   final ValueChanged<ImageInfo> onRun;
   final ValueChanged<ImageInfo> onDelete;
@@ -1217,6 +1734,7 @@ class _ImagesView extends StatelessWidget {
       child: _ContentState(
         loading: loading,
         error: error,
+        onRetry: onRetry,
         empty: images.isEmpty,
         emptyIcon: Icons.layers_outlined,
         emptyText: '还没有本地镜像',
@@ -1271,32 +1789,44 @@ class _PageFrame extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.all(28),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Wrap(
-            spacing: 12,
-            runSpacing: 12,
-            crossAxisAlignment: WrapCrossAlignment.center,
-            children: [
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(title, style: Theme.of(context).textTheme.headlineSmall),
-                  Text(subtitle, style: Theme.of(context).textTheme.bodyMedium),
-                ],
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final compact = constraints.maxWidth < 620;
+        final titleBlock = Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(title, style: Theme.of(context).textTheme.headlineSmall),
+            Text(
+              subtitle,
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
               ),
-              const SizedBox(width: 12),
-              primary,
-              ...actions,
+            ),
+          ],
+        );
+        final controls = Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [primary, ...actions],
+        );
+        return Padding(
+          padding: EdgeInsets.all(compact ? 16 : 24),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (compact) ...[
+                titleBlock,
+                const SizedBox(height: 14),
+                controls,
+              ] else
+                Row(children: [titleBlock, const Spacer(), controls]),
+              const SizedBox(height: 20),
+              Expanded(child: child),
             ],
           ),
-          const SizedBox(height: 24),
-          Expanded(child: child),
-        ],
-      ),
+        );
+      },
     );
   }
 }
@@ -1305,6 +1835,7 @@ class _ContentState extends StatelessWidget {
   const _ContentState({
     required this.loading,
     required this.error,
+    required this.onRetry,
     required this.empty,
     required this.emptyIcon,
     required this.emptyText,
@@ -1313,6 +1844,7 @@ class _ContentState extends StatelessWidget {
 
   final bool loading;
   final String? error;
+  final VoidCallback onRetry;
   final bool empty;
   final IconData emptyIcon;
   final String emptyText;
@@ -1342,6 +1874,12 @@ class _ContentState extends StatelessWidget {
               ),
               const SizedBox(height: 8),
               SelectableText(error!, textAlign: TextAlign.center),
+              const SizedBox(height: 18),
+              FilledButton.tonalIcon(
+                onPressed: onRetry,
+                icon: const Icon(Icons.refresh),
+                label: const Text('重试'),
+              ),
             ],
           ),
         ),
@@ -1359,18 +1897,7 @@ class _ContentState extends StatelessWidget {
         ),
       );
     }
-    return Stack(
-      children: [
-        Positioned.fill(child: child),
-        if (loading)
-          const Positioned(
-            top: 0,
-            left: 0,
-            right: 0,
-            child: LinearProgressIndicator(),
-          ),
-      ],
-    );
+    return AbsorbPointer(absorbing: loading, child: child);
   }
 }
 
@@ -1382,8 +1909,8 @@ class _StatusChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final color = running
-        ? Theme.of(context).colorScheme.primary
-        : Theme.of(context).colorScheme.outline;
+        ? const Color(0xff137333)
+        : Theme.of(context).colorScheme.onSurfaceVariant;
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -1402,6 +1929,8 @@ class _StatusChip extends StatelessWidget {
 class BockerCommand {
   BockerCommand();
 
+  Process? _activeProcess;
+
   String get userHomeDirectory {
     final home = Platform.environment['HOME']?.trim();
     if (home != null && home.isNotEmpty) return home;
@@ -1411,8 +1940,17 @@ class BockerCommand {
   Future<CommandResult> run(
     List<String> arguments, {
     String? workingDirectory,
+    ValueChanged<String>? onOutput,
   }) async {
-    return _runDirect(arguments, workingDirectory: workingDirectory);
+    return _runDirect(
+      arguments,
+      workingDirectory: workingDirectory,
+      onOutput: onOutput,
+    );
+  }
+
+  void cancelActive() {
+    _activeProcess?.kill(ProcessSignal.sigterm);
   }
 
   Future<CommandResult> openShell(String containerName) async {
@@ -1425,18 +1963,30 @@ class BockerCommand {
       //   x-terminal-*:     -T <title> -e <command...>
       final ptyxis = _findExecutable('ptyxis');
       if (ptyxis != null) {
-        await Process.start(ptyxis, ['-T', title, '--', ...shellArguments],
-            mode: ProcessStartMode.detached);
+        await Process.start(ptyxis, [
+          '-T',
+          title,
+          '--',
+          ...shellArguments,
+        ], mode: ProcessStartMode.detached);
         return const CommandResult(true, '', 0);
       }
       final gnomeTerminal = _findExecutable('gnome-terminal');
       if (gnomeTerminal != null) {
-        await Process.start(gnomeTerminal, ['--title', title, '--', ...shellArguments],
-            mode: ProcessStartMode.detached);
+        await Process.start(gnomeTerminal, [
+          '--title',
+          title,
+          '--',
+          ...shellArguments,
+        ], mode: ProcessStartMode.detached);
         return const CommandResult(true, '', 0);
       }
-      await Process.start('x-terminal-emulator', ['-T', title, '-e', ...shellArguments],
-          mode: ProcessStartMode.detached);
+      await Process.start('x-terminal-emulator', [
+        '-T',
+        title,
+        '-e',
+        ...shellArguments,
+      ], mode: ProcessStartMode.detached);
       return const CommandResult(true, '', 0);
     } on ProcessException catch (error) {
       return CommandResult(false, error.message, -1);
@@ -1457,14 +2007,17 @@ class BockerCommand {
   Future<CommandResult> _runDirect(
     List<String> arguments, {
     String? workingDirectory,
+    ValueChanged<String>? onOutput,
   }) async {
+    Process? process;
     try {
-      final process = await Process.start(
+      process = await Process.start(
         _binary,
         arguments,
         runInShell: false,
         workingDirectory: workingDirectory,
       );
+      _activeProcess = process;
       final output = StringBuffer();
       const maxOutput = 1024 * 1024;
       void appendOutput(String chunk) {
@@ -1476,6 +2029,7 @@ class BockerCommand {
             ..write('[较早输出已截断]\n')
             ..write(text.substring(text.length - maxOutput));
         }
+        onOutput?.call(output.toString());
       }
 
       final stdoutDone = process.stdout
@@ -1489,6 +2043,8 @@ class BockerCommand {
       return CommandResult(exitCode == 0, output.toString().trim(), exitCode);
     } on ProcessException catch (error) {
       return CommandResult(false, '无法启动 $_binary: ${error.message}', -1);
+    } finally {
+      if (identical(_activeProcess, process)) _activeProcess = null;
     }
   }
 
@@ -1620,6 +2176,56 @@ List<ImageTemplate> parseImageTemplates(String output) {
 
 String jsonText(Map item, String key) => item[key]?.toString() ?? '';
 
+bool isValidBockerName(String name) {
+  if (name.isEmpty || name.length > 63 || RegExp(r'^\d+$').hasMatch(name)) {
+    return false;
+  }
+  return RegExp(
+    r'^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$',
+  ).hasMatch(name);
+}
+
+bool isValidDomain(String domain) {
+  if (domain.isEmpty || domain.length > 253 || domain.endsWith('.')) {
+    return false;
+  }
+  return domain
+      .split('.')
+      .every(
+        (label) =>
+            label.isNotEmpty &&
+            label.length <= 63 &&
+            RegExp(
+              r'^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$',
+            ).hasMatch(label),
+      );
+}
+
+bool isValidPortMapping(String spec) {
+  final match = RegExp(
+    r'^(\d+)(?::(\d+))?(?:/(tcp|udp))?$',
+  ).firstMatch(spec.trim().toLowerCase());
+  if (match == null) return false;
+  final host = int.tryParse(match.group(1)!);
+  final container = int.tryParse(match.group(2) ?? match.group(1)!);
+  return host != null &&
+      container != null &&
+      host >= 1 &&
+      host <= 65535 &&
+      container >= 1 &&
+      container <= 65535;
+}
+
+List<String> removablePortSpecs(String summary) {
+  final result = <String>[];
+  final pattern = RegExp(r'(?:^|,\s*)(\d+)(?:->\d+)?/(tcp|udp)');
+  for (final match in pattern.allMatches(summary.toLowerCase())) {
+    final spec = '${match.group(1)}/${match.group(2)}';
+    if (!result.contains(spec)) result.add(spec);
+  }
+  return result;
+}
+
 /// Splits a command line into argv entries the way a POSIX shell would,
 /// honoring single/double quotes and backslash escapes, without performing
 /// variable expansion. Used to pass the interactive exec input through the
@@ -1735,9 +2341,11 @@ List<String> imageRunArguments({
 }
 
 class _ImportValues {
-  const _ImportValues(this.path, this.name);
+  const _ImportValues(this.path, this.name, this.network, this.permission);
   final String path;
   final String name;
+  final String network;
+  final String permission;
 }
 
 class _SettingsValues {

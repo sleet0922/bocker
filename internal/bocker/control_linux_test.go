@@ -60,7 +60,7 @@ func TestReadBockerControlRequestLimit(t *testing.T) {
 }
 
 func TestAllowedBrokerEnvironment(t *testing.T) {
-	for _, key := range []string{networkModeEnv, bridgeParentEnv, natNetworkCIDREnv, natNetworkIPv6CIDREnv, hostShimCIDREnv} {
+	for _, key := range []string{networkModeEnv, bridgeParentEnv, natNetworkCIDREnv, natNetworkIPv6CIDREnv, bridgeNetworkCIDREnv, hostShimCIDREnv} {
 		if !allowedBrokerEnvironment(key) {
 			t.Errorf("%s should be forwarded to the daemon", key)
 		}

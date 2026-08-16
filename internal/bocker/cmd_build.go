@@ -399,12 +399,11 @@ func buildImage(client *IncusClient, f *Incusfile, alias string, networkMode Net
 		fmt.Printf("  阶段 %d 基础 fingerprint: %s\n", si+1, actualBase)
 
 		// 等待网络就绪
-		ip := waitForIP(client, stageContainer, 30)
+		ip := waitForIP(client, stageContainer, 45)
 		if ip == "" {
-			fmt.Printf("⚠ 阶段 %d 容器未获取 IPv4，RUN 命令可能因网络问题失败\n", si+1)
-		} else {
-			fmt.Printf("  阶段 %d IPv4: %s\n", si+1, ip)
+			return fmt.Errorf("阶段 %d 容器在 45 秒内未获取 IPv4（网络模式: %s）；请检查 DHCP、DNS 和宿主机网络配置", si+1, networkMode)
 		}
+		fmt.Printf("  阶段 %d IPv4: %s\n", si+1, ip)
 
 		// 仅在显式开启时自动换 apt 源 (默认关闭，保证构建可复现)
 		if aptMirrorAuto() {
