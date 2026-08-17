@@ -35,8 +35,27 @@ var asdfKnownTools = map[string]asdfToolDefaults{
 	"nodejs": {
 		pluginURL: "https://github.com/asdf-vm/asdf-nodejs.git",
 		env: map[string]string{
-			"NODEJS_ORG_MIRROR":   "https://registry.npmmirror.com/-/binary/node/",
-			"NPM_CONFIG_REGISTRY": "https://registry.npmmirror.com",
+			"NODEJS_ORG_MIRROR":                 "https://registry.npmmirror.com/-/binary/node/",
+			"NPM_CONFIG_REGISTRY":               "https://registry.npmmirror.com",
+			"ASDF_NODEJS_NODEBUILD_REPOSITORY":  asdfPluginProxy + "/https://github.com/nodenv/node-build.git",
+			"ASDF_NODEJS_SKIP_NODEBUILD_UPDATE": "1",
+		},
+	},
+	"python": {
+		pluginURL: "https://github.com/asdf-community/asdf-python.git",
+		env: map[string]string{
+			"ASDF_PYTHON_PYENV_REPOSITORY":  asdfPluginProxy + "/https://github.com/pyenv/pyenv.git",
+			"PIP_INDEX_URL":                 "https://pypi.tuna.tsinghua.edu.cn/simple",
+			"PIP_DISABLE_PIP_VERSION_CHECK": "1",
+		},
+	},
+	"rust": {
+		pluginURL: "https://github.com/code-lever/asdf-rust.git",
+		env: map[string]string{
+			"RUSTUP_DIST_SERVER":                  "https://rsproxy.cn",
+			"RUSTUP_UPDATE_ROOT":                  "https://rsproxy.cn/rustup",
+			"CARGO_REGISTRIES_CRATES_IO_INDEX":    "sparse+https://rsproxy.cn/index/",
+			"CARGO_REGISTRIES_CRATES_IO_PROTOCOL": "sparse",
 		},
 	},
 }
@@ -118,15 +137,57 @@ func asdfInstallCommand(spec AsdfSpec) string {
 				"timeout 90 " + asdfBinary + " plugin add " + shellQuote(spec.Tool) + " " + shellQuote(pluginURL) + "; fi",
 		}, "; ")
 	}
-	return strings.Join([]string{
+	commands := []string{
 		"set -eu",
 		"if [ ! -x " + asdfBinary + " ]; then " + asdfBootstrapCommand() + "; fi",
 		"mkdir -p " + shellQuote(asdfDataDir),
 		"if ! " + asdfBinary + " plugin list 2>/dev/null | grep -Fxq " + shellQuote(spec.Tool) + "; then " + pluginAdd + "; fi",
-		asdfBinary + " install " + shellQuote(spec.Tool) + " " + shellQuote(spec.Version),
-		asdfBinary + " set --home " + shellQuote(spec.Tool) + " " + shellQuote(spec.Version),
-		asdfBinary + " reshim " + shellQuote(spec.Tool) + " " + shellQuote(spec.Version),
-		asdfBinary + " where " + shellQuote(spec.Tool) + " " + shellQuote(spec.Version),
+	}
+	if spec.Tool == "nodejs" {
+		commands = append(commands, asdfNodeBuildBootstrapCommand())
+	} else if spec.Tool == "python" {
+		commands = append(commands, asdfPythonBuildBootstrapCommand())
+	}
+	commands = append(commands,
+		asdfBinary+" install "+shellQuote(spec.Tool)+" "+shellQuote(spec.Version),
+		asdfBinary+" set --home "+shellQuote(spec.Tool)+" "+shellQuote(spec.Version),
+		asdfBinary+" reshim "+shellQuote(spec.Tool)+" "+shellQuote(spec.Version),
+		asdfBinary+" where "+shellQuote(spec.Tool)+" "+shellQuote(spec.Version),
+	)
+	return strings.Join(commands, "; ")
+}
+
+func asdfNodeBuildBootstrapCommand() string {
+	nodeBuildDir := asdfDataDir + "/plugins/nodejs/.node-build"
+	proxyURL := asdfPluginProxy + "/https://github.com/nodenv/node-build.git"
+	officialURL := "https://github.com/nodenv/node-build.git"
+	return strings.Join([]string{
+		"nodebuild_dir=" + shellQuote(nodeBuildDir),
+		"nodebuild_repo=\"${ASDF_NODEJS_NODEBUILD_REPOSITORY:-" + proxyURL + "}\"",
+		"if [ ! -x \"$nodebuild_dir/bin/node-build\" ]; then " +
+			"rm -rf \"$nodebuild_dir\"; " +
+			"if ! timeout 120 git clone --depth 1 --single-branch --branch main \"$nodebuild_repo\" \"$nodebuild_dir\"; then " +
+			"rm -rf \"$nodebuild_dir\"; " +
+			"timeout 120 git clone --depth 1 --single-branch --branch main " + shellQuote(officialURL) + " \"$nodebuild_dir\"; fi; fi",
+		"test -x \"$nodebuild_dir/bin/node-build\"",
+	}, "; ")
+}
+
+func asdfPythonBuildBootstrapCommand() string {
+	pyenvDir := asdfDataDir + "/plugins/python/pyenv"
+	updateTimestamp := asdfDataDir + "/plugins/python/pyenv_last_update"
+	proxyURL := asdfPluginProxy + "/https://github.com/pyenv/pyenv.git"
+	officialURL := "https://github.com/pyenv/pyenv.git"
+	return strings.Join([]string{
+		"pyenv_dir=" + shellQuote(pyenvDir),
+		"pyenv_repo=\"${ASDF_PYTHON_PYENV_REPOSITORY:-" + proxyURL + "}\"",
+		"if [ ! -x \"$pyenv_dir/plugins/python-build/bin/python-build\" ]; then " +
+			"rm -rf \"$pyenv_dir\"; " +
+			"if ! timeout 120 git clone --depth 1 --single-branch --branch master \"$pyenv_repo\" \"$pyenv_dir\"; then " +
+			"rm -rf \"$pyenv_dir\"; " +
+			"timeout 120 git clone --depth 1 --single-branch --branch master " + shellQuote(officialURL) + " \"$pyenv_dir\"; fi; fi",
+		"test -x \"$pyenv_dir/plugins/python-build/bin/python-build\"",
+		"date +%s > " + shellQuote(updateTimestamp),
 	}, "; ")
 }
 

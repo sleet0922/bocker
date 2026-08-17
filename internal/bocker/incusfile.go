@@ -15,11 +15,13 @@ import (
 // 支持的指令：
 //
 //	ARG <KEY>[=<VALUE>]             全局构建参数 (必须位于首个 FROM 前，不写入镜像)
+//	MIRROR china|tuna|<url>         全局软件源，作用于最终阶段和所有构建阶段
 //	FROM <image> [AS <name>]        基础镜像，开始新构建阶段 (多阶段)
 //	NAME <name>                     镜像别名 + 容器名 (全局，作用于最终镜像)
 //	NETWORK bridge|nat              网络模式 (全局，默认 bridge)
 //	WORKDIR <path>                  设置后续 RUN/COPY 的工作目录
 //	RUN <command>                   在容器内执行 shell 命令 (通过 /bin/sh -c)
+//	PKG <package> ...               通过 apt/apk 安装软件包并清理索引
 //	COPY [--from=<stage>] <src> <dst>  从宿主机或指定阶段复制文件/目录
 //	    --from 省略时从宿主机复制；指定阶段名或数字索引时从该阶段容器复制
 //	ENV <KEY>=<VALUE>               设置环境变量 (写入 /etc/environment + profile.d)
@@ -34,6 +36,7 @@ type Incusfile struct {
 	Path   string
 	Stages []Stage
 	Args   []ArgSpec
+	Mirror string
 	// 以下字段从最终阶段同步，保持向后兼容 (buildImageProperties 等函数直接读取)
 	From       string
 	Name       string
@@ -53,7 +56,7 @@ type Stage struct {
 	Name            string      // AS 后的名字，用于 COPY --from=<name> 引用
 	From            string      // 基础镜像 (已规范化)
 	BaseFingerprint string      // 可选的固定基础镜像 fingerprint
-	Steps           []BuildStep // RUN/COPY/ENV/WORKDIR/ASDF 按出现顺序执行
+	Steps           []BuildStep // RUN/PKG/COPY/ENV/WORKDIR/ASDF 按出现顺序执行
 	Exposes         []PortSpec  // EXPOSE (运行时指令，通常在最终阶段)
 	Domain          string      // DOMAIN
 	Autostart       *bool       // AUTOSTART
@@ -61,14 +64,15 @@ type Stage struct {
 	Cmd             []string    // CMD executable/arguments or default ENTRYPOINT arguments
 }
 
-// BuildStep 是一个有序的构建步骤 (RUN/COPY/ENV/WORKDIR/ASDF)。
+// BuildStep 是一个有序的构建步骤 (RUN/PKG/COPY/ENV/WORKDIR/ASDF)。
 type BuildStep struct {
-	Kind    string // "RUN", "COPY", "ENV", "WORKDIR", "ASDF"
-	Run     string
-	Copy    CopySpec
-	Env     EnvSpec
-	Workdir string
-	Asdf    AsdfSpec
+	Kind     string // "RUN", "PKG", "COPY", "ENV", "WORKDIR", "ASDF"
+	Run      string
+	Packages []string
+	Copy     CopySpec
+	Env      EnvSpec
+	Workdir  string
+	Asdf     AsdfSpec
 }
 
 // AsdfSpec requests one exact tool version in a disposable TEMP stage.
@@ -254,6 +258,22 @@ func parseIncusfileWithBuildArgs(path string, overrides map[string]string) (*Inc
 			declaredBuildArgs[arg.Key] = true
 			buildArgValues[arg.Key] = arg.Value
 			f.Args = append(f.Args, arg)
+		case "MIRROR":
+			if currentStage != nil || inTemp {
+				return nil, fmt.Errorf("line %d: MIRROR 必须位于第一个 FROM 之前", lineNo)
+			}
+			if f.Mirror != "" {
+				return nil, fmt.Errorf("line %d: MIRROR 只能声明一次", lineNo)
+			}
+			expanded, err := expand(payload, true)
+			if err != nil {
+				return nil, err
+			}
+			mirror, err := normalizePackageMirror(expanded)
+			if err != nil {
+				return nil, fmt.Errorf("line %d: %w", lineNo, err)
+			}
+			f.Mirror = mirror
 		case "FROM":
 			if inTemp {
 				return nil, fmt.Errorf("line %d: TEMP 块内不能有 FROM", lineNo)
@@ -357,6 +377,19 @@ func parseIncusfileWithBuildArgs(path string, overrides map[string]string) (*Inc
 				return nil, fmt.Errorf("line %d: RUN 需要命令", lineNo)
 			}
 			targetStage().Steps = append(targetStage().Steps, BuildStep{Kind: "RUN", Run: payload})
+		case "PKG":
+			if targetStage() == nil {
+				return nil, fmt.Errorf("line %d: PKG 必须在 FROM 之后", lineNo)
+			}
+			expanded, err := expand(payload, true)
+			if err != nil {
+				return nil, err
+			}
+			packages, err := parsePackagePayload(expanded)
+			if err != nil {
+				return nil, fmt.Errorf("line %d: %w", lineNo, err)
+			}
+			targetStage().Steps = append(targetStage().Steps, BuildStep{Kind: "PKG", Packages: packages})
 		case "ASDF":
 			if !inTemp {
 				return nil, fmt.Errorf("line %d: ASDF 只能位于 TEMP ... END 内", lineNo)
@@ -473,7 +506,7 @@ func parseIncusfileWithBuildArgs(path string, overrides map[string]string) (*Inc
 				targetStage().Cmd = command
 			}
 		default:
-			return nil, fmt.Errorf("line %d: 未知指令 %s (支持: ARG FROM NAME NETWORK WORKDIR RUN COPY ENV EXPOSE DOMAIN AUTOSTART ENTRYPOINT CMD TEMP ASDF END)", lineNo, directive)
+			return nil, fmt.Errorf("line %d: 未知指令 %s (支持: ARG MIRROR FROM NAME NETWORK WORKDIR RUN PKG COPY ENV EXPOSE DOMAIN AUTOSTART ENTRYPOINT CMD TEMP ASDF END)", lineNo, directive)
 		}
 	}
 	for key := range overrides {

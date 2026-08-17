@@ -52,6 +52,10 @@ Incusfile 的 `ASDF <tool> <exact-version>` 只允许位于 `TEMP ... END`。Boc
 引导固定且校验过的 asdf，在该临时阶段后续步骤中提供工具链；asdf、插件和语言运行时
 不得进入最终镜像。`go`/`node` 快捷名、精确版本校验和 ARG 展开属于稳定语义。
 
+`MIRROR china` 必须位于首个 `FROM` 前，并为最终阶段和所有临时/多构建阶段显式固定
+清华软件源。`PKG <package...>` 在阶段内统一使用 apt/apk 安装并清理索引；两者用于
+减少国内环境常见的换源和包管理样板，旧 Incusfile 行为保持兼容。
+
 内部命令 `bocker __daemon` 是 systemd 使用的私有入口，只允许 root 运行；普通用户不应
 直接调用它。不要把这个内部约束误认为公开 CLI 需要 root。
 

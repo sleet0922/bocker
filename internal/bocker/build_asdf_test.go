@@ -78,8 +78,16 @@ func TestAsdfBuildEnvironmentDefaultsAndOverrides(t *testing.T) {
 	if strings.Count(env["PATH"], asdfShimsDir) != 1 {
 		t.Fatalf("ASDF shims duplicated in PATH: %q", env["PATH"])
 	}
-	if env["NODEJS_ORG_MIRROR"] == "" || env["NPM_CONFIG_REGISTRY"] == "" {
+	if env["NODEJS_ORG_MIRROR"] == "" || env["NPM_CONFIG_REGISTRY"] == "" || !strings.Contains(env["ASDF_NODEJS_NODEBUILD_REPOSITORY"], "nodenv/node-build.git") || env["ASDF_NODEJS_SKIP_NODEBUILD_UPDATE"] != "1" {
 		t.Fatalf("Node.js domestic mirrors missing: %#v", env)
+	}
+	configureAsdfBuildEnvironment(AsdfSpec{Tool: "rust", Version: "1.89.0"}, env)
+	if env["RUSTUP_DIST_SERVER"] != "https://rsproxy.cn" || env["RUSTUP_UPDATE_ROOT"] == "" || env["CARGO_REGISTRIES_CRATES_IO_INDEX"] != "sparse+https://rsproxy.cn/index/" || env["CARGO_REGISTRIES_CRATES_IO_PROTOCOL"] != "sparse" {
+		t.Fatalf("Rust domestic mirrors missing: %#v", env)
+	}
+	configureAsdfBuildEnvironment(AsdfSpec{Tool: "python", Version: "3.13.7"}, env)
+	if !strings.Contains(env["ASDF_PYTHON_PYENV_REPOSITORY"], "pyenv/pyenv.git") || env["PIP_INDEX_URL"] != "https://pypi.tuna.tsinghua.edu.cn/simple" || env["PIP_DISABLE_PIP_VERSION_CHECK"] != "1" {
+		t.Fatalf("Python domestic repository proxy missing: %#v", env)
 	}
 }
 
@@ -98,6 +106,44 @@ func TestAsdfInstallCommandIsPinned(t *testing.T) {
 	} {
 		if !strings.Contains(command, required) {
 			t.Fatalf("install command missing %q:\n%s", required, command)
+		}
+	}
+}
+
+func TestKnownAsdfPluginsUseProxyCapableURLs(t *testing.T) {
+	for _, tool := range []string{"golang", "nodejs", "python", "rust"} {
+		command := asdfInstallCommand(AsdfSpec{Tool: tool, Version: "1.2.3"})
+		if !strings.Contains(command, asdfKnownTools[tool].pluginURL) || !strings.Contains(command, asdfPluginProxy) {
+			t.Fatalf("%s plugin command has no proxy fallback:\n%s", tool, command)
+		}
+	}
+}
+
+func TestAsdfNodeBuildUsesBoundedShallowClone(t *testing.T) {
+	command := asdfInstallCommand(AsdfSpec{Tool: "nodejs", Version: "24.19.0"})
+	for _, required := range []string{
+		"ASDF_NODEJS_NODEBUILD_REPOSITORY",
+		"https://github.com/nodenv/node-build.git",
+		"timeout 120 git clone --depth 1 --single-branch --branch main",
+		"test -x \"$nodebuild_dir/bin/node-build\"",
+	} {
+		if !strings.Contains(command, required) {
+			t.Fatalf("Node.js install command missing %q:\n%s", required, command)
+		}
+	}
+}
+
+func TestAsdfPythonBuildUsesBoundedShallowClone(t *testing.T) {
+	command := asdfInstallCommand(AsdfSpec{Tool: "python", Version: "3.13.7"})
+	for _, required := range []string{
+		"ASDF_PYTHON_PYENV_REPOSITORY",
+		"https://github.com/pyenv/pyenv.git",
+		"timeout 120 git clone --depth 1 --single-branch --branch master",
+		"plugins/python-build/bin/python-build",
+		"pyenv_last_update",
+	} {
+		if !strings.Contains(command, required) {
+			t.Fatalf("Python install command missing %q:\n%s", required, command)
 		}
 	}
 }

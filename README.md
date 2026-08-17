@@ -309,11 +309,13 @@ AppArmor 和 capability 隔离。`super` 会启用特权容器、嵌套 LXC、�
 | 指令 | 说明 |
 | --- | --- |
 | `ARG KEY[=VALUE]` | 声明全局构建参数；必须位于首个 `FROM` 前，不写入最终镜像 |
+| `MIRROR china\|tuna\|<url>` | 固定所有阶段的 Debian/Ubuntu/Alpine 软件源；必须位于首个 `FROM` 前 |
 | `FROM <image>[@<64位fingerprint>] [AS <stage>]` | 基础镜像并开始一个构建阶段；发布构建可用 fingerprint 固定基础镜像 |
 | `NAME <name>` | 最终镜像别名和默认容器名 |
 | `NETWORK bridge\|nat` | 构建和创建时的网络模式 |
 | `WORKDIR <path>` | 设置后续 `RUN` 和相对 `COPY` 的工作目录 |
 | `RUN <command>` | 在构建容器内通过 `/bin/sh -c` 执行 |
+| `PKG <package...>` | 使用 apt/apk 安装软件包并自动清理包索引 |
 | `COPY <src> <dst>` | 从构建上下文复制文件 |
 | `COPY --from=<stage> <src> <dst>` | 从前置构建阶段复制产物 |
 | `ENV KEY=VALUE` | 设置构建阶段及最终运行容器的持久环境变量 |
@@ -324,6 +326,40 @@ AppArmor 和 capability 隔离。`super` 会启用特权容器、嵌套 LXC、�
 | `CMD ["..."]` | 设置默认命令或参数（仅 JSON exec form） |
 | `TEMP <name> ... END` | 在临时阶段安装构建工具并复制产物 |
 | `ASDF <tool> <version>` | 在 `TEMP` 内通过内置 asdf 安装精确版本工具链 |
+
+### 国内软件源与软件包
+
+`MIRROR china` 是显式、可复现的国内源声明，默认使用清华 TUNA。它只写一次，自动作用
+于最终阶段、所有 `TEMP` 和多阶段构建；Debian/Ubuntu 会改写 apt 源，Alpine 会改写
+apk 源。`MIRROR tuna` 与 `MIRROR china` 等价，也可以提供结构兼容的镜像站根地址。
+
+`PKG` 根据基础系统调用 apt 或 apk，自动执行索引更新、非交互安装和索引清理。软件包
+仍由 Incusfile 明确列出，不会根据项目内容隐式猜测依赖。
+
+```text
+ARG NODE_VERSION=24.19.0
+MIRROR china
+
+FROM debian/13
+NAME web-api
+NETWORK nat
+
+TEMP builder
+  PKG build-essential
+  ASDF node ${NODE_VERSION}
+  WORKDIR /src
+  COPY package.json package-lock.json ./
+  RUN npm ci
+  COPY . .
+  RUN npm test && npm run build
+END
+
+PKG ca-certificates
+COPY --from=builder /src/dist /opt/web-api/dist
+```
+
+这两条指令用于消除重复的包管理样板；第三方仓库、密钥校验、数据库初始化等具有明确
+业务语义的流程仍使用 `RUN`，避免 Bocker 隐式改变供应链和服务配置。
 
 ### TEMP 与 ASDF
 
@@ -357,7 +393,9 @@ COPY --from=builder /out/app /usr/local/bin/app
 
 版本必须是精确值，`latest` 和 `system` 会被拒绝。`ASDF` 支持 `${ARG}`，因此可用
 `--build-arg GO_VERSION=...` 覆盖。Go 后续命令默认使用 `goproxy.cn` 和国内校验服务；
-Node.js 下载及 npm 默认使用 npmmirror。Incusfile 中已有的同名 ARG/ENV 优先于这些
+Node.js、node-build 和 npm 默认使用国内镜像/代理，Rust 的 rustup 与 Cargo 默认使用
+rsproxy，Python 的 pip 默认使用清华 PyPI；Python 运行时源码及其他没有兼容镜像结构的
+工具保留上游下载。Incusfile 中已有的同名 ARG/ENV 优先于这些
 默认值。`ASDF_DOWNLOAD_PROXY` 和 `ASDF_PLUGIN_PROXY` 可分别覆盖 release 下载与插件
 Git 回退地址；它们既可声明为构建期 `ARG`，也可在 TEMP 内的 ASDF 之前声明为 `ENV`。
 asdf 插件会以构建容器 root 身份执行，只使用可信插件。
@@ -397,7 +435,7 @@ ENV APP_ENV=production
 RUN test "$APP_ENV" = production
 ```
 
-在 `FROM`、`NAME`、`NETWORK`、`WORKDIR`、`COPY`、`ENV`、`ASDF`、`EXPOSE`、
+在 `MIRROR`、`FROM`、`NAME`、`NETWORK`、`WORKDIR`、`PKG`、`COPY`、`ENV`、`ASDF`、`EXPOSE`、
 `DOMAIN`、`AUTOSTART`、`ENTRYPOINT` 和 `CMD` 中使用 `${NAME}`。`RUN` 由
 shell 执行，可使用 `$NAME` 或 `${NAME}`。需要保留字面量 `${NAME}` 时，在非
 `RUN` 指令中写成 `$${NAME}`。

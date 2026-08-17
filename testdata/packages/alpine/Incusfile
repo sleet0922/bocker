@@ -1,0 +1,9 @@
+MIRROR china
+
+FROM alpine/3.21
+NAME bocker-packages-alpine-e2e
+NETWORK nat
+PKG ca-certificates curl
+RUN grep -F 'mirrors.tuna.tsinghua.edu.cn/alpine' /etc/apk/repositories && \
+    curl --version > /curl-version.txt
+AUTOSTART off

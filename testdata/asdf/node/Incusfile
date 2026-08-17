@@ -1,17 +1,11 @@
 ARG NODE_VERSION=24.19.0
-ARG DEBIAN_MIRROR=https://mirrors.tuna.tsinghua.edu.cn
+MIRROR china
 
 FROM debian/13
 NAME bocker-asdf-node-e2e
 NETWORK nat
 
 TEMP builder
-RUN rm -f /etc/apt/sources.list.d/debian.sources && \
-    printf '%s\n' \
-      "deb $DEBIAN_MIRROR/debian trixie main" \
-      "deb $DEBIAN_MIRROR/debian trixie-updates main" \
-      "deb $DEBIAN_MIRROR/debian-security trixie-security main" \
-      > /etc/apt/sources.list
 ASDF node ${NODE_VERSION}
 WORKDIR /src
 COPY package.json ./package.json

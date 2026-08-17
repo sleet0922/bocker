@@ -89,12 +89,14 @@ func CmdBuild(args []string) error {
 
 	client := NewIncusClient()
 
-	runCount, copyCount, envCount, asdfCount := 0, 0, 0, 0
+	runCount, packageCount, copyCount, envCount, asdfCount := 0, 0, 0, 0, 0
 	for _, stage := range f.Stages {
 		for _, step := range stage.Steps {
 			switch step.Kind {
 			case "RUN":
 				runCount++
+			case "PKG":
+				packageCount++
 			case "COPY":
 				copyCount++
 			case "ENV":
@@ -111,7 +113,10 @@ func CmdBuild(args []string) error {
 	fmt.Printf("│ 目标镜像: %s\n", alias)
 	fmt.Printf("│ 网络模式: %s\n", networkMode)
 	fmt.Printf("│ 构建权限: %s\n", permissionMode)
-	fmt.Printf("│ ARG: %d  ASDF: %d  RUN: %d  COPY: %d  ENV: %d  EXPOSE: %d  步骤: %d\n", len(f.Args), asdfCount, runCount, copyCount, envCount, len(f.Exposes), len(f.Steps))
+	if f.Mirror != "" {
+		fmt.Printf("│ 软件源:   %s\n", f.Mirror)
+	}
+	fmt.Printf("│ ARG: %d  ASDF: %d  PKG: %d  RUN: %d  COPY: %d  ENV: %d  EXPOSE: %d  步骤: %d\n", len(f.Args), asdfCount, packageCount, runCount, copyCount, envCount, len(f.Exposes), len(f.Steps))
 	if f.Domain != "" {
 		fmt.Printf("│ DOMAIN:   %s\n", f.Domain)
 	}
@@ -151,11 +156,13 @@ func buildUsage() string {
 
 Incusfile 指令:
   ARG <KEY>[=<VALUE>]        全局构建参数 (首个 FROM 前声明，不写入镜像)
+  MIRROR china|tuna|<url>    为所有阶段固定国内或自定义 apt/apk 软件源
   FROM <image> [AS <name>]   基础镜像，开始新构建阶段 (多阶段)
   NAME <name>                镜像别名 + 容器名 (全局)
   NETWORK bridge|nat         网络模式 (bridge=Incus macvlan, nat=Incus bridge)
   WORKDIR <path>             设置后续 RUN/COPY 的工作目录
   RUN <command>              在容器内执行 shell 命令
+  PKG <package...>           通过 apt/apk 安装软件包并自动清理索引
   COPY [--from=<stage>] <src> <dst>  从宿主机或指定阶段复制
   ENV <KEY>=<VALUE>          设置环境变量
   EXPOSE <port>[/<proto>]    声明端口映射
@@ -166,9 +173,10 @@ Incusfile 指令:
 
 TEMP 块示例 (单 FROM all-in-one, 编译产物隔离):
   ARG GO_VERSION=1.26.6
+  MIRROR china
   FROM debian/13
   NAME my-app
-  RUN apt-get update && apt-get install -y ca-certificates mysql-server
+  PKG ca-certificates mysql-server
 
   TEMP builder
     ASDF go ${GO_VERSION}
@@ -182,23 +190,25 @@ TEMP 块示例 (单 FROM all-in-one, 编译产物隔离):
   AUTOSTART on
 
 多阶段构建示例 (分离构建环境与运行时):
+  MIRROR china
   FROM debian/13 AS builder
   WORKDIR /src
-  RUN apt-get update && apt-get install -y golang-go
+  PKG golang-go
   COPY ./main.go .
   RUN go build -o app .
 
   FROM debian/13
-  RUN apt-get update && apt-get install -y ca-certificates
+  PKG ca-certificates
   COPY --from=builder /src/app /usr/local/bin/app
   EXPOSE 8080/tcp
   DOMAIN myapp.test
   AUTOSTART on
 
 单阶段示例:
+  MIRROR china
   FROM debian/12
   NAME my-nginx
-  RUN apt-get update && apt-get install -y nginx
+  PKG nginx
   COPY ./index.html /var/www/html/index.html
   EXPOSE 80/tcp
   AUTOSTART on
@@ -423,8 +433,13 @@ func buildImage(client *IncusClient, f *Incusfile, alias string, networkMode Net
 		}
 		fmt.Printf("  阶段 %d IPv4: %s\n", si+1, ip)
 
-		// 仅在显式开启时自动换 apt 源 (默认关闭，保证构建可复现)
-		if aptMirrorAuto() {
+		// Incusfile 中显式声明的镜像源可复现且优先于宿主机自动换源开关。
+		if f.Mirror != "" {
+			fmt.Printf("  阶段 %d MIRROR: %s\n", si+1, f.Mirror)
+			if err := client.ExecStreaming(stageContainer, packageMirrorCommand(f.Mirror), nil); err != nil {
+				return fmt.Errorf("阶段 %d 配置软件源失败: %w", si+1, err)
+			}
+		} else if aptMirrorAuto() {
 			if err := autoConfigureAptMirror(client, stageContainer); err != nil {
 				return fmt.Errorf("阶段 %d 自动配置 apt 镜像源失败: %w", si+1, err)
 			}
@@ -456,6 +471,11 @@ func buildImage(client *IncusClient, f *Incusfile, alias string, networkMode Net
 				fmt.Printf("  [阶段%d %d/%d] ASDF %s %s\n", si+1, i+1, total, step.Asdf.Tool, step.Asdf.Version)
 				if err := client.ExecStreaming(stageContainer, asdfInstallCommand(step.Asdf), runEnv); err != nil {
 					return fmt.Errorf("阶段 %d ASDF %s %s 安装失败: %w", si+1, step.Asdf.Tool, step.Asdf.Version, err)
+				}
+			case "PKG":
+				fmt.Printf("  [阶段%d %d/%d] PKG %s\n", si+1, i+1, total, strings.Join(step.Packages, " "))
+				if err := client.ExecStreaming(stageContainer, packageInstallCommand(step.Packages), runEnv); err != nil {
+					return fmt.Errorf("阶段 %d PKG 安装失败: %s: %w", si+1, strings.Join(step.Packages, " "), err)
 				}
 			case "COPY":
 				fromLabel := "宿主机"
