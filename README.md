@@ -323,6 +323,44 @@ AppArmor 和 capability 隔离。`super` 会启用特权容器、嵌套 LXC、�
 | `ENTRYPOINT ["..."]` | 设置固定应用命令（仅 JSON exec form） |
 | `CMD ["..."]` | 设置默认命令或参数（仅 JSON exec form） |
 | `TEMP <name> ... END` | 在临时阶段安装构建工具并复制产物 |
+| `ASDF <tool> <version>` | 在 `TEMP` 内通过内置 asdf 安装精确版本工具链 |
+
+### TEMP 与 ASDF
+
+`ASDF` 只允许出现在 `TEMP ... END` 内。Bocker 会在第一次遇到该指令时从官方 release
+下载并校验 asdf v0.20.0；官方地址超时后使用国内代理。随后安装语言插件和指定版本，
+并把 shims 加入该临时阶段后续 `RUN` 的 `PATH`。临时阶段结束后，asdf、插件、语言
+运行时和下载缓存都不会进入最终镜像。
+
+```text
+ARG GO_VERSION=1.26.6
+
+FROM debian/13
+NAME my-app
+
+TEMP builder
+  ASDF go ${GO_VERSION}
+  WORKDIR /src
+  COPY go.mod go.sum ./
+  RUN go mod download
+  COPY . .
+  RUN CGO_ENABLED=0 go build -o /out/app ./cmd/app
+END
+
+COPY --from=builder /out/app /usr/local/bin/app
+```
+
+`go` 和 `node` 分别是 asdf 插件 `golang` 和 `nodejs` 的快捷名，也可以直接写
+`ASDF golang 1.26.6`、`ASDF nodejs 24.19.0`。同一个 TEMP 可声明多个工具，asdf
+只安装一次。其他插件可直接使用 asdf 官方短名，例如 `ASDF python 3.13.7`；如果插件
+需要编译器或系统开发库，应在 ASDF 前用 `RUN` 安装这些额外依赖。
+
+版本必须是精确值，`latest` 和 `system` 会被拒绝。`ASDF` 支持 `${ARG}`，因此可用
+`--build-arg GO_VERSION=...` 覆盖。Go 后续命令默认使用 `goproxy.cn` 和国内校验服务；
+Node.js 下载及 npm 默认使用 npmmirror。Incusfile 中已有的同名 ARG/ENV 优先于这些
+默认值。`ASDF_DOWNLOAD_PROXY` 和 `ASDF_PLUGIN_PROXY` 可分别覆盖 release 下载与插件
+Git 回退地址；它们既可声明为构建期 `ARG`，也可在 TEMP 内的 ASDF 之前声明为 `ENV`。
+asdf 插件会以构建容器 root 身份执行，只使用可信插件。
 
 ### 最小示例
 
@@ -359,7 +397,7 @@ ENV APP_ENV=production
 RUN test "$APP_ENV" = production
 ```
 
-在 `FROM`、`NAME`、`NETWORK`、`WORKDIR`、`COPY`、`ENV`、`EXPOSE`、
+在 `FROM`、`NAME`、`NETWORK`、`WORKDIR`、`COPY`、`ENV`、`ASDF`、`EXPOSE`、
 `DOMAIN`、`AUTOSTART`、`ENTRYPOINT` 和 `CMD` 中使用 `${NAME}`。`RUN` 由
 shell 执行，可使用 `$NAME` 或 `${NAME}`。需要保留字面量 `${NAME}` 时，在非
 `RUN` 指令中写成 `$${NAME}`。
@@ -425,7 +463,8 @@ EXPOSE 8080/tcp
 ```
 
 `COPY --from` 只能引用当前阶段之前的阶段。`TEMP name ... END` 适合单个
-基础镜像下隔离编译工具链，临时阶段不会进入最终镜像。`EXPOSE`、`DOMAIN`、
+基础镜像下隔离编译工具链；其中可用 `ASDF` 准备语言环境，临时阶段不会进入最终镜像。
+`EXPOSE`、`DOMAIN`、
 `AUTOSTART`、`ENTRYPOINT` 和 `CMD` 只允许出现在最终阶段；`EXPOSE` 使用同号
 宿主机端口，因此同一宿主机上不能同时运行声明相同端口的两个实例。
 

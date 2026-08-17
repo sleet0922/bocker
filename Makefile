@@ -3,7 +3,7 @@ GOOS ?= linux
 GOARCH ?= amd64
 CGO_ENABLED ?= 0
 LDFLAGS ?= -s -w
-VERSION ?= 3.1.7
+VERSION ?= 3.1.8
 NFPM_VERSION ?= v2.45.0
 NFPM ?= go run github.com/goreleaser/nfpm/v2/cmd/nfpm@$(NFPM_VERSION)
 

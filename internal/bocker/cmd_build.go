@@ -89,7 +89,7 @@ func CmdBuild(args []string) error {
 
 	client := NewIncusClient()
 
-	runCount, copyCount, envCount := 0, 0, 0
+	runCount, copyCount, envCount, asdfCount := 0, 0, 0, 0
 	for _, stage := range f.Stages {
 		for _, step := range stage.Steps {
 			switch step.Kind {
@@ -99,6 +99,8 @@ func CmdBuild(args []string) error {
 				copyCount++
 			case "ENV":
 				envCount++
+			case "ASDF":
+				asdfCount++
 			}
 		}
 	}
@@ -109,7 +111,7 @@ func CmdBuild(args []string) error {
 	fmt.Printf("│ 目标镜像: %s\n", alias)
 	fmt.Printf("│ 网络模式: %s\n", networkMode)
 	fmt.Printf("│ 构建权限: %s\n", permissionMode)
-	fmt.Printf("│ ARG: %d  RUN: %d  COPY: %d  ENV: %d  EXPOSE: %d  步骤: %d\n", len(f.Args), runCount, copyCount, envCount, len(f.Exposes), len(f.Steps))
+	fmt.Printf("│ ARG: %d  ASDF: %d  RUN: %d  COPY: %d  ENV: %d  EXPOSE: %d  步骤: %d\n", len(f.Args), asdfCount, runCount, copyCount, envCount, len(f.Exposes), len(f.Steps))
 	if f.Domain != "" {
 		fmt.Printf("│ DOMAIN:   %s\n", f.Domain)
 	}
@@ -160,15 +162,16 @@ Incusfile 指令:
   DOMAIN <domain>            域名映射
   AUTOSTART on|off           开机自启动
   TEMP <name> ... END        临时构建块 (隔离编译工具链, 不进最终镜像)
+  ASDF <tool> <version>      TEMP 内安装精确版本工具链 (如 ASDF go 1.26.6)
 
 TEMP 块示例 (单 FROM all-in-one, 编译产物隔离):
-  ARG BUILD_PACKAGES=golang-go
+  ARG GO_VERSION=1.26.6
   FROM debian/13
   NAME my-app
   RUN apt-get update && apt-get install -y ca-certificates mysql-server
 
   TEMP builder
-    RUN apt-get update && apt-get install -y "$BUILD_PACKAGES"
+    ASDF go ${GO_VERSION}
     WORKDIR /src
     COPY ./main.go .
     RUN go build -o app .
@@ -448,6 +451,12 @@ func buildImage(client *IncusClient, f *Incusfile, alias string, networkMode Net
 				fmt.Printf("  [阶段%d %d/%d] ENV %s=%s\n", si+1, i+1, total, step.Env.Key, step.Env.Value)
 				runEnv[step.Env.Key] = step.Env.Value
 				collectedEnvs = append(collectedEnvs, step.Env)
+			case "ASDF":
+				configureAsdfBuildEnvironment(step.Asdf, runEnv)
+				fmt.Printf("  [阶段%d %d/%d] ASDF %s %s\n", si+1, i+1, total, step.Asdf.Tool, step.Asdf.Version)
+				if err := client.ExecStreaming(stageContainer, asdfInstallCommand(step.Asdf), runEnv); err != nil {
+					return fmt.Errorf("阶段 %d ASDF %s %s 安装失败: %w", si+1, step.Asdf.Tool, step.Asdf.Version, err)
+				}
 			case "COPY":
 				fromLabel := "宿主机"
 				if step.Copy.From != "" {

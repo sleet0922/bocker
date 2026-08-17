@@ -27,6 +27,7 @@ import (
 //	DOMAIN <domain>                 域名映射 (运行时写入 /etc/hosts)
 //	AUTOSTART on|off                开机自启动
 //	TEMP <name> ... END             临时构建块: 块内步骤在独立临时容器执行，不进最终镜像
+//	ASDF <tool> <version>           在 TEMP 块内安装精确版本的构建工具链
 //	    块继承外层 FROM 镜像，用于隔离编译工具链 (golang/nodejs) 污染
 //	    块名可用于 COPY --from=<name> 拷回构建产物；仅支持单 FROM (all-in-one 模式)
 type Incusfile struct {
@@ -52,7 +53,7 @@ type Stage struct {
 	Name            string      // AS 后的名字，用于 COPY --from=<name> 引用
 	From            string      // 基础镜像 (已规范化)
 	BaseFingerprint string      // 可选的固定基础镜像 fingerprint
-	Steps           []BuildStep // RUN/COPY/ENV/WORKDIR 按出现顺序执行
+	Steps           []BuildStep // RUN/COPY/ENV/WORKDIR/ASDF 按出现顺序执行
 	Exposes         []PortSpec  // EXPOSE (运行时指令，通常在最终阶段)
 	Domain          string      // DOMAIN
 	Autostart       *bool       // AUTOSTART
@@ -60,13 +61,20 @@ type Stage struct {
 	Cmd             []string    // CMD executable/arguments or default ENTRYPOINT arguments
 }
 
-// BuildStep 是一个有序的构建步骤 (RUN/COPY/ENV/WORKDIR)。
+// BuildStep 是一个有序的构建步骤 (RUN/COPY/ENV/WORKDIR/ASDF)。
 type BuildStep struct {
-	Kind    string // "RUN", "COPY", "ENV", "WORKDIR"
+	Kind    string // "RUN", "COPY", "ENV", "WORKDIR", "ASDF"
 	Run     string
 	Copy    CopySpec
 	Env     EnvSpec
 	Workdir string
+	Asdf    AsdfSpec
+}
+
+// AsdfSpec requests one exact tool version in a disposable TEMP stage.
+type AsdfSpec struct {
+	Tool    string
+	Version string
 }
 
 type CopySpec struct {
@@ -349,6 +357,27 @@ func parseIncusfileWithBuildArgs(path string, overrides map[string]string) (*Inc
 				return nil, fmt.Errorf("line %d: RUN 需要命令", lineNo)
 			}
 			targetStage().Steps = append(targetStage().Steps, BuildStep{Kind: "RUN", Run: payload})
+		case "ASDF":
+			if !inTemp {
+				return nil, fmt.Errorf("line %d: ASDF 只能位于 TEMP ... END 内", lineNo)
+			}
+			spec, err := parseAsdfPayload(payload)
+			if err != nil {
+				return nil, fmt.Errorf("line %d: %w", lineNo, err)
+			}
+			spec.Tool, err = expand(spec.Tool, true)
+			if err != nil {
+				return nil, err
+			}
+			spec.Version, err = expand(spec.Version, true)
+			if err != nil {
+				return nil, err
+			}
+			spec, err = normalizeAsdfSpec(spec)
+			if err != nil {
+				return nil, fmt.Errorf("line %d: %w", lineNo, err)
+			}
+			currentTemp.Steps = append(currentTemp.Steps, BuildStep{Kind: "ASDF", Asdf: spec})
 		case "COPY":
 			if targetStage() == nil {
 				return nil, fmt.Errorf("line %d: COPY 必须在 FROM 之后", lineNo)
@@ -444,7 +473,7 @@ func parseIncusfileWithBuildArgs(path string, overrides map[string]string) (*Inc
 				targetStage().Cmd = command
 			}
 		default:
-			return nil, fmt.Errorf("line %d: 未知指令 %s (支持: ARG FROM NAME NETWORK WORKDIR RUN COPY ENV EXPOSE DOMAIN AUTOSTART ENTRYPOINT CMD TEMP END)", lineNo, directive)
+			return nil, fmt.Errorf("line %d: 未知指令 %s (支持: ARG FROM NAME NETWORK WORKDIR RUN COPY ENV EXPOSE DOMAIN AUTOSTART ENTRYPOINT CMD TEMP ASDF END)", lineNo, directive)
 		}
 	}
 	for key := range overrides {
