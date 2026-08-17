@@ -14,6 +14,7 @@ import (
 //
 // 支持的指令：
 //
+//	ARG <KEY>[=<VALUE>]             全局构建参数 (必须位于首个 FROM 前，不写入镜像)
 //	FROM <image> [AS <name>]        基础镜像，开始新构建阶段 (多阶段)
 //	NAME <name>                     镜像别名 + 容器名 (全局，作用于最终镜像)
 //	NETWORK bridge|nat              网络模式 (全局，默认 bridge)
@@ -31,6 +32,7 @@ import (
 type Incusfile struct {
 	Path   string
 	Stages []Stage
+	Args   []ArgSpec
 	// 以下字段从最终阶段同步，保持向后兼容 (buildImageProperties 等函数直接读取)
 	From       string
 	Name       string
@@ -86,6 +88,10 @@ type PortSpec struct {
 // parseIncusfile 从指定路径解析 Incusfile。path 为空时默认 ./Incusfile。
 // 支持行尾反斜杠续行 (与 Dockerfile 一致)：行尾 \ 会把下一行拼接到当前行。
 func parseIncusfile(path string) (*Incusfile, error) {
+	return parseIncusfileWithBuildArgs(path, nil)
+}
+
+func parseIncusfileWithBuildArgs(path string, overrides map[string]string) (*Incusfile, error) {
 	if path == "" {
 		path = "Incusfile"
 	}
@@ -94,6 +100,13 @@ func parseIncusfile(path string) (*Incusfile, error) {
 		return nil, fmt.Errorf("读取 %s 失败: %w", path, err)
 	}
 	f := &Incusfile{Path: path}
+	buildArgValues := make(map[string]string)
+	declaredBuildArgs := make(map[string]bool)
+	for key := range overrides {
+		if err := validateArgKey(key); err != nil {
+			return nil, err
+		}
+	}
 	// 规范化换行：去掉 \r (兼容 Windows CRLF)，再按 \n 切分
 	cleaned := strings.ReplaceAll(string(data), "\r\n", "\n")
 	cleaned = strings.ReplaceAll(cleaned, "\r", "\n")
@@ -204,7 +217,35 @@ func parseIncusfile(path string) (*Incusfile, error) {
 		}
 		directive := strings.ToUpper(fields[0])
 		payload := directivePayload(raw)
+		expand := func(value string, strict bool) (string, error) {
+			expanded, err := expandBuildArgReferences(value, buildArgValues, strict)
+			if err != nil {
+				return "", fmt.Errorf("line %d: %w", lineNo, err)
+			}
+			return expanded, nil
+		}
 		switch directive {
+		case "ARG":
+			if currentStage != nil || inTemp {
+				return nil, fmt.Errorf("line %d: ARG 必须位于第一个 FROM 之前", lineNo)
+			}
+			arg, err := parseArgPayload(payload)
+			if err != nil {
+				return nil, fmt.Errorf("line %d: %w", lineNo, err)
+			}
+			if declaredBuildArgs[arg.Key] {
+				return nil, fmt.Errorf("line %d: ARG %s 重复声明", lineNo, arg.Key)
+			}
+			arg.Value, err = expand(arg.Value, true)
+			if err != nil {
+				return nil, err
+			}
+			if override, exists := overrides[arg.Key]; exists {
+				arg.Value = override
+			}
+			declaredBuildArgs[arg.Key] = true
+			buildArgValues[arg.Key] = arg.Value
+			f.Args = append(f.Args, arg)
 		case "FROM":
 			if inTemp {
 				return nil, fmt.Errorf("line %d: TEMP 块内不能有 FROM", lineNo)
@@ -212,6 +253,10 @@ func parseIncusfile(path string) (*Incusfile, error) {
 			fromImg, stageName, err := parseFromPayload(payload)
 			if err != nil {
 				return nil, fmt.Errorf("line %d: %w", lineNo, err)
+			}
+			fromImg, err = expand(fromImg, true)
+			if err != nil {
+				return nil, err
 			}
 			if err := startStage(fromImg, stageName, lineNo); err != nil {
 				return nil, err
@@ -259,6 +304,10 @@ func parseIncusfile(path string) (*Incusfile, error) {
 			if err != nil || len(parts) != 1 {
 				return nil, fmt.Errorf("line %d: NAME 只接受一个名称", lineNo)
 			}
+			parts[0], err = expand(parts[0], true)
+			if err != nil {
+				return nil, err
+			}
 			if err := validateBockerName(parts[0]); err != nil {
 				return nil, fmt.Errorf("line %d: NAME 无效: %w", lineNo, err)
 			}
@@ -270,7 +319,11 @@ func parseIncusfile(path string) (*Incusfile, error) {
 			if strings.TrimSpace(payload) == "" {
 				return nil, fmt.Errorf("line %d: NETWORK 需要 bridge 或 nat", lineNo)
 			}
-			mode, err := ParseNetworkMode(payload)
+			expanded, err := expand(payload, true)
+			if err != nil {
+				return nil, err
+			}
+			mode, err := ParseNetworkMode(expanded)
 			if err != nil {
 				return nil, fmt.Errorf("line %d: %w", lineNo, err)
 			}
@@ -282,6 +335,10 @@ func parseIncusfile(path string) (*Incusfile, error) {
 			parts, err := shellSplit(payload)
 			if err != nil || len(parts) != 1 || parts[0] == "" {
 				return nil, fmt.Errorf("line %d: WORKDIR 需要一个非空路径", lineNo)
+			}
+			parts[0], err = expand(parts[0], true)
+			if err != nil {
+				return nil, err
 			}
 			targetStage().Steps = append(targetStage().Steps, BuildStep{Kind: "WORKDIR", Workdir: parts[0]})
 		case "RUN":
@@ -300,6 +357,14 @@ func parseIncusfile(path string) (*Incusfile, error) {
 			if err != nil {
 				return nil, fmt.Errorf("line %d: %w", lineNo, err)
 			}
+			src, err = expand(src, true)
+			if err != nil {
+				return nil, err
+			}
+			dst, err = expand(dst, true)
+			if err != nil {
+				return nil, err
+			}
 			targetStage().Steps = append(targetStage().Steps, BuildStep{Kind: "COPY", Copy: CopySpec{Src: src, Dst: dst, From: from}})
 		case "ENV":
 			if targetStage() == nil {
@@ -309,12 +374,20 @@ func parseIncusfile(path string) (*Incusfile, error) {
 			if err != nil {
 				return nil, fmt.Errorf("line %d: %w", lineNo, err)
 			}
+			kv.Value, err = expand(kv.Value, false)
+			if err != nil {
+				return nil, err
+			}
 			targetStage().Steps = append(targetStage().Steps, BuildStep{Kind: "ENV", Env: kv})
 		case "EXPOSE":
 			if targetStage() == nil {
 				return nil, fmt.Errorf("line %d: EXPOSE 必须在 FROM 之后", lineNo)
 			}
-			ports, err := parseExposePayload(payload)
+			expanded, err := expand(payload, true)
+			if err != nil {
+				return nil, err
+			}
+			ports, err := parseExposePayload(expanded)
 			if err != nil {
 				return nil, fmt.Errorf("line %d: %w", lineNo, err)
 			}
@@ -330,6 +403,10 @@ func parseIncusfile(path string) (*Incusfile, error) {
 			if err != nil || len(parts) != 1 {
 				return nil, fmt.Errorf("line %d: DOMAIN 只接受一个域名", lineNo)
 			}
+			parts[0], err = expand(parts[0], true)
+			if err != nil {
+				return nil, err
+			}
 			if err := validateDomainName(parts[0]); err != nil {
 				return nil, fmt.Errorf("line %d: DOMAIN 无效: %w", lineNo, err)
 			}
@@ -338,7 +415,11 @@ func parseIncusfile(path string) (*Incusfile, error) {
 			if targetStage() == nil {
 				return nil, fmt.Errorf("line %d: AUTOSTART 必须在 FROM 之后", lineNo)
 			}
-			on, err := parseBoolPayload(payload)
+			expanded, err := expand(payload, true)
+			if err != nil {
+				return nil, err
+			}
+			on, err := parseBoolPayload(expanded)
 			if err != nil {
 				return nil, fmt.Errorf("line %d: %w", lineNo, err)
 			}
@@ -351,13 +432,24 @@ func parseIncusfile(path string) (*Incusfile, error) {
 			if err != nil {
 				return nil, fmt.Errorf("line %d: %s: %w", lineNo, directive, err)
 			}
+			for i := range command {
+				command[i], err = expand(command[i], false)
+				if err != nil {
+					return nil, err
+				}
+			}
 			if directive == "ENTRYPOINT" {
 				targetStage().Entrypoint = command
 			} else {
 				targetStage().Cmd = command
 			}
 		default:
-			return nil, fmt.Errorf("line %d: 未知指令 %s (支持: FROM NAME NETWORK WORKDIR RUN COPY ENV EXPOSE DOMAIN AUTOSTART ENTRYPOINT CMD TEMP END)", lineNo, directive)
+			return nil, fmt.Errorf("line %d: 未知指令 %s (支持: ARG FROM NAME NETWORK WORKDIR RUN COPY ENV EXPOSE DOMAIN AUTOSTART ENTRYPOINT CMD TEMP END)", lineNo, directive)
+		}
+	}
+	for key := range overrides {
+		if !declaredBuildArgs[key] {
+			return nil, fmt.Errorf("--build-arg %s 未在 Incusfile 中声明", key)
 		}
 	}
 
@@ -712,15 +804,8 @@ func parseEnvPayload(payload string) (EnvSpec, error) {
 }
 
 func validateEnvKey(key string) error {
-	if key == "" {
-		return fmt.Errorf("ENV 变量名不能为空")
-	}
-	for i := 0; i < len(key); i++ {
-		c := key[i]
-		valid := c == '_' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || i > 0 && c >= '0' && c <= '9'
-		if !valid {
-			return fmt.Errorf("ENV 变量名 %q 无效", key)
-		}
+	if err := validateVariableKey(key); err != nil {
+		return fmt.Errorf("ENV 变量名 %q 无效", key)
 	}
 	return nil
 }

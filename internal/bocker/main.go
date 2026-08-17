@@ -9,7 +9,7 @@ import (
 )
 
 // Version 工具版本
-const Version = "3.1.6"
+const Version = "3.1.7"
 
 // MirrorRemote 镜像源在本地的 remote 名称
 const MirrorRemote = "mirror-images"
@@ -298,7 +298,7 @@ func printUsage() {
 
 	printUsageSection("本地镜像 image", []usageEntry{
 		{"bocker image", "打开 image 操作菜单"},
-		{"bocker image build [Incusfile]", "按 Incusfile 制作本地镜像"},
+		{"bocker image build [--build-arg KEY=VALUE] [Incusfile]", "按 Incusfile 制作本地镜像"},
 		{"bocker image list [--json]", "列出本地镜像；--json 给 GUI/脚本使用"},
 		{"bocker image run [image] [--name <name>]", "选择或指定本地镜像，创建并启动容器"},
 		{"bocker image remove [image]", "删除本地镜像"},
@@ -322,6 +322,9 @@ func printUsage() {
 		{"--network <nat|bridge>", "NAT 私有网络或局域网直连；默认 bridge"},
 		{"--permission <normal|super>", "普通权限或放宽隔离；默认 normal"},
 		{"--name <name>", "指定新容器的名称"},
+	})
+	printUsageSection("构建镜像时可用", []usageEntry{
+		{"--build-arg <KEY=VALUE>", "覆盖 Incusfile 首个 FROM 前声明的 ARG；可重复使用"},
 	})
 
 	fmt.Println("\n示例: bocker template install debian:12 --name demo --network nat")

@@ -191,6 +191,8 @@ bocker template install
 | `bocker image build [Incusfile]` | 构建镜像，默认读取当前目录的 `./Incusfile` |
 | `bocker image build --name <name> [Incusfile]` | 覆盖镜像名称 |
 | `bocker image build --network bridge\|nat [Incusfile]` | 覆盖构建阶段网络模式 |
+| `bocker image build --permission normal\|super [Incusfile]` | 设置所有构建阶段权限；Debian 13 systemd 构建可用 `super` |
+| `bocker image build --build-arg KEY=VALUE [Incusfile]` | 覆盖构建期 `ARG`；可重复指定 |
 | `bocker image list [--json]` | 列出本地镜像 |
 | `bocker image run [image] [--name <name>]` | 选择或指定本地镜像，创建并启动容器 |
 | `bocker image remove [image]` | 删除本地镜像 |
@@ -306,6 +308,7 @@ AppArmor 和 capability 隔离。`super` 会启用特权容器、嵌套 LXC、�
 
 | 指令 | 说明 |
 | --- | --- |
+| `ARG KEY[=VALUE]` | 声明全局构建参数；必须位于首个 `FROM` 前，不写入最终镜像 |
 | `FROM <image>[@<64位fingerprint>] [AS <stage>]` | 基础镜像并开始一个构建阶段；发布构建可用 fingerprint 固定基础镜像 |
 | `NAME <name>` | 最终镜像别名和默认容器名 |
 | `NETWORK bridge\|nat` | 构建和创建时的网络模式 |
@@ -313,7 +316,7 @@ AppArmor 和 capability 隔离。`super` 会启用特权容器、嵌套 LXC、�
 | `RUN <command>` | 在构建容器内通过 `/bin/sh -c` 执行 |
 | `COPY <src> <dst>` | 从构建上下文复制文件 |
 | `COPY --from=<stage> <src> <dst>` | 从前置构建阶段复制产物 |
-| `ENV KEY=VALUE` | 设置镜像环境变量 |
+| `ENV KEY=VALUE` | 设置构建阶段及最终运行容器的持久环境变量 |
 | `EXPOSE <port>[/tcp\|udp]` | 创建运行时端口映射 |
 | `DOMAIN <domain>` | 启动时更新宿主机 `/etc/hosts` |
 | `AUTOSTART on\|off` | 设置容器开机自启动 |
@@ -336,6 +339,46 @@ bocker image build --name hello-image Incusfile
 bocker image run hello-image --name hello
 bocker container exec hello cat /hello.txt
 ```
+
+### ARG 与 ENV
+
+`ARG` 只在构建期间存在，适合版本号、镜像地址和软件包名称；它必须集中声明在
+第一个 `FROM` 前，并对普通阶段和 `TEMP` 阶段全局可见。`ENV` 必须位于 `FROM`
+之后，既供后续 `RUN` 使用，也会写入最终镜像并传给正式容器。
+
+```text
+ARG BASE_IMAGE=debian/13
+ARG PG_VERSION=18
+ARG PGDG_MIRROR=https://mirrors.cloud.tencent.com/postgresql/repos/apt
+
+FROM ${BASE_IMAGE}
+RUN printf '%s\n' "deb ${PGDG_MIRROR} trixie-pgdg main" > /etc/apt/sources.list.d/pgdg.list
+RUN apt-get update && apt-get install -y "postgresql-${PG_VERSION}"
+
+ENV APP_ENV=production
+RUN test "$APP_ENV" = production
+```
+
+在 `FROM`、`NAME`、`NETWORK`、`WORKDIR`、`COPY`、`ENV`、`EXPOSE`、
+`DOMAIN`、`AUTOSTART`、`ENTRYPOINT` 和 `CMD` 中使用 `${NAME}`。`RUN` 由
+shell 执行，可使用 `$NAME` 或 `${NAME}`。需要保留字面量 `${NAME}` 时，在非
+`RUN` 指令中写成 `$${NAME}`。
+
+构建时可覆盖一个或多个已声明参数：
+
+```bash
+bocker image build \
+  --build-arg PG_VERSION=18 \
+  --build-arg PGDG_MIRROR=https://apt.postgresql.org/pub/repos/apt \
+  --permission super \
+  Incusfile
+```
+
+未声明、重复或缺少 `KEY=VALUE` 的 `--build-arg` 会直接报错。ARG 不会隐式读取
+宿主机同名环境变量，其声明和值也不会自动进入镜像属性或 `/etc/environment`；如果
+主动在 `ENV`、`CMD`、`ENTRYPOINT` 或 `RUN` 生成的文件中引用 ARG，展开结果会按该
+指令的正常语义写入镜像。构建命令和参数仍可能出现在日志中，因此不要使用 ARG
+传递密码、Token 或私钥。
 
 ### 运行应用
 

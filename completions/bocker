@@ -16,7 +16,7 @@ _bocker_completion() {
             mapfile -t COMPREPLY < <(compgen -W "normal super" -- "$cur")
             return
             ;;
-        --name)
+        --name|--build-arg)
             return
             ;;
     esac
@@ -47,7 +47,7 @@ _bocker_completion() {
             options="--name --network --permission"
             ;;
         image:build)
-            options="--name --network --help"
+            options="--name --network --permission --build-arg --help"
             ;;
         container:import)
             options="--network --permission"

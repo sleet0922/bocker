@@ -23,6 +23,14 @@ import (
 //	bocker build --name <name> [Incusfile] 覆盖镜像别名
 //	bocker build --help                   显示帮助
 func CmdBuild(args []string) error {
+	buildArgs, args, err := buildArgsFromArgs(args)
+	if err != nil {
+		return err
+	}
+	permissionMode, args, err := permissionModeFromArgs(args)
+	if err != nil {
+		return err
+	}
 	networkOverride := hasNetworkOverride(args)
 	networkMode, args, err := networkModeFromArgs(args)
 	if err != nil {
@@ -56,7 +64,7 @@ func CmdBuild(args []string) error {
 		}
 	}
 
-	f, err := parseIncusfile(incusfilePath)
+	f, err := parseIncusfileWithBuildArgs(incusfilePath, buildArgs)
 	if err != nil {
 		return err
 	}
@@ -100,7 +108,8 @@ func CmdBuild(args []string) error {
 	fmt.Printf("│ 基础镜像: %s\n", f.From)
 	fmt.Printf("│ 目标镜像: %s\n", alias)
 	fmt.Printf("│ 网络模式: %s\n", networkMode)
-	fmt.Printf("│ RUN: %d  COPY: %d  ENV: %d  EXPOSE: %d  步骤: %d\n", runCount, copyCount, envCount, len(f.Exposes), len(f.Steps))
+	fmt.Printf("│ 构建权限: %s\n", permissionMode)
+	fmt.Printf("│ ARG: %d  RUN: %d  COPY: %d  ENV: %d  EXPOSE: %d  步骤: %d\n", len(f.Args), runCount, copyCount, envCount, len(f.Exposes), len(f.Steps))
 	if f.Domain != "" {
 		fmt.Printf("│ DOMAIN:   %s\n", f.Domain)
 	}
@@ -115,7 +124,7 @@ func CmdBuild(args []string) error {
 	}
 	fmt.Printf("╰─\n\n")
 
-	if err := buildImage(client, f, alias, networkMode); err != nil {
+	if err := buildImage(client, f, alias, networkMode, permissionMode); err != nil {
 		return err
 	}
 
@@ -131,10 +140,15 @@ func buildUsage() string {
   bocker image build [Incusfile]                         构建镜像 (默认 ./Incusfile)
   bocker image build --name <name> [Incusfile]           覆盖镜像别名
   bocker image build --network <bridge|nat> [Incusfile]  覆盖构建网络
+  bocker image build --permission <normal|super> [Incusfile]
+                                                     设置所有构建阶段权限
+  bocker image build --build-arg <KEY=VALUE> [Incusfile]
+                                                     覆盖 Incusfile 中声明的 ARG
 
 构建完成后用 'bocker image run <image> --name <name>' 启动容器。
 
 Incusfile 指令:
+  ARG <KEY>[=<VALUE>]        全局构建参数 (首个 FROM 前声明，不写入镜像)
   FROM <image> [AS <name>]   基础镜像，开始新构建阶段 (多阶段)
   NAME <name>                镜像别名 + 容器名 (全局)
   NETWORK bridge|nat         网络模式 (bridge=Incus macvlan, nat=Incus bridge)
@@ -148,12 +162,13 @@ Incusfile 指令:
   TEMP <name> ... END        临时构建块 (隔离编译工具链, 不进最终镜像)
 
 TEMP 块示例 (单 FROM all-in-one, 编译产物隔离):
+  ARG BUILD_PACKAGES=golang-go
   FROM debian/13
   NAME my-app
   RUN apt-get update && apt-get install -y ca-certificates mysql-server
 
   TEMP builder
-    RUN apt-get update && apt-get install -y golang-go
+    RUN apt-get update && apt-get install -y "$BUILD_PACKAGES"
     WORKDIR /src
     COPY ./main.go .
     RUN go build -o app .
@@ -346,7 +361,7 @@ echo "✔ 镜像源已切换为 %s"`,
 // buildImage 执行多阶段构建流程：按顺序构建各阶段，最终阶段发布为镜像。
 // 中间阶段的容器保持运行 (供后续阶段 COPY --from 引用)，最终统一清理。
 // 单阶段 Incusfile (只有一个 FROM) 走相同的代码路径，行为与旧版一致。
-func buildImage(client *IncusClient, f *Incusfile, alias string, networkMode NetworkMode) error {
+func buildImage(client *IncusClient, f *Incusfile, alias string, networkMode NetworkMode, permission PermissionMode) error {
 	stages := f.Stages
 	contextDir := filepath.Dir(f.Path)
 	stageContainers := make([]string, len(stages))
@@ -384,7 +399,7 @@ func buildImage(client *IncusClient, f *Incusfile, alias string, networkMode Net
 		fmt.Printf("\n▶ [%d/%d] %s %q (镜像 %s) ...\n", si+1, totalStages, role, stageLabel, stage.From)
 
 		// 启动阶段容器
-		if err := client.LaunchWithNetworkAndPermissionAndFingerprint(stage.From, stage.BaseFingerprint, stageContainer, networkMode, PermissionNormal); err != nil {
+		if err := client.LaunchWithNetworkAndPermissionAndFingerprint(stage.From, stage.BaseFingerprint, stageContainer, networkMode, permission); err != nil {
 			return fmt.Errorf("启动阶段 %d 容器失败: %w", si+1, err)
 		}
 		actualBase, err := client.BaseImageFingerprint(stageContainer)
@@ -414,7 +429,7 @@ func buildImage(client *IncusClient, f *Incusfile, alias string, networkMode Net
 
 		// 执行步骤
 		workdir := "/"
-		runEnv := map[string]string{}
+		runEnv := buildArgEnvironment(f.Args)
 		var collectedEnvs []EnvSpec
 		total := len(stage.Steps)
 		for i, step := range stage.Steps {

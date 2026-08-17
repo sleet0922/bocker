@@ -40,4 +40,10 @@ complete_words template install --permission ""
 contains normal
 contains super
 
+complete_words image build --
+contains --build-arg
+
+complete_words image build --build-arg ""
+[[ ${#COMPREPLY[@]} -eq 0 ]]
+
 echo "Bash completion tests passed"

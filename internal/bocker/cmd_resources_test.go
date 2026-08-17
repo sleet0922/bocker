@@ -74,6 +74,24 @@ func TestRemovedBuildFlagsAreRejected(t *testing.T) {
 	}
 }
 
+func TestBuildPermissionFlagIsAccepted(t *testing.T) {
+	if err := CmdBuild([]string{"--permission", "super", "--help"}); err != nil {
+		t.Fatalf("build --permission super --help: %v", err)
+	}
+	if err := CmdBuild([]string{"--permission", "root", "--help"}); err == nil {
+		t.Fatal("build accepted an invalid permission value")
+	}
+}
+
+func TestBuildArgFlagIsAcceptedByHelp(t *testing.T) {
+	if err := CmdBuild([]string{"--build-arg", "VERSION=18", "--help"}); err != nil {
+		t.Fatalf("build --build-arg VERSION=18 --help: %v", err)
+	}
+	if err := CmdBuild([]string{"--build-arg", "VERSION", "--help"}); err == nil {
+		t.Fatal("build accepted --build-arg without KEY=VALUE")
+	}
+}
+
 func TestRemovedInstallAndRunSyntaxIsRejected(t *testing.T) {
 	if err := CmdInstall([]string{"debian:12", "demo"}); err == nil {
 		t.Fatal("positional install container name unexpectedly succeeded")
