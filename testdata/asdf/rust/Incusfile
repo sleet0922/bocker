@@ -1,0 +1,41 @@
+ARG RUST_VERSION=1.89.0
+ARG DEBIAN_MIRROR=https://mirrors.tuna.tsinghua.edu.cn
+
+FROM debian/13
+NAME bocker-asdf-rust-e2e
+NETWORK nat
+
+TEMP builder
+RUN rm -f /etc/apt/sources.list.d/debian.sources && \
+    printf '%s\n' \
+      "deb $DEBIAN_MIRROR/debian trixie main" \
+      "deb $DEBIAN_MIRROR/debian trixie-updates main" \
+      "deb $DEBIAN_MIRROR/debian-security trixie-security main" \
+      > /etc/apt/sources.list && \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      build-essential \
+      ca-certificates \
+      curl \
+      git
+ENV RUSTUP_DIST_SERVER=https://rsproxy.cn
+ENV RUSTUP_UPDATE_ROOT=https://rsproxy.cn/rustup
+ASDF rust ${RUST_VERSION}
+WORKDIR /src
+COPY Cargo.toml ./Cargo.toml
+COPY src ./src
+RUN cargo test --release && \
+    cargo build --release && \
+    mkdir -p /out && \
+    cp target/release/bocker-asdf-rust-e2e /out/app && \
+    rustc --version > /out/version.txt
+END
+
+WORKDIR /opt/bocker-asdf-test
+COPY --from=builder /out/app /usr/local/bin/bocker-asdf-rust-e2e
+COPY --from=builder /out/version.txt ./version.txt
+RUN test "$(/usr/local/bin/bocker-asdf-rust-e2e)" = \
+      '{"language":"rust","version":"1.89.0","checksum":28}' && \
+    grep -F 'rustc 1.89.0 ' version.txt && \
+    test ! -e /opt/bocker-asdf
+AUTOSTART off

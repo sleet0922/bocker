@@ -1,0 +1,32 @@
+ARG NODE_VERSION=24.19.0
+ARG DEBIAN_MIRROR=https://mirrors.tuna.tsinghua.edu.cn
+
+FROM debian/13
+NAME bocker-asdf-node-e2e
+NETWORK nat
+
+TEMP builder
+RUN rm -f /etc/apt/sources.list.d/debian.sources && \
+    printf '%s\n' \
+      "deb $DEBIAN_MIRROR/debian trixie main" \
+      "deb $DEBIAN_MIRROR/debian trixie-updates main" \
+      "deb $DEBIAN_MIRROR/debian-security trixie-security main" \
+      > /etc/apt/sources.list
+ASDF node ${NODE_VERSION}
+WORKDIR /src
+COPY package.json ./package.json
+COPY app.js ./app.js
+COPY app.test.js ./app.test.js
+RUN mkdir -p /out && \
+    npm test && \
+    node app.js > /out/result.json && \
+    node --version > /out/version.txt
+END
+
+WORKDIR /opt/bocker-asdf-test
+COPY --from=builder /out/result.json ./result.json
+COPY --from=builder /out/version.txt ./version.txt
+RUN grep -Fx 'v24.19.0' version.txt && \
+    grep -F '"language":"node"' result.json && \
+    test ! -e /opt/bocker-asdf
+AUTOSTART off
