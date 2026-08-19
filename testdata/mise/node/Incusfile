@@ -2,11 +2,11 @@ ARG NODE_VERSION=24.19.0
 MIRROR china
 
 FROM debian/13
-NAME bocker-asdf-node-e2e
+NAME bocker-mise-node-e2e
 NETWORK nat
 
 TEMP builder
-ASDF node ${NODE_VERSION}
+MISE node ${NODE_VERSION}
 WORKDIR /src
 COPY package.json ./package.json
 COPY app.js ./app.js
@@ -17,10 +17,10 @@ RUN mkdir -p /out && \
     node --version > /out/version.txt
 END
 
-WORKDIR /opt/bocker-asdf-test
+WORKDIR /opt/bocker-mise-test
 COPY --from=builder /out/result.json ./result.json
 COPY --from=builder /out/version.txt ./version.txt
 RUN grep -Fx 'v24.19.0' version.txt && \
     grep -F '"language":"node"' result.json && \
-    test ! -e /opt/bocker-asdf
+    test ! -e /opt/bocker-mise
 AUTOSTART off

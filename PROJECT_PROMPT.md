@@ -48,8 +48,8 @@ broker 转发必须是流式的：长时间运行的 `image build`、`template i
 要在执行过程中持续把 stdout/stderr 转发给调用者，不能等整个子进程结束后才一次性返回，
 否则用户会误以为命令没有反应。
 
-Incusfile 的 `ASDF <tool> <exact-version>` 只允许位于 `TEMP ... END`。Bocker 自动
-引导固定且校验过的 asdf，在该临时阶段后续步骤中提供工具链；asdf、插件和语言运行时
+Incusfile 的 `MISE <tool> <exact-version>` 只允许位于 `TEMP ... END`。Bocker 自动
+引导固定且校验过的 mise，在该临时阶段后续步骤中提供工具链；mise、工具后端和语言运行时
 不得进入最终镜像。`go`/`node` 快捷名、精确版本校验和 ARG 展开属于稳定语义。
 
 `MIRROR china` 必须位于首个 `FROM` 前，并为最终阶段和所有临时/多构建阶段显式固定

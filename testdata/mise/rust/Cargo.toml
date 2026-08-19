@@ -1,5 +1,5 @@
 [package]
-name = "bocker-asdf-rust-e2e"
+name = "bocker-mise-rust-e2e"
 version = "0.1.0"
 edition = "2024"
 

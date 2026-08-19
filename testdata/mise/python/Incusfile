@@ -2,7 +2,7 @@ ARG PYTHON_VERSION=3.13.7
 MIRROR china
 
 FROM debian/13
-NAME bocker-asdf-python-e2e
+NAME bocker-mise-python-e2e
 NETWORK nat
 
 TEMP builder
@@ -18,7 +18,7 @@ PKG build-essential \
     libssl-dev \
     xz-utils \
     zlib1g-dev
-ASDF python ${PYTHON_VERSION}
+MISE python ${PYTHON_VERSION}
 WORKDIR /src
 COPY app.py ./app.py
 COPY test_app.py ./test_app.py
@@ -30,10 +30,10 @@ RUN test "$PIP_INDEX_URL" = https://pypi.tuna.tsinghua.edu.cn/simple && \
     python --version > /out/version.txt
 END
 
-WORKDIR /opt/bocker-asdf-test
+WORKDIR /opt/bocker-mise-test
 COPY --from=builder /out/result.json ./result.json
 COPY --from=builder /out/version.txt ./version.txt
 RUN grep -Fx 'Python 3.13.7' version.txt && \
     grep -F '"language": "python"' result.json && \
-    test ! -e /opt/bocker-asdf
+    test ! -e /opt/bocker-mise
 AUTOSTART off

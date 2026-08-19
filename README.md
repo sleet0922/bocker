@@ -325,7 +325,7 @@ AppArmor 和 capability 隔离。`super` 会启用特权容器、嵌套 LXC、�
 | `ENTRYPOINT ["..."]` | 设置固定应用命令（仅 JSON exec form） |
 | `CMD ["..."]` | 设置默认命令或参数（仅 JSON exec form） |
 | `TEMP <name> ... END` | 在临时阶段安装构建工具并复制产物 |
-| `ASDF <tool> <version>` | 在 `TEMP` 内通过内置 asdf 安装精确版本工具链 |
+| `MISE <tool> <version>` | 在 `TEMP` 内通过内置 mise 安装精确版本工具链 |
 
 ### 国内软件源与软件包
 
@@ -346,7 +346,7 @@ NETWORK nat
 
 TEMP builder
   PKG build-essential
-  ASDF node ${NODE_VERSION}
+  MISE node ${NODE_VERSION}
   WORKDIR /src
   COPY package.json package-lock.json ./
   RUN npm ci
@@ -361,12 +361,12 @@ COPY --from=builder /src/dist /opt/web-api/dist
 这两条指令用于消除重复的包管理样板；第三方仓库、密钥校验、数据库初始化等具有明确
 业务语义的流程仍使用 `RUN`，避免 Bocker 隐式改变供应链和服务配置。
 
-### TEMP 与 ASDF
+### TEMP 与 MISE
 
-`ASDF` 只允许出现在 `TEMP ... END` 内。Bocker 会在第一次遇到该指令时从官方 release
-下载并校验 asdf v0.20.0；官方地址超时后使用国内代理。随后安装语言插件和指定版本，
-并把 shims 加入该临时阶段后续 `RUN` 的 `PATH`。临时阶段结束后，asdf、插件、语言
-运行时和下载缓存都不会进入最终镜像。
+`MISE` 只允许出现在 `TEMP ... END` 内。Bocker 会在第一次遇到该指令时从官方 release
+下载并校验 mise v2026.8.8；官方地址超时后使用国内代理。随后通过 mise registry
+安装指定版本，并把 shims 加入该临时阶段后续 `RUN` 的 `PATH`。临时阶段结束后，mise、
+工具和下载缓存都不会进入最终镜像。
 
 ```text
 ARG GO_VERSION=1.26.6
@@ -375,7 +375,7 @@ FROM debian/13
 NAME my-app
 
 TEMP builder
-  ASDF go ${GO_VERSION}
+  MISE go ${GO_VERSION}
   WORKDIR /src
   COPY go.mod go.sum ./
   RUN go mod download
@@ -386,19 +386,22 @@ END
 COPY --from=builder /out/app /usr/local/bin/app
 ```
 
-`go` 和 `node` 分别是 asdf 插件 `golang` 和 `nodejs` 的快捷名，也可以直接写
-`ASDF golang 1.26.6`、`ASDF nodejs 24.19.0`。同一个 TEMP 可声明多个工具，asdf
-只安装一次。其他插件可直接使用 asdf 官方短名，例如 `ASDF python 3.13.7`；如果插件
-需要编译器或系统开发库，应在 ASDF 前用 `RUN` 安装这些额外依赖。
+`go`、`node`、`python` 和 `rust` 是 mise 的核心工具名，`golang`、`nodejs` 和
+`postgresql` 也提供兼容别名。同一个 TEMP 可声明多个工具，mise 只引导一次。
+mise registry 还提供 `redis` 和 `postgres` 等工具后端，例如 `MISE redis 7.2.5`；
+它们适合构建期命令或测试。若要在最终容器中运行 systemd 服务，仍应使用发行版的
+`PKG`/PGDG 包，因为 mise 安装的是工具版本，不会自动创建 Debian 服务、用户或数据库
+cluster。如果工具需要编译器或系统开发库，应在 MISE 前用 `PKG` 安装这些依赖。
 
-版本必须是精确值，`latest` 和 `system` 会被拒绝。`ASDF` 支持 `${ARG}`，因此可用
+版本必须是精确值，`latest` 和 `system` 会被拒绝。`MISE` 支持 `${ARG}`，因此可用
 `--build-arg GO_VERSION=...` 覆盖。Go 后续命令默认使用 `goproxy.cn` 和国内校验服务；
-Node.js、node-build 和 npm 默认使用国内镜像/代理，Rust 的 rustup 与 Cargo 默认使用
+Node.js 和 npm 默认使用国内镜像/代理，Rust 的 rustup 与 Cargo 默认使用
 rsproxy，Python 的 pip 默认使用清华 PyPI；Python 运行时源码及其他没有兼容镜像结构的
 工具保留上游下载。Incusfile 中已有的同名 ARG/ENV 优先于这些
-默认值。`ASDF_DOWNLOAD_PROXY` 和 `ASDF_PLUGIN_PROXY` 可分别覆盖 release 下载与插件
-Git 回退地址；它们既可声明为构建期 `ARG`，也可在 TEMP 内的 ASDF 之前声明为 `ENV`。
-asdf 插件会以构建容器 root 身份执行，只使用可信插件。
+默认值。Go 工具包保留官方 checksum 兼容下载地址，Go 模块仍默认使用 `goproxy.cn`；
+`MISE_DOWNLOAD_PROXY` 可覆盖 mise release 下载回退地址；它既可声明为构建期
+`ARG`，也可在 TEMP 内的 MISE 之前声明为 `ENV`。mise 后端会以构建容器 root 身份
+执行，只使用可信工具后端。
 
 ### 最小示例
 
@@ -435,7 +438,7 @@ ENV APP_ENV=production
 RUN test "$APP_ENV" = production
 ```
 
-在 `MIRROR`、`FROM`、`NAME`、`NETWORK`、`WORKDIR`、`PKG`、`COPY`、`ENV`、`ASDF`、`EXPOSE`、
+在 `MIRROR`、`FROM`、`NAME`、`NETWORK`、`WORKDIR`、`PKG`、`COPY`、`ENV`、`MISE`、`EXPOSE`、
 `DOMAIN`、`AUTOSTART`、`ENTRYPOINT` 和 `CMD` 中使用 `${NAME}`。`RUN` 由
 shell 执行，可使用 `$NAME` 或 `${NAME}`。需要保留字面量 `${NAME}` 时，在非
 `RUN` 指令中写成 `$${NAME}`。
@@ -501,7 +504,7 @@ EXPOSE 8080/tcp
 ```
 
 `COPY --from` 只能引用当前阶段之前的阶段。`TEMP name ... END` 适合单个
-基础镜像下隔离编译工具链；其中可用 `ASDF` 准备语言环境，临时阶段不会进入最终镜像。
+基础镜像下隔离编译工具链；其中可用 `MISE` 准备语言环境，临时阶段不会进入最终镜像。
 `EXPOSE`、`DOMAIN`、
 `AUTOSTART`、`ENTRYPOINT` 和 `CMD` 只允许出现在最终阶段；`EXPOSE` 使用同号
 宿主机端口，因此同一宿主机上不能同时运行声明相同端口的两个实例。
