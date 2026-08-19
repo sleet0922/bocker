@@ -17,12 +17,12 @@ import (
 //	ARG <KEY>[=<VALUE>]             全局构建参数 (必须位于首个 FROM 前，不写入镜像)
 //	MIRROR china|tuna|<url>         全局软件源，作用于最终阶段和所有构建阶段
 //	FROM <image> [AS <name>]        基础镜像，开始新构建阶段 (多阶段)
-//	NAME <name>                     镜像别名 + 容器名 (全局，作用于最终镜像)
-//	NETWORK bridge|nat              网络模式 (全局，默认 bridge)
+//	NAME <name>                     镜像别名 + 容器名 (全局，首个 FROM 前)
+//	NETWORK bridge|nat              网络模式 (全局，首个 FROM 前，默认 bridge)
 //	WORKDIR <path>                  设置后续 RUN/COPY 的工作目录
 //	RUN <command>                   在容器内执行 shell 命令 (通过 /bin/sh -c)
 //	PKG <package> ...               通过 apt/apk 安装软件包并清理索引
-//	COPY [--from=<stage>] <src> <dst>  从宿主机或指定阶段复制文件/目录
+//	COPY [--from=<stage>] <src>... <dst>  从宿主机或指定阶段复制文件/目录
 //	    --from 省略时从宿主机复制；指定阶段名或数字索引时从该阶段容器复制
 //	ENV <KEY>=<VALUE>               设置环境变量 (写入 /etc/environment + profile.d)
 //	EXPOSE <port>[/<proto>] ...     声明端口映射 (运行时自动创建)
@@ -82,9 +82,12 @@ type MiseSpec struct {
 }
 
 type CopySpec struct {
-	Src  string
-	Dst  string
-	From string // --from=stage_name 或 stage_index, 空表示从宿主机复制
+	// Sources contains one or more context/stage paths. Src is retained as a
+	// compatibility alias for callers that only handle the single-source form.
+	Sources []string
+	Src     string
+	Dst     string
+	From    string // --from=stage_name 或 stage_index, 空表示从宿主机复制
 }
 
 type EnvSpec struct {
@@ -298,6 +301,9 @@ func parseIncusfileWithBuildArgs(path string, overrides map[string]string) (*Inc
 			if currentStage == nil {
 				return nil, fmt.Errorf("line %d: TEMP 必须在 FROM 之后", lineNo)
 			}
+			if len(currentStage.Steps) > 0 {
+				return nil, fmt.Errorf("line %d: TEMP 必须出现在普通阶段步骤之前；请先声明所有 TEMP，再写 RUN/PKG/COPY/ENV/WORKDIR", lineNo)
+			}
 			nameFields := strings.Fields(payload)
 			if len(nameFields) == 0 {
 				return nil, fmt.Errorf("line %d: TEMP 需要名称 (如 TEMP builder)", lineNo)
@@ -325,8 +331,11 @@ func parseIncusfileWithBuildArgs(path string, overrides map[string]string) (*Inc
 			inTemp = false
 			currentTemp = nil
 		case "NAME":
-			if inTemp {
-				return nil, fmt.Errorf("line %d: NAME 不能位于 TEMP 块内", lineNo)
+			if currentStage != nil || inTemp {
+				return nil, fmt.Errorf("line %d: NAME 必须位于第一个 FROM 之前", lineNo)
+			}
+			if f.Name != "" {
+				return nil, fmt.Errorf("line %d: NAME 只能声明一次", lineNo)
 			}
 			parts, err := shellSplit(payload)
 			if err != nil || len(parts) != 1 {
@@ -341,8 +350,11 @@ func parseIncusfileWithBuildArgs(path string, overrides map[string]string) (*Inc
 			}
 			f.Name = parts[0]
 		case "NETWORK":
-			if inTemp {
-				return nil, fmt.Errorf("line %d: NETWORK 不能位于 TEMP 块内", lineNo)
+			if currentStage != nil || inTemp {
+				return nil, fmt.Errorf("line %d: NETWORK 必须位于第一个 FROM 之前", lineNo)
+			}
+			if f.Network != "" {
+				return nil, fmt.Errorf("line %d: NETWORK 只能声明一次", lineNo)
 			}
 			if strings.TrimSpace(payload) == "" {
 				return nil, fmt.Errorf("line %d: NETWORK 需要 bridge 或 nat", lineNo)
@@ -415,19 +427,21 @@ func parseIncusfileWithBuildArgs(path string, overrides map[string]string) (*Inc
 			if targetStage() == nil {
 				return nil, fmt.Errorf("line %d: COPY 必须在 FROM 之后", lineNo)
 			}
-			from, src, dst, err := parseCopyPayload(payload)
+			from, sources, dst, err := parseCopyPayload(payload)
 			if err != nil {
 				return nil, fmt.Errorf("line %d: %w", lineNo, err)
 			}
-			src, err = expand(src, true)
-			if err != nil {
-				return nil, err
+			for i := range sources {
+				sources[i], err = expand(sources[i], true)
+				if err != nil {
+					return nil, err
+				}
 			}
 			dst, err = expand(dst, true)
 			if err != nil {
 				return nil, err
 			}
-			targetStage().Steps = append(targetStage().Steps, BuildStep{Kind: "COPY", Copy: CopySpec{Src: src, Dst: dst, From: from}})
+			targetStage().Steps = append(targetStage().Steps, BuildStep{Kind: "COPY", Copy: CopySpec{Sources: sources, Src: sources[0], Dst: dst, From: from}})
 		case "ENV":
 			if targetStage() == nil {
 				return nil, fmt.Errorf("line %d: ENV 必须在 FROM 之后", lineNo)
@@ -725,46 +739,56 @@ func validateFinalStageRuntimeDirectives(stages []Stage) error {
 	return nil
 }
 
-// parseCopyPayload 解析 COPY 指令的 payload，支持 --from 标志和引号路径。
-// 格式: [--from=<stage>] <src> <dst>
+// parseCopyPayload 解析 COPY 指令的 payload，支持 --from 标志、多个源和引号路径。
+// 格式: [--from=<stage>] <src>... <dst>
 // --from 可以是阶段名 (如 "builder") 或数字索引 (如 "0")
 // 示例:
 //
 //	COPY ./index.html /var/www/html/index.html
 //	COPY --from=builder /app/bin/app /usr/local/bin/app
 //	COPY --from=0 /src/public /app/public
-func parseCopyPayload(payload string) (from, src, dst string, err error) {
+func parseCopyPayload(payload string) (from string, sources []string, dst string, err error) {
 	rest := strings.TrimSpace(payload)
 	// 检查 --from= 标志
 	if strings.HasPrefix(rest, "--from=") {
 		spaceIdx := strings.IndexAny(rest, " \t")
 		if spaceIdx < 0 {
-			return "", "", "", fmt.Errorf("COPY --from 需要源和目标路径")
+			return "", nil, "", fmt.Errorf("COPY --from 需要源和目标路径")
 		}
 		from = strings.TrimPrefix(rest[:spaceIdx], "--from=")
 		if from == "" {
-			return "", "", "", fmt.Errorf("COPY --from 的阶段名不能为空")
+			return "", nil, "", fmt.Errorf("COPY --from 的阶段名不能为空")
 		}
 		if _, numericErr := strconv.Atoi(from); numericErr != nil {
 			if err := validateStageName(from); err != nil {
-				return "", "", "", fmt.Errorf("COPY --from 无效: %w", err)
+				return "", nil, "", fmt.Errorf("COPY --from 无效: %w", err)
 			}
 		} else if strings.HasPrefix(from, "-") {
-			return "", "", "", fmt.Errorf("COPY --from 的阶段索引不能为负数")
+			return "", nil, "", fmt.Errorf("COPY --from 的阶段索引不能为负数")
 		}
 		rest = strings.TrimLeft(rest[spaceIdx:], " \t")
 	}
 	fields, err := shellSplit(rest)
 	if err != nil {
-		return "", "", "", fmt.Errorf("COPY 用法: COPY [--from=<stage>] <src> <dst>: %w", err)
+		return "", nil, "", fmt.Errorf("COPY 用法: COPY [--from=<stage>] <src>... <dst>: %w", err)
 	}
-	if len(fields) != 2 {
-		return "", "", "", fmt.Errorf("COPY 用法: COPY [--from=<stage>] <src> <dst> (得到 %d 个参数)", len(fields))
+	if len(fields) < 2 {
+		return "", nil, "", fmt.Errorf("COPY 用法: COPY [--from=<stage>] <src>... <dst> (得到 %d 个参数)", len(fields))
 	}
-	if fields[0] == "" || fields[1] == "" {
-		return "", "", "", fmt.Errorf("COPY 的源路径和目标路径不能为空")
+	sources = fields[:len(fields)-1]
+	dst = fields[len(fields)-1]
+	if dst == "" {
+		return "", nil, "", fmt.Errorf("COPY 的目标路径不能为空")
 	}
-	return from, fields[0], fields[1], nil
+	for _, source := range sources {
+		if source == "" {
+			return "", nil, "", fmt.Errorf("COPY 的源路径不能为空")
+		}
+	}
+	if len(sources) > 1 && !strings.HasSuffix(dst, "/") && dst != "." {
+		return "", nil, "", fmt.Errorf("COPY 多个源时目标必须是目录 (以 / 结尾或写 .)")
+	}
+	return from, sources, dst, nil
 }
 
 // shellSplit 按 shell 风格处理空白、单双引号和反斜杠，但不执行变量展开。

@@ -1,9 +1,9 @@
 ARG NODE_VERSION=24.19.0
 MIRROR china
-
-FROM debian/13
 NAME bocker-mise-node-e2e
 NETWORK nat
+
+FROM debian/13
 
 TEMP builder
 MISE node ${NODE_VERSION}

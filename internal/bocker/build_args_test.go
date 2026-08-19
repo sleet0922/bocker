@@ -45,9 +45,9 @@ ARG BASE=${DISTRO}/3.24
 ARG FLAVOR=default
 ARG SOURCE=artifact
 ARG PORT=8080
-FROM ${BASE}
 NAME arg-${FLAVOR}
 NETWORK nat
+FROM ${BASE}
 WORKDIR /opt/${FLAVOR}
 COPY ${SOURCE} /tmp/${SOURCE}
 RUN test "$FLAVOR" = override

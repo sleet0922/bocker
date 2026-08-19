@@ -1,9 +1,9 @@
 ARG PYTHON_VERSION=3.13.7
 MIRROR china
-
-FROM debian/13
 NAME bocker-mise-python-e2e
 NETWORK nat
+
+FROM debian/13
 
 TEMP builder
 PKG build-essential \

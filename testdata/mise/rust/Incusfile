@@ -1,9 +1,9 @@
 ARG RUST_VERSION=1.89.0
 MIRROR china
-
-FROM debian/13
 NAME bocker-mise-rust-e2e
 NETWORK nat
+
+FROM debian/13
 
 TEMP builder
 PKG build-essential ca-certificates curl git

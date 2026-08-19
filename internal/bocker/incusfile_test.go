@@ -22,9 +22,8 @@ func writeIncusfile(t *testing.T, name, content string) string {
 }
 
 func TestTempBlockBasic(t *testing.T) {
-	content := `FROM debian/13
-NAME my-app
-RUN apt-get install -y ca-certificates
+	content := `NAME my-app
+FROM debian/13
 
 TEMP builder
   RUN apt-get install -y golang-go
@@ -33,6 +32,7 @@ TEMP builder
   RUN go build -o app .
 END
 
+RUN apt-get install -y ca-certificates
 COPY --from=builder /src/app /usr/local/bin/app
 EXPOSE 8080/tcp
 AUTOSTART on
@@ -148,6 +148,73 @@ RUN echo final
 	}
 }
 
+func TestTempMustBeDeclaredBeforeNormalSteps(t *testing.T) {
+	p := writeIncusfile(t, "Incusfile", `FROM debian/13
+RUN echo final
+TEMP builder
+  RUN echo build
+END
+`)
+	if _, err := parseIncusfile(p); err == nil || !strings.Contains(err.Error(), "TEMP 必须出现在普通阶段步骤之前") {
+		t.Fatalf("应拒绝在普通步骤后声明 TEMP，得到 %v", err)
+	}
+}
+
+func TestGlobalDirectivesMustPrecedeFrom(t *testing.T) {
+	for _, content := range []string{
+		"FROM debian/13\nNAME app\n",
+		"FROM debian/13\nNETWORK nat\n",
+		"NAME one\nNAME two\nFROM debian/13\n",
+		"NETWORK nat\nNETWORK bridge\nFROM debian/13\n",
+	} {
+		p := writeIncusfile(t, "Incusfile", content)
+		if _, err := parseIncusfile(p); err == nil {
+			t.Fatalf("应拒绝全局指令布局:\n%s", content)
+		}
+	}
+}
+
+func TestCopySupportsMultipleSources(t *testing.T) {
+	p := writeIncusfile(t, "Incusfile", "FROM debian/13\nCOPY package.json package-lock.json ./\n")
+	f, err := parseIncusfile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	copyStep := f.Steps[0]
+	if !reflect.DeepEqual(copyStep.Copy.Sources, []string{"package.json", "package-lock.json"}) || copyStep.Copy.Dst != "./" {
+		t.Fatalf("多源 COPY = %#v", copyStep.Copy)
+	}
+	for _, content := range []string{
+		"FROM debian/13\nCOPY a b /tmp/out\n",
+		"FROM debian/13\nCOPY a\n",
+	} {
+		p := writeIncusfile(t, "Incusfile", content)
+		if _, err := parseIncusfile(p); err == nil {
+			t.Fatalf("应拒绝非法多源 COPY:\n%s", content)
+		}
+	}
+}
+
+func TestRealHelloProjectIncusfile(t *testing.T) {
+	path := filepath.Join("..", "..", "testdata", "projects", "hello", "Incusfile")
+	f, err := parseIncusfile(path)
+	if err != nil {
+		t.Fatalf("真实项目 Incusfile 解析失败: %v", err)
+	}
+	if f.Name != "bocker-hello-project" || f.Network != "nat" || len(f.Stages) != 2 {
+		t.Fatalf("真实项目全局配置/阶段错误: name=%q network=%q stages=%d", f.Name, f.Network, len(f.Stages))
+	}
+	if got := f.Stages[0].Name; got != "builder" {
+		t.Fatalf("builder 阶段名 = %q", got)
+	}
+	if got := f.Stages[0].Steps[1].Copy.Sources; !reflect.DeepEqual(got, []string{"hello.sh", "message.txt"}) {
+		t.Fatalf("builder 多源 COPY = %#v", got)
+	}
+	if got := f.Stages[1].Steps[0].Copy.Sources; !reflect.DeepEqual(got, []string{"/out.txt"}) {
+		t.Fatalf("最终阶段 COPY 源 = %#v", got)
+	}
+}
+
 func TestEndWithoutTemp(t *testing.T) {
 	content := `FROM debian/13
 RUN echo hi
@@ -161,7 +228,7 @@ END
 }
 
 func TestNetworkDirective(t *testing.T) {
-	p := writeIncusfile(t, "Incusfile", "FROM debian:12\nNETWORK nat\n")
+	p := writeIncusfile(t, "Incusfile", "NETWORK nat\nFROM debian:12\n")
 	f, err := parseIncusfile(p)
 	if err != nil {
 		t.Fatalf("解析 NETWORK 失败: %v", err)
@@ -172,7 +239,7 @@ func TestNetworkDirective(t *testing.T) {
 }
 
 func TestNetworkDirectiveRejectsIncusNames(t *testing.T) {
-	p := writeIncusfile(t, "Incusfile", "FROM debian:12\nNETWORK macvlan\n")
+	p := writeIncusfile(t, "Incusfile", "NETWORK macvlan\nFROM debian:12\n")
 	if _, err := parseIncusfile(p); err == nil {
 		t.Fatal("NETWORK macvlan 应被拒绝，用户接口只支持 bridge/nat")
 	}
@@ -257,10 +324,13 @@ func TestDuplicateExposeRejected(t *testing.T) {
 }
 
 func TestCopyContextPathAndFallback(t *testing.T) {
-	for _, source := range []string{"../outside", "/etc/passwd", ".", "sub/../../outside"} {
+	for _, source := range []string{"../outside", "/etc/passwd", "sub/../../outside"} {
 		if _, err := copyContextRelativePath("/tmp/context", source); err == nil {
 			t.Errorf("copyContextRelativePath(%q) should fail", source)
 		}
+	}
+	if got, err := copyContextRelativePath("/tmp/context", "."); err != nil || got != "." {
+		t.Fatalf("根目录 COPY 源应允许: %q, %v", got, err)
 	}
 	contextDir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(contextDir, "nested"), 0o755); err != nil {

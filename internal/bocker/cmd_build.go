@@ -158,25 +158,24 @@ Incusfile 指令:
   ARG <KEY>[=<VALUE>]        全局构建参数 (首个 FROM 前声明，不写入镜像)
   MIRROR china|tuna|<url>    为所有阶段固定国内或自定义 apt/apk 软件源
   FROM <image> [AS <name>]   基础镜像，开始新构建阶段 (多阶段)
-  NAME <name>                镜像别名 + 容器名 (全局)
-  NETWORK bridge|nat         网络模式 (bridge=Incus macvlan, nat=Incus bridge)
+  NAME <name>                镜像别名 + 容器名 (全局，首个 FROM 前)
+  NETWORK bridge|nat         网络模式 (全局，首个 FROM 前)
   WORKDIR <path>             设置后续 RUN/COPY 的工作目录
   RUN <command>              在容器内执行 shell 命令
   PKG <package...>           通过 apt/apk 安装软件包并自动清理索引
-  COPY [--from=<stage>] <src> <dst>  从宿主机或指定阶段复制
+  COPY [--from=<stage>] <src>... <dst>  从宿主机或指定阶段复制
   ENV <KEY>=<VALUE>          设置环境变量
   EXPOSE <port>[/<proto>]    声明端口映射
   DOMAIN <domain>            域名映射
   AUTOSTART on|off           开机自启动
-  TEMP <name> ... END        临时构建块 (隔离编译工具链, 不进最终镜像)
+  TEMP <name> ... END        临时构建块 (须在普通步骤前，按声明顺序执行)
   MISE <tool> <version>      TEMP 内安装精确版本工具链 (如 MISE go 1.26.6)
 
 TEMP 块示例 (单 FROM all-in-one, 编译产物隔离):
   ARG GO_VERSION=1.26.6
   MIRROR china
-  FROM debian/13
   NAME my-app
-  PKG ca-certificates mysql-server
+  FROM debian/13
 
   TEMP builder
     MISE go ${GO_VERSION}
@@ -185,6 +184,7 @@ TEMP 块示例 (单 FROM all-in-one, 编译产物隔离):
     RUN go build -o app .
   END
 
+  PKG ca-certificates mysql-server
   COPY --from=builder /src/app /usr/local/bin/app
   EXPOSE 8080/tcp
   AUTOSTART on
@@ -206,8 +206,8 @@ TEMP 块示例 (单 FROM all-in-one, 编译产物隔离):
 
 单阶段示例:
   MIRROR china
-  FROM debian/12
   NAME my-nginx
+  FROM debian/12
   PKG nginx
   COPY ./index.html /var/www/html/index.html
   EXPOSE 80/tcp
@@ -482,22 +482,31 @@ func buildImage(client *IncusClient, f *Incusfile, alias string, networkMode Net
 				if step.Copy.From != "" {
 					fromLabel = "阶段 " + step.Copy.From
 				}
-				fmt.Printf("  [阶段%d %d/%d] COPY (from %s) %s -> %s\n", si+1, i+1, total, fromLabel, step.Copy.Src, step.Copy.Dst)
+				sources := step.Copy.Sources
+				if len(sources) == 0 && step.Copy.Src != "" {
+					sources = []string{step.Copy.Src}
+				}
+				fmt.Printf("  [阶段%d %d/%d] COPY (from %s) %s -> %s\n", si+1, i+1, total, fromLabel, strings.Join(sources, " "), step.Copy.Dst)
 				dst := resolveContainerPath(workdir, step.Copy.Dst)
-				if step.Copy.From != "" {
-					// 跨容器复制: --from=<stage_name 或 数字索引>
-					srcStageIdx, err := resolvePriorStage(stages, si, step.Copy.From)
-					if err != nil {
-						return err
-					}
-					srcContainer := stageContainers[srcStageIdx]
-					if err := client.CopyBetweenContainers(srcContainer, step.Copy.Src, stageContainer, dst); err != nil {
-						return fmt.Errorf("COPY --from=%s 失败: %w", step.Copy.From, err)
-					}
-				} else {
-					// 从宿主机复制
-					if err := applyCopyDst(client, stageContainer, step.Copy, contextDir, dst); err != nil {
-						return err
+				for _, source := range sources {
+					copySpec := step.Copy
+					copySpec.Sources = []string{source}
+					copySpec.Src = source
+					if step.Copy.From != "" {
+						// 跨容器复制: --from=<stage_name 或 数字索引>
+						srcStageIdx, err := resolvePriorStage(stages, si, step.Copy.From)
+						if err != nil {
+							return err
+						}
+						srcContainer := stageContainers[srcStageIdx]
+						if err := client.CopyBetweenContainers(srcContainer, source, stageContainer, dst); err != nil {
+							return fmt.Errorf("COPY --from=%s 失败: %w", step.Copy.From, err)
+						}
+					} else {
+						// 从宿主机复制
+						if err := applyCopyDst(client, stageContainer, copySpec, contextDir, dst); err != nil {
+							return err
+						}
 					}
 				}
 			case "RUN":
@@ -543,7 +552,7 @@ func buildImage(client *IncusClient, f *Incusfile, alias string, networkMode Net
 }
 
 func resolveContainerPath(workdir, destination string) string {
-	explicitDirectory := strings.HasSuffix(destination, "/")
+	explicitDirectory := strings.HasSuffix(destination, "/") || destination == "."
 	resolved := destination
 	if path.IsAbs(destination) {
 		resolved = path.Clean(destination)
@@ -894,7 +903,18 @@ func quoteEnvironmentValue(value string) string {
 
 // applyCopy executes one COPY instruction from the Incusfile context.
 func applyCopy(client *IncusClient, name string, cp CopySpec, contextDir string) error {
-	return applyCopyDst(client, name, cp, contextDir, cp.Dst)
+	sources := cp.Sources
+	if len(sources) == 0 && cp.Src != "" {
+		sources = []string{cp.Src}
+	}
+	for _, source := range sources {
+		cp.Sources = []string{source}
+		cp.Src = source
+		if err := applyCopyDst(client, name, cp, contextDir, cp.Dst); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // applyCopyDst resolves sources through a context directory file descriptor.
@@ -906,9 +926,13 @@ func applyCopyDst(client *IncusClient, name string, cp CopySpec, contextDir, dst
 	if err != nil {
 		return fmt.Errorf("解析 contextDir 失败: %w", err)
 	}
-	rel, err := copyContextRelativePath(absContext, cp.Src)
+	source := cp.Src
+	if source == "" && len(cp.Sources) > 0 {
+		source = cp.Sources[0]
+	}
+	rel, err := copyContextRelativePath(absContext, source)
 	if err != nil {
-		return fmt.Errorf("COPY 源 %q 位于构建上下文之外 (路径穿越被拒绝)", cp.Src)
+		return fmt.Errorf("COPY 源 %q 位于构建上下文之外 (路径穿越被拒绝)", source)
 	}
 	contextFD, err := unix.Open(absContext, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 	if err != nil {
@@ -923,7 +947,7 @@ func copyContextRelativePath(contextDir, source string) (string, error) {
 		return "", fmt.Errorf("absolute COPY sources are not supported")
 	}
 	rel := filepath.Clean(source)
-	if rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("source escapes context %s", contextDir)
 	}
 	return filepath.ToSlash(rel), nil
@@ -963,6 +987,9 @@ func openContextEntry(contextFD int, source string, flags int) (int, error) {
 // invariant for kernels without openat2 by walking one component at a time
 // from an already-open context directory fd.
 func openContextEntryFallback(contextFD int, source string, flags int) (int, error) {
+	if source == "." {
+		return unix.Dup(contextFD)
+	}
 	parts := strings.Split(source, "/")
 	current, err := unix.Dup(contextFD)
 	if err != nil {

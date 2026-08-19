@@ -302,7 +302,8 @@ AppArmor 和 capability 隔离。`super` 会启用特权容器、嵌套 LXC、�
 ## 7. Incusfile
 
 `Incusfile` 是 Bocker 的构建描述文件。`bocker image build` 的上下文目录就是
-`Incusfile` 所在目录，`COPY` 不能访问上下文之外的文件或符号链接。
+`Incusfile` 所在目录，`COPY` 不能访问上下文之外的文件或符号链接。多源 `COPY` 的目标
+必须是目录（以 `/` 结尾或写 `.`），例如 `COPY package.json package-lock.json ./`。
 
 ### 指令
 
@@ -311,13 +312,13 @@ AppArmor 和 capability 隔离。`super` 会启用特权容器、嵌套 LXC、�
 | `ARG KEY[=VALUE]` | 声明全局构建参数；必须位于首个 `FROM` 前，不写入最终镜像 |
 | `MIRROR china\|tuna\|<url>` | 固定所有阶段的 Debian/Ubuntu/Alpine 软件源；必须位于首个 `FROM` 前 |
 | `FROM <image>[@<64位fingerprint>] [AS <stage>]` | 基础镜像并开始一个构建阶段；发布构建可用 fingerprint 固定基础镜像 |
-| `NAME <name>` | 最终镜像别名和默认容器名 |
-| `NETWORK bridge\|nat` | 构建和创建时的网络模式 |
+| `NAME <name>` | 全局最终镜像别名和默认容器名；必须位于首个 `FROM` 前 |
+| `NETWORK bridge\|nat` | 全局构建和创建网络模式；必须位于首个 `FROM` 前 |
 | `WORKDIR <path>` | 设置后续 `RUN` 和相对 `COPY` 的工作目录 |
 | `RUN <command>` | 在构建容器内通过 `/bin/sh -c` 执行 |
 | `PKG <package...>` | 使用 apt/apk 安装软件包并自动清理包索引 |
-| `COPY <src> <dst>` | 从构建上下文复制文件 |
-| `COPY --from=<stage> <src> <dst>` | 从前置构建阶段复制产物 |
+| `COPY <src>... <dst>` | 从构建上下文复制一个或多个文件/目录 |
+| `COPY --from=<stage> <src>... <dst>` | 从前置构建阶段复制一个或多个产物 |
 | `ENV KEY=VALUE` | 设置构建阶段及最终运行容器的持久环境变量 |
 | `EXPOSE <port>[/tcp\|udp]` | 创建运行时端口映射 |
 | `DOMAIN <domain>` | 启动时更新宿主机 `/etc/hosts` |
@@ -329,7 +330,9 @@ AppArmor 和 capability 隔离。`super` 会启用特权容器、嵌套 LXC、�
 
 ### 国内软件源与软件包
 
-`MIRROR china` 是显式、可复现的国内源声明，默认使用清华 TUNA。它只写一次，自动作用
+`ARG`、`MIRROR`、`NAME` 和 `NETWORK` 都是全局声明，必须放在首个 `FROM` 前，且每个指令
+最多出现一次。这样多阶段文件不会因为指令出现在哪个阶段而改变全局配置。`MIRROR china`
+是显式、可复现的国内源声明，默认使用清华 TUNA。它只写一次，自动作用
 于最终阶段、所有 `TEMP` 和多阶段构建；Debian/Ubuntu 会改写 apt 源，Alpine 会改写
 apk 源。`MIRROR tuna` 与 `MIRROR china` 等价，也可以提供结构兼容的镜像站根地址。
 
@@ -339,10 +342,10 @@ apk 源。`MIRROR tuna` 与 `MIRROR china` 等价，也可以提供结构兼容�
 ```text
 ARG NODE_VERSION=24.19.0
 MIRROR china
-
-FROM debian/13
 NAME web-api
 NETWORK nat
+
+FROM debian/13
 
 TEMP builder
   PKG build-essential
@@ -363,16 +366,18 @@ COPY --from=builder /src/dist /opt/web-api/dist
 
 ### TEMP 与 MISE
 
-`MISE` 只允许出现在 `TEMP ... END` 内。Bocker 会在第一次遇到该指令时从官方 release
+`TEMP` 是构建阶段的简写，必须在普通阶段步骤之前声明；所有 `TEMP` 块会按文件中的顺序
+执行，之后才执行最终阶段的 `RUN`/`PKG`/`COPY` 等步骤。TEMP 不继承最终阶段已经写过的
+步骤；如果需要更复杂的依赖关系，请使用 `FROM ... AS builder` 多阶段语法。`MISE` 只允许出现在 `TEMP ... END` 内。Bocker 会在第一次遇到该指令时从官方 release
 下载并校验 mise v2026.8.8；官方地址超时后使用国内代理。随后通过 mise registry
 安装指定版本，并把 shims 加入该临时阶段后续 `RUN` 的 `PATH`。临时阶段结束后，mise、
 工具和下载缓存都不会进入最终镜像。
 
 ```text
 ARG GO_VERSION=1.26.6
+NAME my-app
 
 FROM debian/13
-NAME my-app
 
 TEMP builder
   MISE go ${GO_VERSION}
@@ -406,9 +411,9 @@ rsproxy，Python 的 pip 默认使用清华 PyPI；Python 运行时源码及其�
 ### 最小示例
 
 ```text
-FROM alpine/3.24
 NAME hello
 NETWORK nat
+FROM alpine/3.24
 RUN echo 'hello from bocker' > /hello.txt
 AUTOSTART on
 ```
@@ -465,9 +470,9 @@ bocker image build \
 使用 systemd，Alpine 使用 OpenRC。容器自己的 init 仍是 PID 1。
 
 ```text
-FROM debian/12
 NAME web
 NETWORK nat
+FROM debian/12
 RUN apt-get update && apt-get install -y --no-install-recommends python3
 COPY app.py /opt/app.py
 ENTRYPOINT ["/usr/bin/python3", "/opt/app.py"]
@@ -487,8 +492,10 @@ AUTOSTART on
 编译器可以放在前置阶段，最终镜像只复制运行产物：
 
 ```text
-FROM alpine/3.24 AS builder
+NAME go-service
 NETWORK nat
+
+FROM alpine/3.24 AS builder
 RUN apk add --no-cache go
 WORKDIR /src
 COPY go.mod .
@@ -496,8 +503,6 @@ COPY main.go .
 RUN go build -o /src/app .
 
 FROM alpine/3.24
-NAME go-service
-NETWORK nat
 COPY --from=builder /src/app /usr/local/bin/app
 ENTRYPOINT ["/usr/local/bin/app"]
 EXPOSE 8080/tcp
