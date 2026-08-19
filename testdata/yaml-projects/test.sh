@@ -23,15 +23,15 @@ trap cleanup EXIT
 
 cleanup
 
-"$bocker_bin" image build --name "$hello_image" "$project_dir/hello/Incusfile.yaml"
+"$bocker_bin" image build --name "$hello_image" "$project_dir/hello/Incusfile"
 "$bocker_bin" image run "$hello_image" --name "$hello_container"
 test "$("$bocker_bin" container exec "$hello_container" cat /hello.txt)" = "hello from yaml"
 
-"$bocker_bin" image build --name "$multi_image" "$project_dir/multi-stage/Incusfile.yaml"
+"$bocker_bin" image build --name "$multi_image" "$project_dir/multi-stage/Incusfile"
 "$bocker_bin" image run "$multi_image" --name "$multi_container"
 test "$("$bocker_bin" container exec "$multi_container" cat /result.txt)" = "multi-stage yaml"
 
-"$bocker_bin" image build --name "$runtime_image" "$project_dir/runtime/Incusfile.yaml"
+"$bocker_bin" image build --name "$runtime_image" "$project_dir/runtime/Incusfile"
 "$bocker_bin" image run "$runtime_image" --name "$runtime_container"
 "$bocker_bin" container exec "$runtime_container" sh -c \
 	'test -d /opt/yaml-runtime/logs && test -x /etc/init.d/bocker-entrypoint && grep -Fx '\''APP_ENV="production"'\'' /etc/environment'

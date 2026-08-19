@@ -48,7 +48,7 @@ broker 转发必须是流式的：长时间运行的 `image build`、`template i
 要在执行过程中持续把 stdout/stderr 转发给调用者，不能等整个子进程结束后才一次性返回，
 否则用户会误以为命令没有反应。
 
-构建描述文件统一使用严格的 `Incusfile.yaml` schema，不再支持旧的逐行文本指令。顶层
+构建描述文件统一使用严格的 `Incusfile` schema，不再支持旧的逐行文本指令。顶层
 `version: 1`、`args`、`mirror`、`name`、`network` 和 `stages` 必须通过 schema 校验；未知
 字段、重复 key 和多文档直接拒绝。阶段步骤使用 `exec`（argv，不经 shell）、`shell`（显式
 shell）、`pkg`、`copy`、`env`、`workdir` 和 `mise`。运行配置只能放在最终阶段的 `runtime`。

@@ -125,7 +125,7 @@ type ServiceSpec struct {
 	Enable []string
 }
 
-// parseIncusfile 从指定路径解析 Incusfile.yaml。path 为空时默认 ./Incusfile.yaml。
+// parseIncusfile 从指定路径解析 Incusfile。path 为空时默认 ./Incusfile。
 func parseIncusfile(path string) (*Incusfile, error) {
 	return parseIncusfileWithBuildArgs(path, nil)
 }

@@ -9,7 +9,7 @@ import (
 )
 
 // Version 工具版本
-const Version = "3.2.2"
+const Version = "3.2.3"
 
 // MirrorRemote 镜像源在本地的 remote 名称
 const MirrorRemote = "mirror-images"
@@ -148,7 +148,7 @@ func dispatchImage(args []string) error {
 	if len(args) == 0 {
 		choice := selectMenu([]string{
 			"list - 查看本地镜像",
-			"build - 按 Incusfile.yaml 制作镜像",
+			"build - 按 Incusfile 制作镜像",
 			"run - 选择镜像并启动容器",
 			"remove - 删除本地镜像",
 		}, "选择 image 操作 (↑↓ 选择, Enter 确认, q 退出)")
@@ -298,7 +298,7 @@ func printUsage() {
 
 	printUsageSection("本地镜像 image", []usageEntry{
 		{"bocker image", "打开 image 操作菜单"},
-		{"bocker image build [--build-arg KEY=VALUE] [Incusfile.yaml]", "按 Incusfile.yaml 制作本地镜像"},
+		{"bocker image build [--build-arg KEY=VALUE] [Incusfile]", "按 Incusfile 制作本地镜像"},
 		{"bocker image list [--json]", "列出本地镜像；--json 给 GUI/脚本使用"},
 		{"bocker image run [image] [--name <name>]", "选择或指定本地镜像，创建并启动容器"},
 		{"bocker image remove [image]", "删除本地镜像"},
@@ -323,11 +323,11 @@ func printUsage() {
 		{"--name <name>", "指定新容器的名称"},
 	})
 	printUsageSection("构建镜像时可用", []usageEntry{
-		{"--build-arg <KEY=VALUE>", "覆盖 Incusfile.yaml args 中声明的变量；可重复使用"},
+		{"--build-arg <KEY=VALUE>", "覆盖 Incusfile args 中声明的变量；可重复使用"},
 	})
 
 	fmt.Println("\n示例: bocker template install debian:12 --name demo --network nat")
-	fmt.Println("      bocker image build --name web-image ./Incusfile.yaml")
+	fmt.Println("      bocker image build --name web-image ./Incusfile")
 	fmt.Println("      bocker image run web-image --name web-01")
 	fmt.Println("补全: CLI Debian 包会安装 Bash 自动补全；重新打开终端后生效。")
 	fmt.Println("提示: 安装完成后普通用户可直接使用；日常操作不需要 sudo。")

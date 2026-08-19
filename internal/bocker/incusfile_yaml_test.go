@@ -1,6 +1,7 @@
 package bocker
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -12,7 +13,7 @@ import (
 func writeYAMLBuildFile(t *testing.T, content string) string {
 	t.Helper()
 	dir := t.TempDir()
-	path := filepath.Join(dir, "Incusfile.yaml")
+	path := filepath.Join(dir, "Incusfile")
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -253,19 +254,49 @@ func TestYAMLDefaultPathAndRealProjects(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer os.Chdir(old)
-	if err := os.WriteFile("Incusfile.yaml", []byte("version: 1\nstages: [{from: alpine/3.24}]\n"), 0o644); err != nil {
+	if err := os.WriteFile("Incusfile", []byte("version: 1\nstages: [{from: alpine/3.24}]\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	f, err := parseIncusfile("")
-	if err != nil || f.Path != "Incusfile.yaml" {
+	if err != nil || f.Path != "Incusfile" {
 		t.Fatalf("default YAML path: f=%#v err=%v", f, err)
 	}
 	_, testFile, _, _ := runtime.Caller(0)
 	repoRoot := filepath.Join(filepath.Dir(testFile), "..", "..")
-	for _, project := range []string{"hello", "multi-stage", "runtime"} {
-		path := filepath.Join(repoRoot, "testdata", "yaml-projects", project, "Incusfile.yaml")
+	projects := []string{
+		"yaml-projects/hello",
+		"yaml-projects/multi-stage",
+		"yaml-projects/runtime",
+		"mise/node",
+		"mise/python",
+		"mise/rust",
+		"packages/alpine",
+		"packages/ubuntu",
+	}
+	for _, project := range projects {
+		path := filepath.Join(repoRoot, "testdata", project, "Incusfile")
 		if _, err := parseIncusfile(path); err != nil {
 			t.Fatalf("real project %s: %v", project, err)
 		}
+	}
+}
+
+func TestYAMLDefaultPathDoesNotUseLegacyYAMLExtension(t *testing.T) {
+	dir := t.TempDir()
+	old, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(old)
+
+	legacy := []byte("version: 1\nstages: [{from: alpine/3.24}]\n")
+	if err := os.WriteFile("Incusfile.yaml", legacy, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := parseIncusfile(""); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("default lookup unexpectedly accepted Incusfile.yaml: %v", err)
 	}
 }

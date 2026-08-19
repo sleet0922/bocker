@@ -14,13 +14,13 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// CmdBuild 从 Incusfile.yaml 构建镜像。
+// CmdBuild 从 Incusfile 构建镜像。
 // 构建完成后用 'bocker image run' 启动容器。
 //
 // 用法:
 //
-//	bocker build [Incusfile.yaml]              构建镜像 (默认 ./Incusfile.yaml)
-//	bocker build --name <name> [Incusfile.yaml] 覆盖镜像别名
+//	bocker build [Incusfile]              构建镜像 (默认 ./Incusfile)
+//	bocker build --name <name> [Incusfile] 覆盖镜像别名
 //	bocker build --help                   显示帮助
 func CmdBuild(args []string) error {
 	buildArgs, args, err := buildArgsFromArgs(args)
@@ -117,7 +117,7 @@ func CmdBuild(args []string) error {
 		}
 	}
 
-	fmt.Printf("╭─ Incusfile.yaml 构建\n")
+	fmt.Printf("╭─ Incusfile 构建\n")
 	fmt.Printf("│ 文件:     %s\n", f.Path)
 	fmt.Printf("│ 基础镜像: %s\n", f.From)
 	fmt.Printf("│ 目标镜像: %s\n", alias)
@@ -150,13 +150,13 @@ func CmdBuild(args []string) error {
 }
 
 func buildUsage() string {
-	return `bocker image build - 从 Incusfile.yaml 构建镜像 (支持多阶段构建)
+	return `bocker image build - 从 Incusfile 构建镜像 (支持多阶段构建)
 
 用法:
-  bocker image build [Incusfile.yaml]                    构建镜像 (默认 ./Incusfile.yaml)
-  bocker image build --name <name> [Incusfile.yaml]      覆盖镜像别名
-  bocker image build --network <bridge|nat> [Incusfile.yaml] 覆盖构建网络
-  bocker image build --build-arg <KEY=VALUE> [Incusfile.yaml]
+  bocker image build [Incusfile]                    构建镜像 (默认 ./Incusfile)
+  bocker image build --name <name> [Incusfile]      覆盖镜像别名
+  bocker image build --network <bridge|nat> [Incusfile] 覆盖构建网络
+  bocker image build --build-arg <KEY=VALUE> [Incusfile]
                                                      覆盖 YAML args 中声明的变量
 
 YAML 顶层字段:
@@ -228,7 +228,7 @@ func CmdTemplateList(args []string) error {
 		total += len(g.Versions)
 	}
 	fmt.Printf("╭─ 可安装模板 (架构: %s, 共 %d 个发行版 %d 个版本)\n", arch, len(groups), total)
-	fmt.Println("│ 模板名可用于 template install，也可写入 Incusfile.yaml 的 stages.from")
+	fmt.Println("│ 模板名可用于 template install，也可写入 Incusfile 的 stages.from")
 	fmt.Println("│")
 	for _, g := range groups {
 		fmt.Printf("│ %s\n", g.Distro)
@@ -293,7 +293,7 @@ func autoConfigureAptMirror(client *IncusClient, name string) error {
 	_, hasToolErr := client.execQuiet(name, "sh", "-c", "command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1")
 	if hasToolErr != nil {
 		// curl 和 wget 都没装，无法确认网络问题，跳过自动换源
-		// (用户可在 Incusfile.yaml 中用 shell 步骤显式执行 apt-get update)
+		// (用户可在 Incusfile 中用 shell 步骤显式执行 apt-get update)
 		return nil
 	}
 
@@ -405,7 +405,7 @@ func buildImage(client *IncusClient, f *Incusfile, alias string, networkMode Net
 		}
 		fmt.Printf("  阶段 %d IPv4: %s\n", si+1, ip)
 
-		// Incusfile.yaml 中显式声明的镜像源可复现且优先于宿主机自动换源开关。
+		// Incusfile 中显式声明的镜像源可复现且优先于宿主机自动换源开关。
 		if f.Mirror != "" {
 			fmt.Printf("  阶段 %d MIRROR: %s\n", si+1, f.Mirror)
 			if err := client.ExecStreaming(stageContainer, packageMirrorCommand(f.Mirror), nil); err != nil {
@@ -1144,7 +1144,7 @@ func CmdRun(args []string) error {
 			return fmt.Errorf("读取本地镜像列表失败: %w", listErr)
 		}
 		if len(aliases) == 0 {
-			fmt.Println("本地没有可运行的镜像。请先执行 'bocker image build [Incusfile.yaml]'。")
+			fmt.Println("本地没有可运行的镜像。请先执行 'bocker image build [Incusfile]'。")
 			return nil
 		}
 		choice := selectMenu(aliases, "选择要运行的本地镜像 (↑↓ 选择, Enter 确认, q 退出)")

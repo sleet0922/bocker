@@ -25,7 +25,7 @@ func TestShouldUsePrivilegedBroker(t *testing.T) {
 		{[]string{"container", "shell", "demo"}, true},
 		{[]string{"container", "exec", "demo", "id"}, true},
 		{[]string{"container", "export", "demo"}, true},
-		{[]string{"image", "build", "Incusfile.yaml"}, true},
+		{[]string{"image", "build", "Incusfile"}, true},
 		{[]string{"image", "build"}, true},
 		{[]string{"image", "run", "demo"}, true},
 		{[]string{"image", "run", "--name", "demo"}, true},

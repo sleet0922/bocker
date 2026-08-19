@@ -114,7 +114,7 @@ type yamlExpose struct {
 
 func parseYAMLBuildFile(path string, overrides map[string]string) (*Incusfile, error) {
 	if path == "" {
-		path = "Incusfile.yaml"
+		path = "Incusfile"
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {

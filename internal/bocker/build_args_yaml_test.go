@@ -10,7 +10,7 @@ func TestBuildArgsFromCLIStayStrictlyScoped(t *testing.T) {
 		"--network", "nat",
 		"--build-arg", "VERSION=18",
 		"--build-arg=MIRROR=https://mirror.example/repo?a=b",
-		"Incusfile.yaml",
+		"Incusfile",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -22,7 +22,7 @@ func TestBuildArgsFromCLIStayStrictlyScoped(t *testing.T) {
 	if !reflect.DeepEqual(overrides, wantOverrides) {
 		t.Fatalf("build args = %#v, want %#v", overrides, wantOverrides)
 	}
-	if want := []string{"--network", "nat", "Incusfile.yaml"}; !reflect.DeepEqual(clean, want) {
+	if want := []string{"--network", "nat", "Incusfile"}; !reflect.DeepEqual(clean, want) {
 		t.Fatalf("clean args = %#v, want %#v", clean, want)
 	}
 	for _, args := range [][]string{
