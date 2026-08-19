@@ -117,6 +117,62 @@ stages: [{from: "${BASE}"}]
 	}
 }
 
+func TestYAMLDeclarativeOperationalSteps(t *testing.T) {
+	path := writeYAMLBuildFile(t, `version: 1
+args:
+  VERSION: 1.2.3
+stages:
+  - from: debian/13
+    steps:
+      - download:
+          output: /tmp/source.archive
+          extract: /src
+          attempts:
+            - url: https://example.invalid/v${VERSION}.tar.gz
+              sha256: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+              format: tar.gz
+              timeout: 20
+              tries: 1
+            - url: https://proxy.invalid/v${VERSION}.zip
+              sha256: fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210
+              format: zip
+              move: {from: /src/module, to: /src/source}
+          verify:
+            path: /src/source/version.go
+            pattern: 's/^Version=//p'
+            value: ${VERSION}
+      - exec:
+          command: openssl
+          args: [rand, -hex, "24"]
+          capture: DB_PASSWORD
+      - exec:
+          command: psql
+          args: [-c, "password=${DB_PASSWORD}"]
+      - write:
+          path: /etc/app.env
+          mode: "0600"
+          content: "PASSWORD=${DB_PASSWORD}\n"
+      - service:
+          start: [postgresql.service]
+          stop: [postgresql.service]
+          enable: [postgresql.service, app.service]
+`)
+	f, err := parseIncusfile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	steps := f.Stages[0].Steps
+	if len(steps) != 5 || steps[0].Kind != "DOWNLOAD" || steps[1].ExecCapture != "DB_PASSWORD" || steps[2].ExecArgs[1] != "password=${DB_PASSWORD}" || steps[3].Kind != "WRITE" || steps[4].Kind != "SERVICE" {
+		t.Fatalf("declarative steps = %#v", steps)
+	}
+	if len(steps[0].Download.Attempts) != 2 || steps[0].Download.Verify.Value != "1.2.3" {
+		t.Fatalf("download = %#v", steps[0].Download)
+	}
+	if steps[3].Write.Mode != "0600" || steps[4].Service.Stop[0] != "postgresql.service" {
+		t.Fatalf("write/service = %#v %#v", steps[3].Write, steps[4].Service)
+	}
+}
+
 func TestYAMLRejectsLegacyTextAndInvalidSchema(t *testing.T) {
 	cases := []string{
 		"FROM alpine/3.24\n",

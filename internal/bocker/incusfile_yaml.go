@@ -30,18 +30,22 @@ type yamlStage struct {
 }
 
 type yamlStep struct {
-	Exec    *yamlExec         `yaml:"exec"`
-	Shell   *string           `yaml:"shell"`
-	Pkg     *[]string         `yaml:"pkg"`
-	Copy    *yamlCopy         `yaml:"copy"`
-	Env     map[string]string `yaml:"env"`
-	Workdir *string           `yaml:"workdir"`
-	Mise    *yamlMise         `yaml:"mise"`
+	Exec     *yamlExec         `yaml:"exec"`
+	Shell    *string           `yaml:"shell"`
+	Pkg      *[]string         `yaml:"pkg"`
+	Copy     *yamlCopy         `yaml:"copy"`
+	Env      map[string]string `yaml:"env"`
+	Workdir  *string           `yaml:"workdir"`
+	Mise     *yamlMise         `yaml:"mise"`
+	Download *yamlDownload     `yaml:"download"`
+	Write    *yamlWrite        `yaml:"write"`
+	Service  *yamlService      `yaml:"service"`
 }
 
 type yamlExec struct {
 	Command string   `yaml:"command"`
 	Args    []string `yaml:"args"`
+	Capture string   `yaml:"capture"`
 }
 
 type yamlCopy struct {
@@ -53,6 +57,45 @@ type yamlCopy struct {
 type yamlMise struct {
 	Tool    string `yaml:"tool"`
 	Version string `yaml:"version"`
+}
+
+type yamlDownload struct {
+	Output   string            `yaml:"output"`
+	Extract  string            `yaml:"extract"`
+	Verify   *yamlFileVerify   `yaml:"verify"`
+	Attempts []yamlDownloadTry `yaml:"attempts"`
+}
+
+type yamlDownloadTry struct {
+	URL     string    `yaml:"url"`
+	SHA256  string    `yaml:"sha256"`
+	Format  string    `yaml:"format"`
+	Timeout int       `yaml:"timeout"`
+	Tries   int       `yaml:"tries"`
+	Move    *yamlMove `yaml:"move"`
+}
+
+type yamlMove struct {
+	From string `yaml:"from"`
+	To   string `yaml:"to"`
+}
+
+type yamlFileVerify struct {
+	Path    string `yaml:"path"`
+	Pattern string `yaml:"pattern"`
+	Value   string `yaml:"value"`
+}
+
+type yamlWrite struct {
+	Path    string `yaml:"path"`
+	Content string `yaml:"content"`
+	Mode    string `yaml:"mode"`
+}
+
+type yamlService struct {
+	Start  []string `yaml:"start"`
+	Stop   []string `yaml:"stop"`
+	Enable []string `yaml:"enable"`
 }
 
 type yamlRuntime struct {
@@ -284,6 +327,10 @@ func validateGlobalYAMLConfig(f *Incusfile, mirror, network, path string, values
 }
 
 func appendYAMLSteps(stage *Stage, steps []yamlStep, values map[string]string, path string, stageIndex int, isFinal bool) error {
+	stepValues := make(map[string]string, len(values))
+	for key, value := range values {
+		stepValues[key] = value
+	}
 	for stepIndex, source := range steps {
 		prefix := fmt.Sprintf("%s: stages[%d].steps[%d]", path, stageIndex, stepIndex)
 		count := 0
@@ -311,6 +358,15 @@ func appendYAMLSteps(stage *Stage, steps []yamlStep, values map[string]string, p
 			}
 			count++
 		}
+		if source.Download != nil {
+			count++
+		}
+		if source.Write != nil {
+			count++
+		}
+		if source.Service != nil {
+			count++
+		}
 		if count != 1 {
 			return fmt.Errorf("%s 必须且只能包含一个步骤类型", prefix)
 		}
@@ -324,12 +380,21 @@ func appendYAMLSteps(stage *Stage, steps []yamlStep, values map[string]string, p
 			}
 			args := make([]string, len(source.Exec.Args))
 			for i, arg := range source.Exec.Args {
-				args[i], err = expandBuildArgReferences(arg, values, true)
+				args[i], err = expandBuildArgReferences(arg, stepValues, true)
 				if err != nil {
 					return fmt.Errorf("%s.exec.args[%d]: %w", prefix, i, err)
 				}
 			}
-			stage.Steps = append(stage.Steps, BuildStep{Kind: "EXEC", ExecCommand: command, ExecArgs: args})
+			if source.Exec.Capture != "" {
+				if err := validateEnvKey(source.Exec.Capture); err != nil {
+					return fmt.Errorf("%s.exec.capture: %w", prefix, err)
+				}
+				if _, exists := stepValues[source.Exec.Capture]; exists {
+					return fmt.Errorf("%s.exec.capture 变量 %q 已存在", prefix, source.Exec.Capture)
+				}
+				stepValues[source.Exec.Capture] = "${" + source.Exec.Capture + "}"
+			}
+			stage.Steps = append(stage.Steps, BuildStep{Kind: "EXEC", ExecCommand: command, ExecArgs: args, ExecCapture: source.Exec.Capture})
 			continue
 		}
 		if source.Shell != nil {
@@ -376,6 +441,7 @@ func appendYAMLSteps(stage *Stage, steps []yamlStep, values map[string]string, p
 					return fmt.Errorf("%s.env.%s: %w", prefix, key, err)
 				}
 				stage.Steps = append(stage.Steps, BuildStep{Kind: "ENV", Env: EnvSpec{Key: key, Value: value}})
+				stepValues[key] = value
 			}
 			continue
 		}
@@ -428,6 +494,30 @@ func appendYAMLSteps(stage *Stage, steps []yamlStep, values map[string]string, p
 				return fmt.Errorf("%s.mise: %w", prefix, err)
 			}
 			stage.Steps = append(stage.Steps, BuildStep{Kind: "MISE", Mise: spec})
+			continue
+		}
+		if source.Download != nil {
+			spec, err := normalizeYAMLDownload(*source.Download, values, prefix)
+			if err != nil {
+				return err
+			}
+			stage.Steps = append(stage.Steps, BuildStep{Kind: "DOWNLOAD", Download: spec})
+			continue
+		}
+		if source.Write != nil {
+			spec, err := normalizeYAMLWrite(*source.Write, stepValues, prefix)
+			if err != nil {
+				return err
+			}
+			stage.Steps = append(stage.Steps, BuildStep{Kind: "WRITE", Write: spec})
+			continue
+		}
+		if source.Service != nil {
+			spec, err := normalizeYAMLService(*source.Service, values, prefix)
+			if err != nil {
+				return err
+			}
+			stage.Steps = append(stage.Steps, BuildStep{Kind: "SERVICE", Service: spec})
 		}
 	}
 	return nil
@@ -450,6 +540,166 @@ func validateYAMLPackages(packages []string, values map[string]string) ([]string
 		result[i] = pkg
 	}
 	return result, nil
+}
+
+func normalizeYAMLDownload(source yamlDownload, values map[string]string, prefix string) (DownloadSpec, error) {
+	var spec DownloadSpec
+	var err error
+	spec.Output, err = expandBuildArgReferences(source.Output, values, true)
+	if err != nil || strings.TrimSpace(spec.Output) == "" {
+		if err == nil {
+			err = fmt.Errorf("output 不能为空")
+		}
+		return spec, fmt.Errorf("%s.download.output: %w", prefix, err)
+	}
+	spec.Extract, err = expandBuildArgReferences(source.Extract, values, true)
+	if err != nil || strings.TrimSpace(spec.Extract) == "" {
+		if err == nil {
+			err = fmt.Errorf("extract 不能为空")
+		}
+		return spec, fmt.Errorf("%s.download.extract: %w", prefix, err)
+	}
+	if len(source.Attempts) == 0 {
+		return spec, fmt.Errorf("%s.download.attempts 至少需要一个下载源", prefix)
+	}
+	for i, item := range source.Attempts {
+		attempt := DownloadAttempt{Timeout: item.Timeout, Tries: item.Tries}
+		attempt.URL, err = expandBuildArgReferences(item.URL, values, true)
+		if err != nil || strings.TrimSpace(attempt.URL) == "" {
+			if err == nil {
+				err = fmt.Errorf("url 不能为空")
+			}
+			return spec, fmt.Errorf("%s.download.attempts[%d].url: %w", prefix, i, err)
+		}
+		attempt.SHA256, err = expandBuildArgReferences(item.SHA256, values, true)
+		if err != nil || !validSHA256(attempt.SHA256) {
+			if err == nil {
+				err = fmt.Errorf("sha256 必须是 64 位十六进制")
+			}
+			return spec, fmt.Errorf("%s.download.attempts[%d].sha256: %w", prefix, i, err)
+		}
+		attempt.Format = strings.ToLower(strings.TrimSpace(item.Format))
+		if attempt.Format != "tar.gz" && attempt.Format != "tgz" && attempt.Format != "zip" {
+			return spec, fmt.Errorf("%s.download.attempts[%d].format 无效", prefix, i)
+		}
+		if attempt.Timeout == 0 {
+			attempt.Timeout = 30
+		}
+		if attempt.Tries == 0 {
+			attempt.Tries = 1
+		}
+		if attempt.Timeout < 1 || attempt.Tries < 1 {
+			return spec, fmt.Errorf("%s.download.attempts[%d] timeout 和 tries 必须为正数", prefix, i)
+		}
+		if item.Move != nil {
+			from, e := expandBuildArgReferences(item.Move.From, values, true)
+			if e != nil {
+				return spec, fmt.Errorf("%s.download.attempts[%d].move.from: %w", prefix, i, e)
+			}
+			to, e := expandBuildArgReferences(item.Move.To, values, true)
+			if e != nil {
+				return spec, fmt.Errorf("%s.download.attempts[%d].move.to: %w", prefix, i, e)
+			}
+			attempt.Move = &MoveSpec{From: from, To: to}
+		}
+		spec.Attempts = append(spec.Attempts, attempt)
+	}
+	if source.Verify != nil {
+		path, e := expandBuildArgReferences(source.Verify.Path, values, true)
+		if e != nil {
+			return spec, fmt.Errorf("%s.download.verify.path: %w", prefix, e)
+		}
+		pattern, e := expandBuildArgReferences(source.Verify.Pattern, values, true)
+		if e != nil {
+			return spec, fmt.Errorf("%s.download.verify.pattern: %w", prefix, e)
+		}
+		value, e := expandBuildArgReferences(source.Verify.Value, values, true)
+		if e != nil {
+			return spec, fmt.Errorf("%s.download.verify.value: %w", prefix, e)
+		}
+		if path == "" || pattern == "" || value == "" {
+			return spec, fmt.Errorf("%s.download.verify 需要 path、pattern 和 value", prefix)
+		}
+		spec.Verify = &FileVerifySpec{Path: path, Pattern: pattern, Value: value}
+	}
+	return spec, nil
+}
+
+func validSHA256(value string) bool {
+	if len(value) != 64 {
+		return false
+	}
+	for _, r := range value {
+		if (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F') {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func normalizeYAMLWrite(source yamlWrite, values map[string]string, prefix string) (WriteSpec, error) {
+	path, err := expandBuildArgReferences(source.Path, values, true)
+	if err != nil || strings.TrimSpace(path) == "" {
+		if err == nil {
+			err = fmt.Errorf("path 不能为空")
+		}
+		return WriteSpec{}, fmt.Errorf("%s.write.path: %w", prefix, err)
+	}
+	content, err := expandBuildArgReferences(source.Content, values, true)
+	if err != nil {
+		return WriteSpec{}, fmt.Errorf("%s.write.content: %w", prefix, err)
+	}
+	mode := source.Mode
+	if mode == "" {
+		mode = "0644"
+	}
+	if len(mode) != 4 || strings.Trim(mode, "01234567") != "" {
+		return WriteSpec{}, fmt.Errorf("%s.write.mode 必须是四位八进制权限", prefix)
+	}
+	return WriteSpec{Path: path, Content: content, Mode: mode}, nil
+}
+
+func normalizeYAMLService(source yamlService, values map[string]string, prefix string) (ServiceSpec, error) {
+	if len(source.Start)+len(source.Stop)+len(source.Enable) == 0 {
+		return ServiceSpec{}, fmt.Errorf("%s.service 至少需要 start、stop 或 enable", prefix)
+	}
+	spec := ServiceSpec{}
+	groups := []struct {
+		name   string
+		source []string
+		target *[]string
+	}{
+		{name: "start", source: source.Start, target: &spec.Start},
+		{name: "stop", source: source.Stop, target: &spec.Stop},
+		{name: "enable", source: source.Enable, target: &spec.Enable},
+	}
+	for _, group := range groups {
+		for i, item := range group.source {
+			value, err := expandBuildArgReferences(item, values, true)
+			if err != nil {
+				return spec, fmt.Errorf("%s.service.%s[%d]: %w", prefix, group.name, i, err)
+			}
+			if !validServiceName(value) {
+				return spec, fmt.Errorf("%s.service.%s[%d] 服务名无效", prefix, group.name, i)
+			}
+			*group.target = append(*group.target, value)
+		}
+	}
+	return spec, nil
+}
+
+func validServiceName(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || strings.ContainsRune("@._-", r) {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func applyYAMLRuntime(stage *Stage, runtime *yamlRuntime, values map[string]string, path string, index int) error {

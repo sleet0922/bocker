@@ -9,7 +9,8 @@ import (
 
 // Incusfile 是 YAML 构建文件归一化后的内部 AST，支持多阶段构建。
 //
-// YAML parser 将 exec、shell、pkg、copy、env、workdir 和 mise 步骤归一化到 BuildStep。
+// YAML parser 将 exec、shell、pkg、copy、env、workdir、mise、download 和 write
+// 步骤归一化到 BuildStep。
 type Incusfile struct {
 	Path   string
 	Stages []Stage
@@ -42,17 +43,21 @@ type Stage struct {
 	Cmd             []string    // CMD executable/arguments or default ENTRYPOINT arguments
 }
 
-// BuildStep 是一个有序的 YAML 构建步骤 (EXEC/SHELL/PKG/COPY/ENV/WORKDIR/MISE)。
+// BuildStep 是一个有序的 YAML 构建步骤。
 type BuildStep struct {
-	Kind        string // "EXEC", "SHELL", "PKG", "COPY", "ENV", "WORKDIR", "MISE"
+	Kind        string // "EXEC", "SHELL", "PKG", "COPY", "ENV", "WORKDIR", "MISE", "DOWNLOAD", "WRITE"
 	Run         string
 	ExecCommand string
 	ExecArgs    []string
+	ExecCapture string
 	Packages    []string
 	Copy        CopySpec
 	Env         EnvSpec
 	Workdir     string
 	Mise        MiseSpec
+	Download    DownloadSpec
+	Write       WriteSpec
+	Service     ServiceSpec
 }
 
 // MiseSpec requests one exact tool version in a disposable build stage.
@@ -78,6 +83,46 @@ type EnvSpec struct {
 type PortSpec struct {
 	Port     int
 	Protocol string
+}
+
+// DownloadSpec describes one verified archive download with ordered fallbacks.
+type DownloadSpec struct {
+	Output   string
+	Extract  string
+	Verify   *FileVerifySpec
+	Attempts []DownloadAttempt
+}
+
+type DownloadAttempt struct {
+	URL     string
+	SHA256  string
+	Format  string
+	Timeout int
+	Tries   int
+	Move    *MoveSpec
+}
+
+type MoveSpec struct {
+	From string
+	To   string
+}
+
+type FileVerifySpec struct {
+	Path    string
+	Pattern string
+	Value   string
+}
+
+type WriteSpec struct {
+	Path    string
+	Content string
+	Mode    string
+}
+
+type ServiceSpec struct {
+	Start  []string
+	Stop   []string
+	Enable []string
 }
 
 // parseIncusfile 从指定路径解析 Incusfile.yaml。path 为空时默认 ./Incusfile.yaml。

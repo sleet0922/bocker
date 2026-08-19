@@ -95,7 +95,7 @@ stages:
 ```
 
 阶段步骤必须且只能包含以下一种字段：`exec`、`shell`、`pkg`、`workdir`、`copy`、`env`、
-`mise`。
+`mise`、`download`、`write`、`service`。
 
 ### exec 与 shell
 
@@ -110,6 +110,18 @@ stages:
       - /var/log/graduation-project
       - /opt/graduation-project/logs
       - /etc/graduation-project
+```
+
+`exec.capture` 可把 stdout 保存为后续步骤的构建变量；它不会写入最终镜像环境：
+
+```yaml
+- exec:
+    command: openssl
+    args: [rand, -hex, "24"]
+    capture: DB_PASSWORD
+- exec:
+    command: psql
+    args: [-c, "PASSWORD=${DB_PASSWORD}"]
 ```
 
 需要管道、重定向、变量、条件或多条命令时必须明确使用 `shell`：
@@ -145,6 +157,10 @@ steps:
 `pkg` 根据基础系统使用 apt 或 apk，并清理索引。`copy` 的源路径必须位于 YAML 文件所在
 上下文目录内，不能穿越路径或符号链接；多个源时目标必须是目录。`mise` 只接受精确版本，
 工具、插件和缓存只存在于构建阶段。
+
+`download` 支持按顺序尝试多个 URL，并在解包前校验 SHA-256；`write` 以指定权限写入文件；
+`service` 用 argv 调用 `systemctl` 的 `start`、`stop` 和 `enable`。这三种步骤把常见的
+下载、配置文件和服务编排从自由格式 shell 中提升为可校验的数据。
 
 ### runtime
 

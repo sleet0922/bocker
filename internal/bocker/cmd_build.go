@@ -90,6 +90,7 @@ func CmdBuild(args []string) error {
 	client := NewIncusClient()
 
 	execCount, shellCount, packageCount, copyCount, envCount, miseCount := 0, 0, 0, 0, 0, 0
+	downloadCount, writeCount, serviceCount := 0, 0, 0
 	for _, stage := range f.Stages {
 		for _, step := range stage.Steps {
 			switch step.Kind {
@@ -105,6 +106,12 @@ func CmdBuild(args []string) error {
 				envCount++
 			case "MISE":
 				miseCount++
+			case "DOWNLOAD":
+				downloadCount++
+			case "WRITE":
+				writeCount++
+			case "SERVICE":
+				serviceCount++
 			}
 		}
 	}
@@ -118,7 +125,7 @@ func CmdBuild(args []string) error {
 	if f.Mirror != "" {
 		fmt.Printf("│ 软件源:   %s\n", f.Mirror)
 	}
-	fmt.Printf("│ ARG: %d  EXEC: %d  SHELL: %d  MISE: %d  PKG: %d  COPY: %d  ENV: %d  EXPOSE: %d  步骤: %d\n", len(f.Args), execCount, shellCount, miseCount, packageCount, copyCount, envCount, len(f.Exposes), len(f.Steps))
+	fmt.Printf("│ ARG: %d  EXEC: %d  SHELL: %d  MISE: %d  PKG: %d  COPY: %d  ENV: %d  DOWNLOAD: %d  WRITE: %d  SERVICE: %d  EXPOSE: %d  步骤: %d\n", len(f.Args), execCount, shellCount, miseCount, packageCount, copyCount, envCount, downloadCount, writeCount, serviceCount, len(f.Exposes), len(f.Steps))
 	if f.Domain != "" {
 		fmt.Printf("│ DOMAIN:   %s\n", f.Domain)
 	}
@@ -164,6 +171,7 @@ YAML 顶层字段:
 
 阶段步骤只能使用以下结构化类型之一:
   - exec: {command: chmod, args: ["0755", "/var/log/app"]}
+    # 可选 capture: NAME，把 stdout 放入后续步骤的构建变量
   - shell: |            # 只有这里允许 shell 管道、重定向和条件
       set -eu
       echo ready
@@ -172,6 +180,9 @@ YAML 顶层字段:
   - copy: {sources: [a, b], destination: /src/}
   - env: {APP_ENV: production}
   - mise: {tool: go, version: "1.26.6"}  # 仅限非最终阶段
+  - download: {output: /tmp/src.tar.gz, extract: /src, attempts: [...]}
+  - write: {path: /etc/app.env, content: "APP_ENV=production\n", mode: "0600"}
+  - service: {start: [...], stop: [...], enable: [...]}
 
 最终阶段可选 runtime: {entrypoint: [...], cmd: [...], env: {...}, expose: [...], domain: ..., autostart: true}
 未知字段、重复 YAML key、旧文本指令和多余步骤字段都会拒绝。
@@ -411,6 +422,7 @@ func buildImage(client *IncusClient, f *Incusfile, alias string, networkMode Net
 		// 执行步骤
 		workdir := "/"
 		runEnv := buildArgEnvironment(f.Args)
+		capturedValues := make(map[string]string)
 		var collectedEnvs []EnvSpec
 		total := len(stage.Steps)
 		for i, step := range stage.Steps {
@@ -436,8 +448,30 @@ func buildImage(client *IncusClient, f *Incusfile, alias string, networkMode Net
 					return fmt.Errorf("阶段 %d MISE %s %s 安装失败: %w", si+1, step.Mise.Tool, step.Mise.Version, err)
 				}
 			case "EXEC":
-				command := append([]string{step.ExecCommand}, step.ExecArgs...)
+				templateValues := mergeBuildValues(runEnv, capturedValues)
+				args := make([]string, len(step.ExecArgs))
+				for argIndex, arg := range step.ExecArgs {
+					expanded, err := expandBuildArgReferences(arg, templateValues, true)
+					if err != nil {
+						return fmt.Errorf("阶段 %d EXEC 参数 %d 展开失败: %w", si+1, argIndex, err)
+					}
+					args[argIndex] = expanded
+				}
+				command := append([]string{step.ExecCommand}, args...)
 				fmt.Printf("  [阶段%d %d/%d] EXEC: %s %s\n", si+1, i+1, total, step.ExecCommand, strings.Join(step.ExecArgs, " "))
+				if step.ExecCapture != "" {
+					output, err := client.ExecCaptureArgsWithWorkdir(stageContainer, command, workdir, runEnv)
+					if err != nil {
+						return fmt.Errorf("阶段 %d EXEC 失败: %s: %w", si+1, step.ExecCommand, err)
+					}
+					value := strings.TrimRight(output, "\r\n")
+					if value == "" {
+						return fmt.Errorf("阶段 %d EXEC capture %s 得到空值", si+1, step.ExecCapture)
+					}
+					runEnv[step.ExecCapture] = value
+					capturedValues[step.ExecCapture] = value
+					break
+				}
 				if err := client.ExecStreamingArgsWithWorkdir(stageContainer, command, workdir, runEnv); err != nil {
 					return fmt.Errorf("阶段 %d EXEC 失败: %s: %w", si+1, step.ExecCommand, err)
 				}
@@ -445,6 +479,28 @@ func buildImage(client *IncusClient, f *Incusfile, alias string, networkMode Net
 				fmt.Printf("  [阶段%d %d/%d] PKG %s\n", si+1, i+1, total, strings.Join(step.Packages, " "))
 				if err := client.ExecStreaming(stageContainer, packageInstallCommand(step.Packages), runEnv); err != nil {
 					return fmt.Errorf("阶段 %d PKG 安装失败: %s: %w", si+1, strings.Join(step.Packages, " "), err)
+				}
+			case "DOWNLOAD":
+				fmt.Printf("  [阶段%d %d/%d] DOWNLOAD %s (%d sources)\n", si+1, i+1, total, step.Download.Output, len(step.Download.Attempts))
+				if err := client.ExecStreaming(stageContainer, downloadCommand(step.Download), runEnv); err != nil {
+					return fmt.Errorf("阶段 %d DOWNLOAD 失败: %w", si+1, err)
+				}
+			case "WRITE":
+				content, err := expandBuildArgReferences(step.Write.Content, mergeBuildValues(runEnv, capturedValues), true)
+				if err != nil {
+					return fmt.Errorf("阶段 %d WRITE 内容展开失败: %w", si+1, err)
+				}
+				fmt.Printf("  [阶段%d %d/%d] WRITE %s (%s)\n", si+1, i+1, total, step.Write.Path, step.Write.Mode)
+				if err := client.PushFile(stageContainer, step.Write.Path, []byte(content), step.Write.Mode); err != nil {
+					return fmt.Errorf("阶段 %d WRITE 失败: %w", si+1, err)
+				}
+			case "SERVICE":
+				for _, action := range serviceActions(step.Service) {
+					fmt.Printf("  [阶段%d %d/%d] SERVICE %s %s\n", si+1, i+1, total, action.Name, strings.Join(action.Services, " "))
+					command := append([]string{"systemctl", action.Name}, action.Services...)
+					if err := client.ExecStreamingArgsWithWorkdir(stageContainer, command, workdir, runEnv); err != nil {
+						return fmt.Errorf("阶段 %d SERVICE %s 失败: %w", si+1, action.Name, err)
+					}
 				}
 			case "COPY":
 				fromLabel := "宿主机"
@@ -518,6 +574,17 @@ func buildImage(client *IncusClient, f *Incusfile, alias string, networkMode Net
 		}
 	}
 	return nil
+}
+
+func mergeBuildValues(environment, captured map[string]string) map[string]string {
+	values := make(map[string]string, len(environment)+len(captured))
+	for key, value := range environment {
+		values[key] = value
+	}
+	for key, value := range captured {
+		values[key] = value
+	}
+	return values
 }
 
 func resolveContainerPath(workdir, destination string) string {

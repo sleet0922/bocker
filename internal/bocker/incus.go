@@ -1275,6 +1275,46 @@ func (c *IncusClient) ExecStreamingArgsWithWorkdir(name string, args []string, w
 	return c.execStreamingCwd(name, append([]string(nil), args...), workdir, extraEnv)
 }
 
+// ExecCaptureArgsWithWorkdir executes an argv vector and returns stdout. It is
+// used by YAML exec.capture for build-scoped generated values.
+func (c *IncusClient) ExecCaptureArgsWithWorkdir(name string, args []string, workdir string, extraEnv map[string]string) (string, error) {
+	if len(args) == 0 {
+		return "", fmt.Errorf("执行命令不能为空")
+	}
+	if err := c.ready(); err != nil {
+		return "", err
+	}
+	env := defaultExecEnv()
+	for key, value := range extraEnv {
+		env[key] = value
+	}
+	req := api.InstanceExecPost{
+		Command:     append([]string(nil), args...),
+		Environment: env,
+		WaitForWS:   true,
+		Interactive: false,
+		Cwd:         workdir,
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	op, err := c.server.ExecInstance(name, req, &incus.InstanceExecArgs{
+		Stdin:  strings.NewReader(""),
+		Stdout: &stdout,
+		Stderr: &stderr,
+	})
+	if err != nil {
+		return "", err
+	}
+	exitCode, err := execExitCode(op)
+	if err != nil {
+		return "", err
+	}
+	if exitCode != 0 {
+		return "", fmt.Errorf("命令退出码 %d: %s", exitCode, strings.TrimSpace(stderr.String()))
+	}
+	return stdout.String(), nil
+}
+
 func (c *IncusClient) execStreaming(name string, command []string, extraEnv map[string]string) error {
 	return c.execStreamingCwd(name, command, "", extraEnv)
 }
