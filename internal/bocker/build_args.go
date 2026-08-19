@@ -57,21 +57,6 @@ func parseBuildArgAssignment(assignment string) (string, string, error) {
 	return key, value, nil
 }
 
-func parseArgPayload(payload string) (ArgSpec, error) {
-	parts, err := shellSplit(payload)
-	if err != nil {
-		return ArgSpec{}, fmt.Errorf("ARG 解析失败: %w", err)
-	}
-	if len(parts) != 1 {
-		return ArgSpec{}, fmt.Errorf("ARG 用法: ARG KEY 或 ARG KEY=VALUE")
-	}
-	key, value, _ := strings.Cut(parts[0], "=")
-	if err := validateArgKey(key); err != nil {
-		return ArgSpec{}, err
-	}
-	return ArgSpec{Key: key, Value: value}, nil
-}
-
 func validateArgKey(key string) error {
 	if err := validateVariableKey(key); err != nil {
 		return fmt.Errorf("ARG 变量名 %q 无效", key)

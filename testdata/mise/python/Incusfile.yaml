@@ -1,0 +1,32 @@
+version: 1
+args:
+  PYTHON_VERSION: "3.13.7"
+mirror: china
+name: bocker-mise-python-e2e
+network: nat
+stages:
+  - name: builder
+    from: debian/13
+    steps:
+      - pkg: [build-essential, ca-certificates, curl, git, libbz2-dev, libffi-dev, liblzma-dev, libreadline-dev, libsqlite3-dev, libssl-dev, xz-utils, zlib1g-dev]
+      - mise: {tool: python, version: "${PYTHON_VERSION}"}
+      - workdir: /src
+      - copy: {sources: [app.py, test_app.py], destination: /src/}
+      - shell: |
+          set -eu
+          test "$PIP_INDEX_URL" = https://pypi.tuna.tsinghua.edu.cn/simple
+          mkdir -p /out
+          python -m unittest -v
+          python -m compileall -q .
+          python app.py > /out/result.json
+          python --version > /out/version.txt
+  - from: debian/13
+    steps:
+      - workdir: /opt/bocker-mise-test
+      - copy: {from: builder, sources: [/out/result.json, /out/version.txt], destination: ./}
+      - shell: |
+          set -eu
+          grep -Fx 'Python 3.13.7' version.txt
+          grep -F '"language": "python"' result.json
+          test ! -e /opt/bocker-mise
+    runtime: {autostart: false}

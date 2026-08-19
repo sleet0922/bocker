@@ -1,0 +1,13 @@
+version: 1
+mirror: china
+name: bocker-packages-ubuntu-e2e
+network: nat
+stages:
+  - from: ubuntu/24.04
+    steps:
+      - pkg: [ca-certificates, curl]
+      - shell: |
+          set -eu
+          grep -R -F 'mirrors.tuna.tsinghua.edu.cn/ubuntu' /etc/apt
+          curl --version > /curl-version.txt
+    runtime: {autostart: false}

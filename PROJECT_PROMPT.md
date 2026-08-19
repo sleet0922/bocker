@@ -48,15 +48,15 @@ broker 转发必须是流式的：长时间运行的 `image build`、`template i
 要在执行过程中持续把 stdout/stderr 转发给调用者，不能等整个子进程结束后才一次性返回，
 否则用户会误以为命令没有反应。
 
-Incusfile 的 `NAME`、`NETWORK`、`ARG`、`MIRROR` 是全局声明，必须位于首个 `FROM` 前且每个
-最多一次。`TEMP ... END` 必须在普通阶段步骤之前声明，多个 TEMP 按文件顺序执行；不能
-在普通步骤之后追加 TEMP。`MISE <tool> <exact-version>` 只允许位于 `TEMP ... END`。Bocker 自动
-引导固定且校验过的 mise，在该临时阶段后续步骤中提供工具链；mise、工具后端和语言运行时
-不得进入最终镜像。`go`/`node` 快捷名、精确版本校验和 ARG 展开属于稳定语义。
+构建描述文件统一使用严格的 `Incusfile.yaml` schema，不再支持旧的逐行文本指令。顶层
+`version: 1`、`args`、`mirror`、`name`、`network` 和 `stages` 必须通过 schema 校验；未知
+字段、重复 key 和多文档直接拒绝。阶段步骤使用 `exec`（argv，不经 shell）、`shell`（显式
+shell）、`pkg`、`copy`、`env`、`workdir` 和 `mise`。运行配置只能放在最终阶段的 `runtime`。
+`MISE` 使用固定精确版本并在构建阶段提供工具链；工具和缓存不得进入最终镜像。
 
-`MIRROR china` 必须位于首个 `FROM` 前，并为最终阶段和所有临时/多构建阶段显式固定
-清华软件源。`PKG <package...>` 在阶段内统一使用 apt/apk 安装并清理索引；两者用于
-减少国内环境常见的换源和包管理样板，旧 Incusfile 行为保持兼容。
+`mirror: china` 必须位于 YAML 顶层，并为最终阶段和所有构建阶段显式固定清华软件源。
+`pkg: [...]` 在阶段内统一使用 apt/apk 安装并清理索引；两者用于减少国内环境常见的换源和
+包管理样板；旧 Incusfile 格式不再兼容。
 
 内部命令 `bocker __daemon` 是 systemd 使用的私有入口，只允许 root 运行；普通用户不应
 直接调用它。不要把这个内部约束误认为公开 CLI 需要 root。

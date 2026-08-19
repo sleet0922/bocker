@@ -3,13 +3,13 @@ GOOS ?= linux
 GOARCH ?= amd64
 CGO_ENABLED ?= 0
 LDFLAGS ?= -s -w
-VERSION ?= 3.1.10
+VERSION ?= 3.2.0
 NFPM_VERSION ?= v2.45.0
 NFPM ?= go run github.com/goreleaser/nfpm/v2/cmd/nfpm@$(NFPM_VERSION)
 
 .DEFAULT_GOAL := help
 
-.PHONY: help build build-cli build-gui test test-completion vet check clean build-cli-deb build-gui-deb release publish-release
+.PHONY: help build build-cli build-gui test test-completion test-e2e vet check clean build-cli-deb build-gui-deb release publish-release
 
 help:
 	@echo Targets:
@@ -19,6 +19,7 @@ help:
 	@echo "  make build-gui-deb  Build the GUI deb package using nfpm"
 	@echo "  make build          Alias for build-cli"
 	@echo "  make check          Run Go tests, completion tests, and go vet"
+	@echo "  make test-e2e       Build and run the real YAML Incusfile projects"
 	@echo "  make release        Build release packages without changing Git state"
 	@echo "  make publish-release PUBLISH=1  Publish already-built packages intentionally"
 	@echo "  make clean          Remove the standalone binary and deb artifacts"
@@ -40,6 +41,9 @@ test:
 test-completion:
 	bash -n completions/bocker
 	bash completions/bocker_test.bash
+
+test-e2e: build-cli
+	BOCKER_BIN=./$(BIN_NAME) testdata/yaml-projects/test.sh
 
 vet:
 	go vet ./...

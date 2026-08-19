@@ -1,0 +1,33 @@
+version: 1
+args:
+  RUST_VERSION: "1.89.0"
+mirror: china
+name: bocker-mise-rust-e2e
+network: nat
+stages:
+  - name: builder
+    from: debian/13
+    steps:
+      - pkg: [build-essential, ca-certificates, curl, git]
+      - mise: {tool: rust, version: "${RUST_VERSION}"}
+      - workdir: /src
+      - copy: {sources: [Cargo.toml, src], destination: /src/}
+      - shell: |
+          set -eu
+          test "$CARGO_REGISTRIES_CRATES_IO_INDEX" = sparse+https://rsproxy.cn/index/
+          cargo test --release
+          cargo build --release
+          mkdir -p /out
+          cp target/release/bocker-mise-rust-e2e /out/app
+          rustc --version > /out/version.txt
+  - from: debian/13
+    steps:
+      - workdir: /opt/bocker-mise-test
+      - copy: {from: builder, sources: [/out/app], destination: /usr/local/bin/bocker-mise-rust-e2e}
+      - copy: {from: builder, sources: [/out/version.txt], destination: ./}
+      - shell: |
+          set -eu
+          test "$(/usr/local/bin/bocker-mise-rust-e2e)" = '{"language":"rust","version":"1.89.0","checksum":28}'
+          grep -F 'rustc 1.89.0 ' version.txt
+          test ! -e /opt/bocker-mise
+    runtime: {autostart: false}

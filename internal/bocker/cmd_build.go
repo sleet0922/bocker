@@ -14,13 +14,13 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// CmdBuild 从 Incusfile 构建镜像。
+// CmdBuild 从 Incusfile.yaml 构建镜像。
 // 构建完成后用 'bocker image run' 启动容器。
 //
 // 用法:
 //
-//	bocker build [Incusfile]              构建镜像 (默认 ./Incusfile)
-//	bocker build --name <name> [Incusfile] 覆盖镜像别名
+//	bocker build [Incusfile.yaml]              构建镜像 (默认 ./Incusfile.yaml)
+//	bocker build --name <name> [Incusfile.yaml] 覆盖镜像别名
 //	bocker build --help                   显示帮助
 func CmdBuild(args []string) error {
 	buildArgs, args, err := buildArgsFromArgs(args)
@@ -89,12 +89,14 @@ func CmdBuild(args []string) error {
 
 	client := NewIncusClient()
 
-	runCount, packageCount, copyCount, envCount, miseCount := 0, 0, 0, 0, 0
+	execCount, shellCount, packageCount, copyCount, envCount, miseCount := 0, 0, 0, 0, 0, 0
 	for _, stage := range f.Stages {
 		for _, step := range stage.Steps {
 			switch step.Kind {
-			case "RUN":
-				runCount++
+			case "EXEC":
+				execCount++
+			case "SHELL":
+				shellCount++
 			case "PKG":
 				packageCount++
 			case "COPY":
@@ -107,7 +109,7 @@ func CmdBuild(args []string) error {
 		}
 	}
 
-	fmt.Printf("╭─ Incusfile 构建\n")
+	fmt.Printf("╭─ Incusfile.yaml 构建\n")
 	fmt.Printf("│ 文件:     %s\n", f.Path)
 	fmt.Printf("│ 基础镜像: %s\n", f.From)
 	fmt.Printf("│ 目标镜像: %s\n", alias)
@@ -116,7 +118,7 @@ func CmdBuild(args []string) error {
 	if f.Mirror != "" {
 		fmt.Printf("│ 软件源:   %s\n", f.Mirror)
 	}
-	fmt.Printf("│ ARG: %d  MISE: %d  PKG: %d  RUN: %d  COPY: %d  ENV: %d  EXPOSE: %d  步骤: %d\n", len(f.Args), miseCount, packageCount, runCount, copyCount, envCount, len(f.Exposes), len(f.Steps))
+	fmt.Printf("│ ARG: %d  EXEC: %d  SHELL: %d  MISE: %d  PKG: %d  COPY: %d  ENV: %d  EXPOSE: %d  步骤: %d\n", len(f.Args), execCount, shellCount, miseCount, packageCount, copyCount, envCount, len(f.Exposes), len(f.Steps))
 	if f.Domain != "" {
 		fmt.Printf("│ DOMAIN:   %s\n", f.Domain)
 	}
@@ -141,77 +143,38 @@ func CmdBuild(args []string) error {
 }
 
 func buildUsage() string {
-	return `bocker image build - 从 Incusfile 构建镜像 (支持多阶段构建)
+	return `bocker image build - 从 Incusfile.yaml 构建镜像 (支持多阶段构建)
 
 用法:
-  bocker image build [Incusfile]                         构建镜像 (默认 ./Incusfile)
-  bocker image build --name <name> [Incusfile]           覆盖镜像别名
-  bocker image build --network <bridge|nat> [Incusfile]  覆盖构建网络
-  bocker image build --permission <normal|super> [Incusfile]
+  bocker image build [Incusfile.yaml]                    构建镜像 (默认 ./Incusfile.yaml)
+  bocker image build --name <name> [Incusfile.yaml]      覆盖镜像别名
+  bocker image build --network <bridge|nat> [Incusfile.yaml] 覆盖构建网络
+  bocker image build --permission <normal|super> [Incusfile.yaml]
                                                      设置所有构建阶段权限
-  bocker image build --build-arg <KEY=VALUE> [Incusfile]
-                                                     覆盖 Incusfile 中声明的 ARG
+  bocker image build --build-arg <KEY=VALUE> [Incusfile.yaml]
+                                                     覆盖 YAML args 中声明的变量
 
-构建完成后用 'bocker image run <image> --name <name>' 启动容器。
+YAML 顶层字段:
+  version: 1
+  args: {KEY: VALUE}
+  mirror: china
+  name: image-name
+  network: nat
+  stages: [...]
 
-Incusfile 指令:
-  ARG <KEY>[=<VALUE>]        全局构建参数 (首个 FROM 前声明，不写入镜像)
-  MIRROR china|tuna|<url>    为所有阶段固定国内或自定义 apt/apk 软件源
-  FROM <image> [AS <name>]   基础镜像，开始新构建阶段 (多阶段)
-  NAME <name>                镜像别名 + 容器名 (全局，首个 FROM 前)
-  NETWORK bridge|nat         网络模式 (全局，首个 FROM 前)
-  WORKDIR <path>             设置后续 RUN/COPY 的工作目录
-  RUN <command>              在容器内执行 shell 命令
-  PKG <package...>           通过 apt/apk 安装软件包并自动清理索引
-  COPY [--from=<stage>] <src>... <dst>  从宿主机或指定阶段复制
-  ENV <KEY>=<VALUE>          设置环境变量
-  EXPOSE <port>[/<proto>]    声明端口映射
-  DOMAIN <domain>            域名映射
-  AUTOSTART on|off           开机自启动
-  TEMP <name> ... END        临时构建块 (须在普通步骤前，按声明顺序执行)
-  MISE <tool> <version>      TEMP 内安装精确版本工具链 (如 MISE go 1.26.6)
+阶段步骤只能使用以下结构化类型之一:
+  - exec: {command: chmod, args: ["0755", "/var/log/app"]}
+  - shell: |            # 只有这里允许 shell 管道、重定向和条件
+      set -eu
+      echo ready
+  - pkg: [ca-certificates, curl]
+  - workdir: /src
+  - copy: {sources: [a, b], destination: /src/}
+  - env: {APP_ENV: production}
+  - mise: {tool: go, version: "1.26.6"}  # 仅限非最终阶段
 
-TEMP 块示例 (单 FROM all-in-one, 编译产物隔离):
-  ARG GO_VERSION=1.26.6
-  MIRROR china
-  NAME my-app
-  FROM debian/13
-
-  TEMP builder
-    MISE go ${GO_VERSION}
-    WORKDIR /src
-    COPY ./main.go .
-    RUN go build -o app .
-  END
-
-  PKG ca-certificates mysql-server
-  COPY --from=builder /src/app /usr/local/bin/app
-  EXPOSE 8080/tcp
-  AUTOSTART on
-
-多阶段构建示例 (分离构建环境与运行时):
-  MIRROR china
-  FROM debian/13 AS builder
-  WORKDIR /src
-  PKG golang-go
-  COPY ./main.go .
-  RUN go build -o app .
-
-  FROM debian/13
-  PKG ca-certificates
-  COPY --from=builder /src/app /usr/local/bin/app
-  EXPOSE 8080/tcp
-  DOMAIN myapp.test
-  AUTOSTART on
-
-单阶段示例:
-  MIRROR china
-  NAME my-nginx
-  FROM debian/12
-  PKG nginx
-  COPY ./index.html /var/www/html/index.html
-  EXPOSE 80/tcp
-  AUTOSTART on
+最终阶段可选 runtime: {entrypoint: [...], cmd: [...], env: {...}, expose: [...], domain: ..., autostart: true}
+未知字段、重复 YAML key、旧文本指令和多余步骤字段都会拒绝。
 `
 }
 
@@ -256,7 +219,7 @@ func CmdTemplateList(args []string) error {
 		total += len(g.Versions)
 	}
 	fmt.Printf("╭─ 可安装模板 (架构: %s, 共 %d 个发行版 %d 个版本)\n", arch, len(groups), total)
-	fmt.Println("│ 模板名可用于 template install，也可写入 Incusfile 的 FROM")
+	fmt.Println("│ 模板名可用于 template install，也可写入 Incusfile.yaml 的 stages.from")
 	fmt.Println("│")
 	for _, g := range groups {
 		fmt.Printf("│ %s\n", g.Distro)
@@ -321,7 +284,7 @@ func autoConfigureAptMirror(client *IncusClient, name string) error {
 	_, hasToolErr := client.execQuiet(name, "sh", "-c", "command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1")
 	if hasToolErr != nil {
 		// curl 和 wget 都没装，无法确认网络问题，跳过自动换源
-		// (用户可在 Incusfile 里 RUN apt-get update 看实际报错)
+		// (用户可在 Incusfile.yaml 中用 shell 步骤显式执行 apt-get update)
 		return nil
 	}
 
@@ -373,7 +336,7 @@ echo "✔ 镜像源已切换为 %s"`,
 
 // buildImage 执行多阶段构建流程：按顺序构建各阶段，最终阶段发布为镜像。
 // 中间阶段的容器保持运行 (供后续阶段 COPY --from 引用)，最终统一清理。
-// 单阶段 Incusfile (只有一个 FROM) 走相同的代码路径，行为与旧版一致。
+// 单阶段 YAML 构建文件只有一个阶段，仍走相同的构建路径。
 func buildImage(client *IncusClient, f *Incusfile, alias string, networkMode NetworkMode, permission PermissionMode) error {
 	stages := f.Stages
 	contextDir := filepath.Dir(f.Path)
@@ -433,7 +396,7 @@ func buildImage(client *IncusClient, f *Incusfile, alias string, networkMode Net
 		}
 		fmt.Printf("  阶段 %d IPv4: %s\n", si+1, ip)
 
-		// Incusfile 中显式声明的镜像源可复现且优先于宿主机自动换源开关。
+		// Incusfile.yaml 中显式声明的镜像源可复现且优先于宿主机自动换源开关。
 		if f.Mirror != "" {
 			fmt.Printf("  阶段 %d MIRROR: %s\n", si+1, f.Mirror)
 			if err := client.ExecStreaming(stageContainer, packageMirrorCommand(f.Mirror), nil); err != nil {
@@ -472,6 +435,12 @@ func buildImage(client *IncusClient, f *Incusfile, alias string, networkMode Net
 				if err := client.ExecStreaming(stageContainer, miseInstallCommand(step.Mise), runEnv); err != nil {
 					return fmt.Errorf("阶段 %d MISE %s %s 安装失败: %w", si+1, step.Mise.Tool, step.Mise.Version, err)
 				}
+			case "EXEC":
+				command := append([]string{step.ExecCommand}, step.ExecArgs...)
+				fmt.Printf("  [阶段%d %d/%d] EXEC: %s %s\n", si+1, i+1, total, step.ExecCommand, strings.Join(step.ExecArgs, " "))
+				if err := client.ExecStreamingArgsWithWorkdir(stageContainer, command, workdir, runEnv); err != nil {
+					return fmt.Errorf("阶段 %d EXEC 失败: %s: %w", si+1, step.ExecCommand, err)
+				}
 			case "PKG":
 				fmt.Printf("  [阶段%d %d/%d] PKG %s\n", si+1, i+1, total, strings.Join(step.Packages, " "))
 				if err := client.ExecStreaming(stageContainer, packageInstallCommand(step.Packages), runEnv); err != nil {
@@ -509,14 +478,14 @@ func buildImage(client *IncusClient, f *Incusfile, alias string, networkMode Net
 						}
 					}
 				}
-			case "RUN":
+			case "SHELL":
 				cmd := step.Run
 				if workdir != "/" && workdir != "" {
 					cmd = "cd " + shellQuote(workdir) + " && " + cmd
 				}
-				fmt.Printf("  [阶段%d %d/%d] RUN: %s\n", si+1, i+1, total, step.Run)
+				fmt.Printf("  [阶段%d %d/%d] SHELL: %s\n", si+1, i+1, total, step.Run)
 				if err := client.ExecStreaming(stageContainer, cmd, runEnv); err != nil {
-					return fmt.Errorf("阶段 %d RUN 失败: %s\n  %w", si+1, step.Run, err)
+					return fmt.Errorf("阶段 %d SHELL 失败: %s\n  %w", si+1, step.Run, err)
 				}
 			}
 		}
@@ -901,7 +870,7 @@ func quoteEnvironmentValue(value string) string {
 	return `"` + value + `"`
 }
 
-// applyCopy executes one COPY instruction from the Incusfile context.
+// applyCopy executes one YAML copy step from the Incusfile context.
 func applyCopy(client *IncusClient, name string, cp CopySpec, contextDir string) error {
 	sources := cp.Sources
 	if len(sources) == 0 && cp.Src != "" {
@@ -1115,7 +1084,7 @@ func CmdRun(args []string) error {
 			return fmt.Errorf("读取本地镜像列表失败: %w", listErr)
 		}
 		if len(aliases) == 0 {
-			fmt.Println("本地没有可运行的镜像。请先执行 'bocker image build [Incusfile]'。")
+			fmt.Println("本地没有可运行的镜像。请先执行 'bocker image build [Incusfile.yaml]'。")
 			return nil
 		}
 		choice := selectMenu(aliases, "选择要运行的本地镜像 (↑↓ 选择, Enter 确认, q 退出)")

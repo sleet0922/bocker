@@ -1,43 +1,21 @@
 package bocker
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
 	"strconv"
 	"strings"
 	"unicode"
 )
 
-// Incusfile 是 Dockerfile 风格的 Incus 镜像构建描述文件，支持多阶段构建。
-// bocker build 读取该文件，按顺序执行各构建阶段，最后将最终阶段容器发布为镜像。
+// Incusfile 是 YAML 构建文件归一化后的内部 AST，支持多阶段构建。
 //
-// 支持的指令：
-//
-//	ARG <KEY>[=<VALUE>]             全局构建参数 (必须位于首个 FROM 前，不写入镜像)
-//	MIRROR china|tuna|<url>         全局软件源，作用于最终阶段和所有构建阶段
-//	FROM <image> [AS <name>]        基础镜像，开始新构建阶段 (多阶段)
-//	NAME <name>                     镜像别名 + 容器名 (全局，首个 FROM 前)
-//	NETWORK bridge|nat              网络模式 (全局，首个 FROM 前，默认 bridge)
-//	WORKDIR <path>                  设置后续 RUN/COPY 的工作目录
-//	RUN <command>                   在容器内执行 shell 命令 (通过 /bin/sh -c)
-//	PKG <package> ...               通过 apt/apk 安装软件包并清理索引
-//	COPY [--from=<stage>] <src>... <dst>  从宿主机或指定阶段复制文件/目录
-//	    --from 省略时从宿主机复制；指定阶段名或数字索引时从该阶段容器复制
-//	ENV <KEY>=<VALUE>               设置环境变量 (写入 /etc/environment + profile.d)
-//	EXPOSE <port>[/<proto>] ...     声明端口映射 (运行时自动创建)
-//	DOMAIN <domain>                 域名映射 (运行时写入 /etc/hosts)
-//	AUTOSTART on|off                开机自启动
-//	TEMP <name> ... END             临时构建块: 块内步骤在独立临时容器执行，不进最终镜像
-//	MISE <tool> <version>           在 TEMP 块内安装精确版本的构建工具链
-//	    块继承外层 FROM 镜像，用于隔离编译工具链和临时工具污染
-//	    块名可用于 COPY --from=<name> 拷回构建产物；仅支持单 FROM (all-in-one 模式)
+// YAML parser 将 exec、shell、pkg、copy、env、workdir 和 mise 步骤归一化到 BuildStep。
 type Incusfile struct {
 	Path   string
 	Stages []Stage
 	Args   []ArgSpec
 	Mirror string
-	// 以下字段从最终阶段同步，保持向后兼容 (buildImageProperties 等函数直接读取)
+	// 以下字段从最终阶段同步，供镜像属性和运行时恢复逻辑读取。
 	From       string
 	Name       string
 	Network    string
@@ -56,7 +34,7 @@ type Stage struct {
 	Name            string      // AS 后的名字，用于 COPY --from=<name> 引用
 	From            string      // 基础镜像 (已规范化)
 	BaseFingerprint string      // 可选的固定基础镜像 fingerprint
-	Steps           []BuildStep // RUN/PKG/COPY/ENV/WORKDIR/MISE 按出现顺序执行
+	Steps           []BuildStep // YAML 步骤按出现顺序执行
 	Exposes         []PortSpec  // EXPOSE (运行时指令，通常在最终阶段)
 	Domain          string      // DOMAIN
 	Autostart       *bool       // AUTOSTART
@@ -64,18 +42,20 @@ type Stage struct {
 	Cmd             []string    // CMD executable/arguments or default ENTRYPOINT arguments
 }
 
-// BuildStep 是一个有序的构建步骤 (RUN/PKG/COPY/ENV/WORKDIR/MISE)。
+// BuildStep 是一个有序的 YAML 构建步骤 (EXEC/SHELL/PKG/COPY/ENV/WORKDIR/MISE)。
 type BuildStep struct {
-	Kind     string // "RUN", "PKG", "COPY", "ENV", "WORKDIR", "MISE"
-	Run      string
-	Packages []string
-	Copy     CopySpec
-	Env      EnvSpec
-	Workdir  string
-	Mise     MiseSpec
+	Kind        string // "EXEC", "SHELL", "PKG", "COPY", "ENV", "WORKDIR", "MISE"
+	Run         string
+	ExecCommand string
+	ExecArgs    []string
+	Packages    []string
+	Copy        CopySpec
+	Env         EnvSpec
+	Workdir     string
+	Mise        MiseSpec
 }
 
-// MiseSpec requests one exact tool version in a disposable TEMP stage.
+// MiseSpec requests one exact tool version in a disposable build stage.
 type MiseSpec struct {
 	Tool    string
 	Version string
@@ -100,527 +80,13 @@ type PortSpec struct {
 	Protocol string
 }
 
-// parseIncusfile 从指定路径解析 Incusfile。path 为空时默认 ./Incusfile。
-// 支持行尾反斜杠续行 (与 Dockerfile 一致)：行尾 \ 会把下一行拼接到当前行。
+// parseIncusfile 从指定路径解析 Incusfile.yaml。path 为空时默认 ./Incusfile.yaml。
 func parseIncusfile(path string) (*Incusfile, error) {
 	return parseIncusfileWithBuildArgs(path, nil)
 }
 
 func parseIncusfileWithBuildArgs(path string, overrides map[string]string) (*Incusfile, error) {
-	if path == "" {
-		path = "Incusfile"
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("读取 %s 失败: %w", path, err)
-	}
-	f := &Incusfile{Path: path}
-	buildArgValues := make(map[string]string)
-	declaredBuildArgs := make(map[string]bool)
-	for key := range overrides {
-		if err := validateArgKey(key); err != nil {
-			return nil, err
-		}
-	}
-	// 规范化换行：去掉 \r (兼容 Windows CRLF)，再按 \n 切分
-	cleaned := strings.ReplaceAll(string(data), "\r\n", "\n")
-	cleaned = strings.ReplaceAll(cleaned, "\r", "\n")
-	// 预处理：合并以 \ 结尾的续行，记录每条逻辑行起始的物理行号
-	rawLines := strings.Split(cleaned, "\n")
-	type logicalLine struct {
-		no   int
-		text string
-	}
-	var logical []logicalLine
-	for i := 0; i < len(rawLines); i++ {
-		startNo := i + 1
-		cur := rawLines[i]
-		// 注释 / 空行不参与续行
-		trimmed := strings.TrimSpace(cur)
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
-			logical = append(logical, logicalLine{no: startNo, text: cur})
-			continue
-		}
-		// 合并后续以 \ 结尾的行 (容忍反斜杠后的尾随空白，跳过续行中的注释/空行)
-		for {
-			trimmedCur := strings.TrimRight(cur, " \t")
-			if !hasLineContinuation(trimmedCur) {
-				break
-			}
-			if i+1 >= len(rawLines) {
-				return nil, fmt.Errorf("line %d: 续行反斜杠后缺少内容", startNo)
-			}
-			cur = strings.TrimSuffix(trimmedCur, "\\")
-			i++
-			// 跳过续行中的注释行和空行 (与 Dockerfile 行为一致：注释在续行中被移除)
-			for i < len(rawLines) {
-				next := strings.TrimSpace(rawLines[i])
-				if next == "" || strings.HasPrefix(next, "#") {
-					i++
-					continue
-				}
-				break
-			}
-			if i >= len(rawLines) {
-				return nil, fmt.Errorf("line %d: 续行反斜杠后缺少内容", startNo)
-			}
-			// Preserve the bytes before the continuation marker. A space before
-			// the marker remains significant to shell commands, while `foo\\`
-			// followed by `bar` correctly becomes `foobar`.
-			cur += strings.TrimLeft(rawLines[i], " \t")
-		}
-		logical = append(logical, logicalLine{no: startNo, text: cur})
-	}
-
-	// 解析逻辑行：遇到 FROM 开始新阶段
-	var currentStage *Stage
-	stageNameLines := map[string]int{}
-
-	// TEMP 块状态: TEMP <name> ... END 内的步骤在一个独立临时容器执行，
-	// 不进入最终镜像。常用于编译型语言 (golang/nodejs) 隔离构建工具链污染。
-	// TEMP 块在解析后转换为前置 Stage，复用外层 FROM 镜像，主 FROM 阶段作为最终阶段。
-	var tempStages []Stage
-	var inTemp bool
-	var currentTemp *Stage
-
-	startStage := func(fromImg, stageName string, lineNo int) error {
-		if fromImg == "" {
-			return fmt.Errorf("line %d: FROM 需要镜像引用", lineNo)
-		}
-		if currentStage != nil {
-			f.Stages = append(f.Stages, *currentStage)
-		}
-		if stageName != "" {
-			if err := validateStageName(stageName); err != nil {
-				return fmt.Errorf("line %d: %w", lineNo, err)
-			}
-			key := strings.ToLower(stageName)
-			if previous, exists := stageNameLines[key]; exists {
-				return fmt.Errorf("line %d: 阶段名 %q 重复 (首次位于 line %d)", lineNo, stageName, previous)
-			}
-			stageNameLines[key] = lineNo
-		}
-		image, fingerprint, err := splitPinnedImageRef(fromImg)
-		if err != nil {
-			return fmt.Errorf("line %d: %w", lineNo, err)
-		}
-		currentStage = &Stage{From: normalizeImageRef(image), BaseFingerprint: fingerprint, Name: stageName}
-		return nil
-	}
-
-	// targetStage 返回当前指令应作用的目标阶段: TEMP 块内返回临时阶段，否则返回主阶段。
-	targetStage := func() *Stage {
-		if inTemp {
-			return currentTemp
-		}
-		return currentStage
-	}
-
-	for _, ll := range logical {
-		lineNo := ll.no
-		raw := ll.text
-		if strings.IndexByte(raw, 0) >= 0 {
-			return nil, fmt.Errorf("line %d: 指令不能包含 NUL 字符", lineNo)
-		}
-		line := strings.TrimSpace(raw)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		fields := strings.Fields(line)
-		if len(fields) == 0 {
-			continue
-		}
-		directive := strings.ToUpper(fields[0])
-		payload := directivePayload(raw)
-		expand := func(value string, strict bool) (string, error) {
-			expanded, err := expandBuildArgReferences(value, buildArgValues, strict)
-			if err != nil {
-				return "", fmt.Errorf("line %d: %w", lineNo, err)
-			}
-			return expanded, nil
-		}
-		switch directive {
-		case "ARG":
-			if currentStage != nil || inTemp {
-				return nil, fmt.Errorf("line %d: ARG 必须位于第一个 FROM 之前", lineNo)
-			}
-			arg, err := parseArgPayload(payload)
-			if err != nil {
-				return nil, fmt.Errorf("line %d: %w", lineNo, err)
-			}
-			if declaredBuildArgs[arg.Key] {
-				return nil, fmt.Errorf("line %d: ARG %s 重复声明", lineNo, arg.Key)
-			}
-			arg.Value, err = expand(arg.Value, true)
-			if err != nil {
-				return nil, err
-			}
-			if override, exists := overrides[arg.Key]; exists {
-				arg.Value = override
-			}
-			declaredBuildArgs[arg.Key] = true
-			buildArgValues[arg.Key] = arg.Value
-			f.Args = append(f.Args, arg)
-		case "MIRROR":
-			if currentStage != nil || inTemp {
-				return nil, fmt.Errorf("line %d: MIRROR 必须位于第一个 FROM 之前", lineNo)
-			}
-			if f.Mirror != "" {
-				return nil, fmt.Errorf("line %d: MIRROR 只能声明一次", lineNo)
-			}
-			expanded, err := expand(payload, true)
-			if err != nil {
-				return nil, err
-			}
-			mirror, err := normalizePackageMirror(expanded)
-			if err != nil {
-				return nil, fmt.Errorf("line %d: %w", lineNo, err)
-			}
-			f.Mirror = mirror
-		case "FROM":
-			if inTemp {
-				return nil, fmt.Errorf("line %d: TEMP 块内不能有 FROM", lineNo)
-			}
-			fromImg, stageName, err := parseFromPayload(payload)
-			if err != nil {
-				return nil, fmt.Errorf("line %d: %w", lineNo, err)
-			}
-			fromImg, err = expand(fromImg, true)
-			if err != nil {
-				return nil, err
-			}
-			if err := startStage(fromImg, stageName, lineNo); err != nil {
-				return nil, err
-			}
-		case "TEMP":
-			// TEMP <name> 开始一个临时构建块: 块内步骤在独立临时容器执行，不进最终镜像。
-			// 块继承外层 FROM 镜像。需用 END 关闭。块名可用于 COPY --from=<name>。
-			if inTemp {
-				return nil, fmt.Errorf("line %d: TEMP 不能嵌套", lineNo)
-			}
-			if currentStage == nil {
-				return nil, fmt.Errorf("line %d: TEMP 必须在 FROM 之后", lineNo)
-			}
-			if len(currentStage.Steps) > 0 {
-				return nil, fmt.Errorf("line %d: TEMP 必须出现在普通阶段步骤之前；请先声明所有 TEMP，再写 RUN/PKG/COPY/ENV/WORKDIR", lineNo)
-			}
-			nameFields := strings.Fields(payload)
-			if len(nameFields) == 0 {
-				return nil, fmt.Errorf("line %d: TEMP 需要名称 (如 TEMP builder)", lineNo)
-			}
-			if len(nameFields) != 1 {
-				return nil, fmt.Errorf("line %d: TEMP 只接受一个阶段名", lineNo)
-			}
-			name := nameFields[0]
-			if err := validateStageName(name); err != nil {
-				return nil, fmt.Errorf("line %d: %w", lineNo, err)
-			}
-			key := strings.ToLower(name)
-			if previous, exists := stageNameLines[key]; exists {
-				return nil, fmt.Errorf("line %d: 阶段名 %q 重复 (首次位于 line %d)", lineNo, name, previous)
-			}
-			stageNameLines[key] = lineNo
-			inTemp = true
-			currentTemp = &Stage{Name: name, From: currentStage.From, BaseFingerprint: currentStage.BaseFingerprint}
-		case "END":
-			// END 关闭最近的 TEMP 块。
-			if !inTemp {
-				return nil, fmt.Errorf("line %d: END 没有匹配的 TEMP", lineNo)
-			}
-			tempStages = append(tempStages, *currentTemp)
-			inTemp = false
-			currentTemp = nil
-		case "NAME":
-			if currentStage != nil || inTemp {
-				return nil, fmt.Errorf("line %d: NAME 必须位于第一个 FROM 之前", lineNo)
-			}
-			if f.Name != "" {
-				return nil, fmt.Errorf("line %d: NAME 只能声明一次", lineNo)
-			}
-			parts, err := shellSplit(payload)
-			if err != nil || len(parts) != 1 {
-				return nil, fmt.Errorf("line %d: NAME 只接受一个名称", lineNo)
-			}
-			parts[0], err = expand(parts[0], true)
-			if err != nil {
-				return nil, err
-			}
-			if err := validateBockerName(parts[0]); err != nil {
-				return nil, fmt.Errorf("line %d: NAME 无效: %w", lineNo, err)
-			}
-			f.Name = parts[0]
-		case "NETWORK":
-			if currentStage != nil || inTemp {
-				return nil, fmt.Errorf("line %d: NETWORK 必须位于第一个 FROM 之前", lineNo)
-			}
-			if f.Network != "" {
-				return nil, fmt.Errorf("line %d: NETWORK 只能声明一次", lineNo)
-			}
-			if strings.TrimSpace(payload) == "" {
-				return nil, fmt.Errorf("line %d: NETWORK 需要 bridge 或 nat", lineNo)
-			}
-			expanded, err := expand(payload, true)
-			if err != nil {
-				return nil, err
-			}
-			mode, err := ParseNetworkMode(expanded)
-			if err != nil {
-				return nil, fmt.Errorf("line %d: %w", lineNo, err)
-			}
-			f.Network = string(mode)
-		case "WORKDIR":
-			if targetStage() == nil {
-				return nil, fmt.Errorf("line %d: WORKDIR 必须在 FROM 之后", lineNo)
-			}
-			parts, err := shellSplit(payload)
-			if err != nil || len(parts) != 1 || parts[0] == "" {
-				return nil, fmt.Errorf("line %d: WORKDIR 需要一个非空路径", lineNo)
-			}
-			parts[0], err = expand(parts[0], true)
-			if err != nil {
-				return nil, err
-			}
-			targetStage().Steps = append(targetStage().Steps, BuildStep{Kind: "WORKDIR", Workdir: parts[0]})
-		case "RUN":
-			if targetStage() == nil {
-				return nil, fmt.Errorf("line %d: RUN 必须在 FROM 之后", lineNo)
-			}
-			if payload == "" {
-				return nil, fmt.Errorf("line %d: RUN 需要命令", lineNo)
-			}
-			targetStage().Steps = append(targetStage().Steps, BuildStep{Kind: "RUN", Run: payload})
-		case "PKG":
-			if targetStage() == nil {
-				return nil, fmt.Errorf("line %d: PKG 必须在 FROM 之后", lineNo)
-			}
-			expanded, err := expand(payload, true)
-			if err != nil {
-				return nil, err
-			}
-			packages, err := parsePackagePayload(expanded)
-			if err != nil {
-				return nil, fmt.Errorf("line %d: %w", lineNo, err)
-			}
-			targetStage().Steps = append(targetStage().Steps, BuildStep{Kind: "PKG", Packages: packages})
-		case "MISE":
-			if !inTemp {
-				return nil, fmt.Errorf("line %d: MISE 只能位于 TEMP ... END 内", lineNo)
-			}
-			spec, err := parseMisePayload(payload)
-			if err != nil {
-				return nil, fmt.Errorf("line %d: %w", lineNo, err)
-			}
-			spec.Tool, err = expand(spec.Tool, true)
-			if err != nil {
-				return nil, err
-			}
-			spec.Version, err = expand(spec.Version, true)
-			if err != nil {
-				return nil, err
-			}
-			spec, err = normalizeMiseSpec(spec)
-			if err != nil {
-				return nil, fmt.Errorf("line %d: %w", lineNo, err)
-			}
-			currentTemp.Steps = append(currentTemp.Steps, BuildStep{Kind: "MISE", Mise: spec})
-		case "COPY":
-			if targetStage() == nil {
-				return nil, fmt.Errorf("line %d: COPY 必须在 FROM 之后", lineNo)
-			}
-			from, sources, dst, err := parseCopyPayload(payload)
-			if err != nil {
-				return nil, fmt.Errorf("line %d: %w", lineNo, err)
-			}
-			for i := range sources {
-				sources[i], err = expand(sources[i], true)
-				if err != nil {
-					return nil, err
-				}
-			}
-			dst, err = expand(dst, true)
-			if err != nil {
-				return nil, err
-			}
-			targetStage().Steps = append(targetStage().Steps, BuildStep{Kind: "COPY", Copy: CopySpec{Sources: sources, Src: sources[0], Dst: dst, From: from}})
-		case "ENV":
-			if targetStage() == nil {
-				return nil, fmt.Errorf("line %d: ENV 必须在 FROM 之后", lineNo)
-			}
-			kv, err := parseEnvPayload(payload)
-			if err != nil {
-				return nil, fmt.Errorf("line %d: %w", lineNo, err)
-			}
-			kv.Value, err = expand(kv.Value, false)
-			if err != nil {
-				return nil, err
-			}
-			targetStage().Steps = append(targetStage().Steps, BuildStep{Kind: "ENV", Env: kv})
-		case "EXPOSE":
-			if targetStage() == nil {
-				return nil, fmt.Errorf("line %d: EXPOSE 必须在 FROM 之后", lineNo)
-			}
-			expanded, err := expand(payload, true)
-			if err != nil {
-				return nil, err
-			}
-			ports, err := parseExposePayload(expanded)
-			if err != nil {
-				return nil, fmt.Errorf("line %d: %w", lineNo, err)
-			}
-			targetStage().Exposes = append(targetStage().Exposes, ports...)
-		case "DOMAIN":
-			if targetStage() == nil {
-				return nil, fmt.Errorf("line %d: DOMAIN 必须在 FROM 之后", lineNo)
-			}
-			if payload == "" {
-				return nil, fmt.Errorf("line %d: DOMAIN 需要域名", lineNo)
-			}
-			parts, err := shellSplit(payload)
-			if err != nil || len(parts) != 1 {
-				return nil, fmt.Errorf("line %d: DOMAIN 只接受一个域名", lineNo)
-			}
-			parts[0], err = expand(parts[0], true)
-			if err != nil {
-				return nil, err
-			}
-			if err := validateDomainName(parts[0]); err != nil {
-				return nil, fmt.Errorf("line %d: DOMAIN 无效: %w", lineNo, err)
-			}
-			targetStage().Domain = parts[0]
-		case "AUTOSTART":
-			if targetStage() == nil {
-				return nil, fmt.Errorf("line %d: AUTOSTART 必须在 FROM 之后", lineNo)
-			}
-			expanded, err := expand(payload, true)
-			if err != nil {
-				return nil, err
-			}
-			on, err := parseBoolPayload(expanded)
-			if err != nil {
-				return nil, fmt.Errorf("line %d: %w", lineNo, err)
-			}
-			targetStage().Autostart = &on
-		case "ENTRYPOINT", "CMD":
-			if targetStage() == nil {
-				return nil, fmt.Errorf("line %d: %s must appear after FROM", lineNo, directive)
-			}
-			command, err := parseCommandPayload(payload)
-			if err != nil {
-				return nil, fmt.Errorf("line %d: %s: %w", lineNo, directive, err)
-			}
-			for i := range command {
-				command[i], err = expand(command[i], false)
-				if err != nil {
-					return nil, err
-				}
-			}
-			if directive == "ENTRYPOINT" {
-				targetStage().Entrypoint = command
-			} else {
-				targetStage().Cmd = command
-			}
-		default:
-			return nil, fmt.Errorf("line %d: 未知指令 %s (支持: ARG MIRROR FROM NAME NETWORK WORKDIR RUN PKG COPY ENV EXPOSE DOMAIN AUTOSTART ENTRYPOINT CMD TEMP MISE END)", lineNo, directive)
-		}
-	}
-	for key := range overrides {
-		if !declaredBuildArgs[key] {
-			return nil, fmt.Errorf("--build-arg %s 未在 Incusfile 中声明", key)
-		}
-	}
-
-	// 保存最后一个阶段
-	if currentStage != nil {
-		f.Stages = append(f.Stages, *currentStage)
-	}
-	if len(f.Stages) == 0 {
-		return nil, fmt.Errorf("%s 缺少 FROM 指令", path)
-	}
-
-	// TEMP 块后处理: 校验闭合 + 校验单 FROM + 转换为前置阶段
-	if inTemp {
-		return nil, fmt.Errorf("%s: TEMP 块未用 END 关闭", path)
-	}
-	if len(tempStages) > 0 {
-		// TEMP 块仅支持单 FROM (all-in-one 模式)；多 FROM 应直接用多阶段构建
-		if len(f.Stages) > 1 {
-			return nil, fmt.Errorf("%s: TEMP 块不支持多 FROM (多阶段构建请用 FROM ... AS, 不要混用 TEMP)", path)
-		}
-		// TEMP 块作为前置阶段，主 FROM 阶段作为最终阶段 (最后发布)
-		f.Stages = append(tempStages, f.Stages...)
-	}
-	if err := validateFinalStageRuntimeDirectives(f.Stages); err != nil {
-		return nil, err
-	}
-
-	// 同步最终阶段到顶层字段 (保持向后兼容，buildImageProperties 等函数直接读取)
-	last := &f.Stages[len(f.Stages)-1]
-	f.From = last.From
-	f.Steps = last.Steps
-	f.Exposes = last.Exposes
-	f.Domain = last.Domain
-	f.Autostart = last.Autostart
-	f.Entrypoint = append([]string(nil), last.Entrypoint...)
-	f.Cmd = append([]string(nil), last.Cmd...)
-	for _, step := range last.Steps {
-		if step.Kind == "ENV" {
-			f.Env = append(f.Env, step.Env)
-		}
-	}
-	return f, nil
-}
-
-// parseCommandPayload accepts only Docker's JSON exec form. Shell form is not
-// accepted because it would otherwise look valid while being executed as a
-// literal argv vector by the generated service.
-func parseCommandPayload(payload string) ([]string, error) {
-	payload = strings.TrimSpace(payload)
-	if payload == "" {
-		return nil, fmt.Errorf("command cannot be empty")
-	}
-	if !strings.HasPrefix(payload, "[") {
-		return nil, fmt.Errorf("must use JSON argv form, for example [\"/bin/sh\", \"-c\", \"echo ok\"]")
-	}
-	var parts []string
-	if err := json.Unmarshal([]byte(payload), &parts); err != nil {
-		return nil, fmt.Errorf("invalid JSON argv: %w", err)
-	}
-	if len(parts) == 0 || strings.TrimSpace(parts[0]) == "" {
-		return nil, fmt.Errorf("command requires an executable")
-	}
-	for _, part := range parts {
-		if strings.IndexByte(part, 0) >= 0 {
-			return nil, fmt.Errorf("command arguments cannot contain NUL")
-		}
-	}
-	return parts, nil
-}
-
-// parseFromPayload 解析 FROM 指令的 payload。
-// 格式: <image> [AS <name>]
-// 支持示例:
-//
-//	FROM debian/12
-//	FROM debian:12 AS builder
-//	FROM golang:1.26-alpine AS frontend-build
-func parseFromPayload(payload string) (image, stageName string, err error) {
-	fields := strings.Fields(payload)
-	switch len(fields) {
-	case 0:
-		return "", "", fmt.Errorf("FROM 需要镜像引用")
-	case 1:
-		return fields[0], "", nil
-	case 3:
-		if !strings.EqualFold(fields[1], "AS") {
-			return "", "", fmt.Errorf("FROM 用法: FROM <image> [AS <stage>]")
-		}
-		if err := validateStageName(fields[2]); err != nil {
-			return "", "", err
-		}
-		return fields[0], fields[2], nil
-	default:
-		return "", "", fmt.Errorf("FROM 用法: FROM <image> [AS <stage>]")
-	}
+	return parseYAMLBuildFile(path, overrides)
 }
 
 func validateStageName(name string) error {
@@ -645,16 +111,6 @@ func validateStageName(name string) error {
 		return fmt.Errorf("阶段名 %q 不能是纯数字，以免与阶段索引混淆", name)
 	}
 	return nil
-}
-
-// directivePayload 提取指令关键字后的全部内容，保留空格、引号等。
-func directivePayload(rawLine string) string {
-	trimmed := strings.TrimLeft(rawLine, " \t")
-	idx := strings.IndexAny(trimmed, " \t")
-	if idx < 0 {
-		return ""
-	}
-	return strings.TrimSpace(trimmed[idx+1:])
 }
 
 // normalizeImageRef 兼容 Docker 风格 "debian:12" 与 Incus 风格 "debian/12"。
@@ -739,58 +195,6 @@ func validateFinalStageRuntimeDirectives(stages []Stage) error {
 	return nil
 }
 
-// parseCopyPayload 解析 COPY 指令的 payload，支持 --from 标志、多个源和引号路径。
-// 格式: [--from=<stage>] <src>... <dst>
-// --from 可以是阶段名 (如 "builder") 或数字索引 (如 "0")
-// 示例:
-//
-//	COPY ./index.html /var/www/html/index.html
-//	COPY --from=builder /app/bin/app /usr/local/bin/app
-//	COPY --from=0 /src/public /app/public
-func parseCopyPayload(payload string) (from string, sources []string, dst string, err error) {
-	rest := strings.TrimSpace(payload)
-	// 检查 --from= 标志
-	if strings.HasPrefix(rest, "--from=") {
-		spaceIdx := strings.IndexAny(rest, " \t")
-		if spaceIdx < 0 {
-			return "", nil, "", fmt.Errorf("COPY --from 需要源和目标路径")
-		}
-		from = strings.TrimPrefix(rest[:spaceIdx], "--from=")
-		if from == "" {
-			return "", nil, "", fmt.Errorf("COPY --from 的阶段名不能为空")
-		}
-		if _, numericErr := strconv.Atoi(from); numericErr != nil {
-			if err := validateStageName(from); err != nil {
-				return "", nil, "", fmt.Errorf("COPY --from 无效: %w", err)
-			}
-		} else if strings.HasPrefix(from, "-") {
-			return "", nil, "", fmt.Errorf("COPY --from 的阶段索引不能为负数")
-		}
-		rest = strings.TrimLeft(rest[spaceIdx:], " \t")
-	}
-	fields, err := shellSplit(rest)
-	if err != nil {
-		return "", nil, "", fmt.Errorf("COPY 用法: COPY [--from=<stage>] <src>... <dst>: %w", err)
-	}
-	if len(fields) < 2 {
-		return "", nil, "", fmt.Errorf("COPY 用法: COPY [--from=<stage>] <src>... <dst> (得到 %d 个参数)", len(fields))
-	}
-	sources = fields[:len(fields)-1]
-	dst = fields[len(fields)-1]
-	if dst == "" {
-		return "", nil, "", fmt.Errorf("COPY 的目标路径不能为空")
-	}
-	for _, source := range sources {
-		if source == "" {
-			return "", nil, "", fmt.Errorf("COPY 的源路径不能为空")
-		}
-	}
-	if len(sources) > 1 && !strings.HasSuffix(dst, "/") && dst != "." {
-		return "", nil, "", fmt.Errorf("COPY 多个源时目标必须是目录 (以 / 结尾或写 .)")
-	}
-	return from, sources, dst, nil
-}
-
 // shellSplit 按 shell 风格处理空白、单双引号和反斜杠，但不执行变量展开。
 func shellSplit(s string) ([]string, error) {
 	var result []string
@@ -859,66 +263,11 @@ func shellSplit(s string) ([]string, error) {
 	return result, nil
 }
 
-func hasLineContinuation(line string) bool {
-	count := 0
-	for i := len(line) - 1; i >= 0 && line[i] == '\\'; i-- {
-		count++
-	}
-	return count%2 == 1
-}
-
-func parseEnvPayload(payload string) (EnvSpec, error) {
-	parts, err := shellSplit(payload)
-	if err != nil {
-		return EnvSpec{}, fmt.Errorf("ENV 解析失败: %w", err)
-	}
-	if len(parts) == 0 {
-		return EnvSpec{}, fmt.Errorf("ENV 用法: ENV KEY=VALUE 或 ENV KEY VALUE")
-	}
-	key := parts[0]
-	valueParts := parts[1:]
-	if idx := strings.IndexByte(parts[0], '='); idx >= 0 {
-		key = parts[0][:idx]
-		valueParts = append([]string{parts[0][idx+1:]}, valueParts...)
-	} else if len(parts) < 2 {
-		return EnvSpec{}, fmt.Errorf("ENV 用法: ENV KEY=VALUE 或 ENV KEY VALUE")
-	}
-	if err := validateEnvKey(key); err != nil {
-		return EnvSpec{}, err
-	}
-	return EnvSpec{Key: key, Value: strings.Join(valueParts, " ")}, nil
-}
-
 func validateEnvKey(key string) error {
 	if err := validateVariableKey(key); err != nil {
 		return fmt.Errorf("ENV 变量名 %q 无效", key)
 	}
 	return nil
-}
-
-func parseExposePayload(payload string) ([]PortSpec, error) {
-	fields := strings.Fields(payload)
-	if len(fields) == 0 {
-		return nil, fmt.Errorf("EXPOSE 需要至少一个端口")
-	}
-	var result []PortSpec
-	for _, f := range fields {
-		proto := "tcp"
-		portStr := f
-		if idx := strings.LastIndex(f, "/"); idx > 0 {
-			proto = strings.ToLower(strings.TrimSpace(f[idx+1:]))
-			if proto != "tcp" && proto != "udp" {
-				return nil, fmt.Errorf("协议必须是 tcp 或 udp, 得到 %q", proto)
-			}
-			portStr = f[:idx]
-		}
-		port, err := strconv.Atoi(portStr)
-		if err != nil || port < 1 || port > 65535 {
-			return nil, fmt.Errorf("端口 %q 无效", portStr)
-		}
-		result = append(result, PortSpec{Port: port, Protocol: proto})
-	}
-	return result, nil
 }
 
 func parseBoolPayload(payload string) (bool, error) {

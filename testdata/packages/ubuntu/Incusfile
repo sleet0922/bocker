@@ -1,9 +1,0 @@
-MIRROR china
-NAME bocker-packages-ubuntu-e2e
-NETWORK nat
-
-FROM ubuntu/24.04
-PKG ca-certificates curl
-RUN grep -R -F 'mirrors.tuna.tsinghua.edu.cn/ubuntu' /etc/apt && \
-    curl --version > /curl-version.txt
-AUTOSTART off

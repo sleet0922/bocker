@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
-	"unicode"
 )
 
 const chinaPackageMirror = defaultAptMirrorURL
@@ -26,21 +25,6 @@ func normalizePackageMirror(value string) (string, error) {
 		return "", fmt.Errorf("MIRROR 地址不能包含认证信息、查询参数或片段")
 	}
 	return strings.TrimRight(value, "/"), nil
-}
-
-func parsePackagePayload(payload string) ([]string, error) {
-	packages, err := shellSplit(payload)
-	if err != nil || len(packages) == 0 {
-		return nil, fmt.Errorf("PKG 至少需要一个软件包名称")
-	}
-	for _, pkg := range packages {
-		if pkg == "" || len(pkg) > 256 || strings.HasPrefix(pkg, "-") || strings.IndexFunc(pkg, func(r rune) bool {
-			return unicode.IsSpace(r) || unicode.IsControl(r)
-		}) >= 0 {
-			return nil, fmt.Errorf("PKG 软件包名称 %q 无效", pkg)
-		}
-	}
-	return packages, nil
 }
 
 func packageMirrorCommand(mirror string) string {

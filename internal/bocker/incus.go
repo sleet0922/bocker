@@ -1255,7 +1255,7 @@ func crossContainerCopyPaths(srcPath, dstPath string, dstIsDir bool) (srcDir, sr
 }
 
 // ExecStreaming 在容器内通过 /bin/sh -c 执行命令，stdout/stderr 实时输出到当前进程。
-// extraEnv 会与默认环境合并，使 Incusfile 的 ENV 指令对后续 RUN 生效。
+// extraEnv 会与默认环境合并，使 YAML env 步骤对后续构建命令生效。
 func (c *IncusClient) ExecStreaming(name, command string, extraEnv map[string]string) error {
 	return c.execStreaming(name, []string{"/bin/sh", "-c", command}, extraEnv)
 }
@@ -1263,13 +1263,23 @@ func (c *IncusClient) ExecStreaming(name, command string, extraEnv map[string]st
 // ExecStreamingArgs executes an argv vector without involving a shell. This
 // preserves argument boundaries for public `container exec` calls.
 func (c *IncusClient) ExecStreamingArgs(name string, args []string, extraEnv map[string]string) error {
+	return c.ExecStreamingArgsWithWorkdir(name, args, "", extraEnv)
+}
+
+// ExecStreamingArgsWithWorkdir executes an argv vector with an explicit
+// working directory, preserving argument boundaries without a shell.
+func (c *IncusClient) ExecStreamingArgsWithWorkdir(name string, args []string, workdir string, extraEnv map[string]string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("执行命令不能为空")
 	}
-	return c.execStreaming(name, append([]string(nil), args...), extraEnv)
+	return c.execStreamingCwd(name, append([]string(nil), args...), workdir, extraEnv)
 }
 
 func (c *IncusClient) execStreaming(name string, command []string, extraEnv map[string]string) error {
+	return c.execStreamingCwd(name, command, "", extraEnv)
+}
+
+func (c *IncusClient) execStreamingCwd(name string, command []string, workdir string, extraEnv map[string]string) error {
 	if err := c.ready(); err != nil {
 		return err
 	}
@@ -1282,6 +1292,7 @@ func (c *IncusClient) execStreaming(name string, command []string, extraEnv map[
 		Environment: env,
 		WaitForWS:   true,
 		Interactive: false,
+		Cwd:         workdir,
 	}
 	op, err := c.server.ExecInstance(name, req, &incus.InstanceExecArgs{
 		Stdin:  strings.NewReader(""),

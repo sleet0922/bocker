@@ -18,15 +18,6 @@ const (
 	defaultBuildPath         = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 )
 
-// parseMisePayload parses the compact MISE <tool> <version> syntax.
-func parseMisePayload(payload string) (MiseSpec, error) {
-	parts, err := shellSplit(payload)
-	if err != nil || len(parts) != 2 {
-		return MiseSpec{}, fmt.Errorf("MISE 用法: MISE <tool> <exact-version>，如 MISE go 1.26.6")
-	}
-	return MiseSpec{Tool: parts[0], Version: parts[1]}, nil
-}
-
 func normalizeMiseSpec(spec MiseSpec) (MiseSpec, error) {
 	spec.Tool = strings.ToLower(strings.TrimSpace(spec.Tool))
 	switch spec.Tool {
