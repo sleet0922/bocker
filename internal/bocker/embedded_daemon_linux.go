@@ -16,7 +16,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -96,14 +95,6 @@ func ensureEmbeddedDaemonOnce() error {
 		return ensureDefaultIncusConfig(server)
 	}
 	if err := ensureHostSetfattr(); err != nil {
-		return err
-	}
-	// Unprivileged (normal permission) containers need a subuid/subgid map
-	// for the root user. Debian/Ubuntu Incus/LXD packages normally add one
-	// in their postinst; hosts that never installed them (or use a snap
-	// runtime) have none, which makes the default permission mode fail with
-	// "System doesn't have a functional idmap setup".
-	if err := ensureRootIdmap(); err != nil {
 		return err
 	}
 
@@ -930,97 +921,4 @@ func openRotatedDaemonLog(path string) (*os.File, error) {
 		}
 	}
 	return os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
-}
-
-// minSubidRange 是非特权容器至少需要的 subuid/subgid 映射长度。
-const minSubidRange = 65536
-
-// ensureRootIdmap 确保 root 用户在 /etc/subuid 和 /etc/subgid 中有映射，
-// 否则 incusd 创建 normal (非特权) 容器时会报
-// "System doesn't have a functional idmap setup"。该函数幂等：已有足够
-// 映射时不做任何修改。
-func ensureRootIdmap() error {
-	if os.Geteuid() != 0 {
-		return nil
-	}
-	for _, path := range []string{"/etc/subuid", "/etc/subgid"} {
-		if err := ensureRootSubidEntry(path); err != nil {
-			return fmt.Errorf("配置 %s 失败: %w", path, err)
-		}
-	}
-	return nil
-}
-
-type subidRange struct{ start, count int64 }
-
-// parseSubidFile 解析 /etc/subuid 或 /etc/subgid，返回每个用户的映射区间
-// (注释和空行忽略) 以及 root 是否已有足够大的映射。
-func parseSubidFile(data string) (ranges []subidRange, rootOK bool) {
-	for _, rawLine := range strings.Split(data, "\n") {
-		line := strings.TrimSpace(rawLine)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		parts := strings.SplitN(line, ":", 3)
-		if len(parts) != 3 {
-			continue
-		}
-		user := strings.TrimSpace(parts[0])
-		start, startErr := strconv.ParseInt(strings.TrimSpace(parts[1]), 10, 64)
-		count, countErr := strconv.ParseInt(strings.TrimSpace(parts[2]), 10, 64)
-		if startErr != nil || countErr != nil || start < 0 || count <= 0 {
-			continue
-		}
-		if (user == "root" || user == "0") && count >= minSubidRange {
-			rootOK = true
-		}
-		ranges = append(ranges, subidRange{start: start, count: count})
-	}
-	return ranges, rootOK
-}
-
-// ensureRootSubidEntry 在单个 subuid/subgid 文件中为 root 追加映射
-// (root:1000000:1000000000，与 LXD/Incus 包安装时的默认一致)。
-func ensureRootSubidEntry(path string) error {
-	data, err := os.ReadFile(path)
-	if err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	_, rootOK := parseSubidFile(string(data))
-	if rootOK {
-		return nil
-	}
-
-	ranges, _ := parseSubidFile(string(data))
-	// 从 1000000 开始，跳过已被其他用户占用的区间。
-	const defaultStart = 1000000
-	start := int64(defaultStart)
-	for {
-		overlap := false
-		for _, r := range ranges {
-			end := r.start + r.count
-			if start < end && start+minSubidRange > r.start {
-				start = end
-				overlap = true
-			}
-		}
-		if !overlap {
-			break
-		}
-	}
-
-	line := fmt.Sprintf("root:%d:1000000000\n", start)
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	if _, err := file.WriteString(line); err != nil {
-		return err
-	}
-	if err := file.Sync(); err != nil {
-		return err
-	}
-	fmt.Printf("首次启动：为 root 配置 %s 映射 (%s)\n", path, strings.TrimSpace(line))
-	return nil
 }

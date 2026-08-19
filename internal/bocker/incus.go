@@ -298,6 +298,9 @@ func (c *IncusClient) Start(name string) error {
 	if err != nil {
 		return err
 	}
+	if err := c.EnsureContainerSecurity(name); err != nil {
+		return fmt.Errorf("apply container runtime policy: %w", err)
+	}
 	if err := c.SetContainerNetwork(name, mode, false); err != nil {
 		return fmt.Errorf("配置 %s 网络失败: %w", mode, err)
 	}
@@ -308,10 +311,8 @@ func (c *IncusClient) Start(name string) error {
 	if err := op.Wait(); err != nil {
 		return err
 	}
-	if full.Config[permissionConfigKey] == string(PermissionSuper) {
-		if err := c.ExecStreaming(name, superRuntimeCompatibility, nil); err != nil {
-			return fmt.Errorf("apply super permission compatibility: %w", err)
-		}
+	if err := c.ExecStreaming(name, runtimeCompatibility, nil); err != nil {
+		return fmt.Errorf("apply container runtime compatibility: %w", err)
 	}
 	return nil
 }
@@ -525,14 +526,10 @@ func (c *IncusClient) Launch(imageRef, name string) error {
 }
 
 func (c *IncusClient) LaunchWithNetwork(imageRef, name string, mode NetworkMode) error {
-	return c.LaunchWithNetworkAndPermission(imageRef, name, mode, PermissionNormal)
+	return c.LaunchWithNetworkAndFingerprint(imageRef, "", name, mode)
 }
 
-func (c *IncusClient) LaunchWithNetworkAndPermission(imageRef, name string, mode NetworkMode, permission PermissionMode) error {
-	return c.LaunchWithNetworkAndPermissionAndFingerprint(imageRef, "", name, mode, permission)
-}
-
-func (c *IncusClient) LaunchWithNetworkAndPermissionAndFingerprint(imageRef, fingerprint, name string, mode NetworkMode, permission PermissionMode) error {
+func (c *IncusClient) LaunchWithNetworkAndFingerprint(imageRef, fingerprint, name string, mode NetworkMode) error {
 	if err := c.ready(); err != nil {
 		return err
 	}
@@ -546,14 +543,10 @@ func (c *IncusClient) LaunchWithNetworkAndPermissionAndFingerprint(imageRef, fin
 	_, alias := splitImageRemote(imageRef)
 	// 规范化镜像引用：debian:12 -> debian/12，与镜像源 alias 一致
 	alias = normalizeImageRef(alias)
-	permission, err = ParsePermissionMode(string(permission))
-	if err != nil {
-		return err
-	}
 	config := map[string]string{
 		containerNetworkConfig: string(mode),
 	}
-	applyPermissionConfig(config, permission)
+	applyContainerSecurity(config)
 	source := api.InstanceSource{Type: "image", Server: MirrorURL(), Protocol: "simplestreams"}
 	if fingerprint != "" {
 		source.Fingerprint = fingerprint
@@ -759,36 +752,13 @@ func (c *IncusClient) Import(path, name string) error {
 	if err := op.Wait(); err != nil {
 		return err
 	}
-	return c.EnsurePermission(name, PermissionNormal)
+	return nil
 }
 
-// EnsurePrivileged 确保容器以高权限运行 (security.privileged=true)。
-// 已是高权限则跳过。用于导入/迁移场景保持策略一致。
-func (c *IncusClient) EnsurePrivileged(name string) error {
+// EnsureContainerSecurity applies Bocker's runtime policy to an imported or
+// existing stopped container before it is started.
+func (c *IncusClient) EnsureContainerSecurity(name string) error {
 	if err := c.ready(); err != nil {
-		return err
-	}
-	full, etag, err := c.server.GetInstanceFull(name)
-	if err != nil {
-		return err
-	}
-	if full.Config["security.privileged"] == "true" {
-		return nil
-	}
-	put := writableInstance(full)
-	if put.Config == nil {
-		put.Config = api.ConfigMap{}
-	}
-	put.Config["security.privileged"] = "true"
-	return c.updateInstance(name, etag, put)
-}
-
-func (c *IncusClient) EnsurePermission(name string, mode PermissionMode) error {
-	if err := c.ready(); err != nil {
-		return err
-	}
-	mode, err := ParsePermissionMode(string(mode))
-	if err != nil {
 		return err
 	}
 	full, etag, err := c.server.GetInstanceFull(name)
@@ -799,7 +769,7 @@ func (c *IncusClient) EnsurePermission(name string, mode PermissionMode) error {
 	if put.Config == nil {
 		put.Config = api.ConfigMap{}
 	}
-	applyPermissionConfig(map[string]string(put.Config), mode)
+	applyContainerSecurity(map[string]string(put.Config))
 	return c.updateInstance(name, etag, put)
 }
 
@@ -1009,16 +979,12 @@ func (c *IncusClient) LaunchLocalImage(alias, name string) error {
 }
 
 func (c *IncusClient) LaunchLocalImageWithNetwork(alias, name string, mode NetworkMode) error {
-	return c.LaunchLocalImageWithNetworkAndPermission(alias, name, mode, PermissionNormal)
+	return c.LaunchLocalImageWithNetworkAndConfig(alias, name, mode, nil)
 }
 
-func (c *IncusClient) LaunchLocalImageWithNetworkAndPermission(alias, name string, mode NetworkMode, permission PermissionMode) error {
-	return c.LaunchLocalImageWithNetworkPermissionAndConfig(alias, name, mode, permission, nil)
-}
-
-// LaunchLocalImageWithNetworkPermissionAndConfig starts a local image with
+// LaunchLocalImageWithNetworkAndConfig starts a local image with
 // additional instance configuration applied before its init process starts.
-func (c *IncusClient) LaunchLocalImageWithNetworkPermissionAndConfig(alias, name string, mode NetworkMode, permission PermissionMode, extraConfig map[string]string) error {
+func (c *IncusClient) LaunchLocalImageWithNetworkAndConfig(alias, name string, mode NetworkMode, extraConfig map[string]string) error {
 	if err := c.ready(); err != nil {
 		return err
 	}
@@ -1032,17 +998,13 @@ func (c *IncusClient) LaunchLocalImageWithNetworkPermissionAndConfig(alias, name
 	if err != nil {
 		return err
 	}
-	permission, err = ParsePermissionMode(string(permission))
-	if err != nil {
-		return err
-	}
 	config := map[string]string{
 		containerNetworkConfig: string(mode),
 	}
 	for key, value := range extraConfig {
 		config[key] = value
 	}
-	applyPermissionConfig(config, permission)
+	applyContainerSecurity(config)
 	req := api.InstancesPost{
 		Name: name,
 		Type: api.InstanceTypeContainer,

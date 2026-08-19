@@ -25,9 +25,8 @@
    构建、停止、删除、端口、域名、/etc/hosts 更新失败都会向上传播；
    image run 半配置失败时自动回滚容器。
 
-6. normal 权限模式实际是 privileged —— 已修复并验证
-   normal = security.privileged=false（非特权容器），super 才启用特权；
-   README 与实测一致。
+6. 容器权限模式分支导致发行版行为不一致 —— 已移除
+   Bocker 统一使用特权、nesting 与容器内 systemd 兼容配置，不再暴露权限模式参数。
 
 7. 宿主机网络无事务/回滚 —— 已修复并验证
    bridge shim 配置失败会恢复 sysctl 并删除新建的 bocker-br0；NAT 网段与
@@ -64,18 +63,15 @@
 
 ## 本轮实测新发现并修复
 
-17. 普通用户默认（normal）容器在未配置 root subuid/subgid 的主机上报
-    "System doesn't have a functional idmap setup" —— 已修复并验证：
-    守护进程初始化时为 root 追加 /etc/subuid 与 /etc/subgid 映射
-    （root:1000000:1000000000，幂等，自动避开已占用区间）。
+17. 非特权容器依赖宿主机 root subuid/subgid 映射 —— 已随权限模式移除
+    Bocker 不再创建非特权容器，也不再修改宿主机 /etc/subuid 与 /etc/subgid。
 
 18. 停止已停止的容器报 "The instance is already stopped" 导致 remove 失败
     —— 已修复并验证：Stop 幂等，并等待 Starting/Stopping 过渡状态稳定。
 
-## 环境性观察（非 Bocker 缺陷）
+## 环境性观察
 
 - Debian 13（systemd 257）在部分宿主机/内核的非特权容器内 systemd-networkd
-  卡在启动（RuntimeDirectory 归属），容器拿不到 IPv4；改用 --permission super
-  或 Debian 12 / Ubuntu LTS 即可。README 故障排查已说明。
+  卡在启动并拿不到 IPv4。Bocker 现已统一使用兼容该环境的容器运行策略。
 - 本机 http_proxy 会劫持域名访问（curl 经 127.0.0.1:7890 代理），测试域名
   类 URL 需注意代理环境。

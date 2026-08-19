@@ -67,19 +67,10 @@ func TestRemovedResourceActionsAreRejected(t *testing.T) {
 }
 
 func TestRemovedBuildFlagsAreRejected(t *testing.T) {
-	for _, option := range []string{"--no-run", "--image-only"} {
+	for _, option := range []string{"--no-run", "--image-only", "--permission=super"} {
 		if err := CmdBuild([]string{option}); err == nil {
 			t.Fatalf("CmdBuild(%q) unexpectedly succeeded", option)
 		}
-	}
-}
-
-func TestBuildPermissionFlagIsAccepted(t *testing.T) {
-	if err := CmdBuild([]string{"--permission", "super", "--help"}); err != nil {
-		t.Fatalf("build --permission super --help: %v", err)
-	}
-	if err := CmdBuild([]string{"--permission", "root", "--help"}); err == nil {
-		t.Fatal("build accepted an invalid permission value")
 	}
 }
 
@@ -100,17 +91,10 @@ func TestRemovedInstallAndRunSyntaxIsRejected(t *testing.T) {
 		{"demo-image", "--name", "demo", "-N", "nat"},
 		{"demo-image", "--name", "demo", "-P", "super"},
 		{"demo-image", "--name", "demo", "--privilege", "super"},
+		{"demo-image", "--name", "demo", "--permission", "super"},
 	} {
 		if err := CmdRun(args); err == nil {
 			t.Fatalf("CmdRun(%#v) unexpectedly succeeded", args)
-		}
-	}
-}
-
-func TestRemovedPermissionValuesAreRejected(t *testing.T) {
-	for _, value := range []string{"root", "privileged"} {
-		if _, err := ParsePermissionMode(value); err == nil {
-			t.Fatalf("ParsePermissionMode(%q) unexpectedly succeeded", value)
 		}
 	}
 }

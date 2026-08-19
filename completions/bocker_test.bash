@@ -36,9 +36,11 @@ complete_words image run --network ""
 contains nat
 contains bridge
 
-complete_words template install --permission ""
-contains normal
-contains super
+complete_words template install --
+if contains --permission; then
+	echo "removed --permission flag is still offered" >&2
+	exit 1
+fi
 
 complete_words image build --
 contains --build-arg

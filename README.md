@@ -40,12 +40,14 @@ bocker container exec hello cat /opt/hello/message.txt
 bocker image build [Incusfile.yaml]
 bocker image build --name <name> [Incusfile.yaml]
 bocker image build --network <bridge|nat> [Incusfile.yaml]
-bocker image build --permission <normal|super> [Incusfile.yaml]
 bocker image build --build-arg KEY=VALUE [Incusfile.yaml]
 ```
 
 `--name` 和 `--network` 覆盖 YAML 中的全局配置；`--build-arg` 只能覆盖 YAML `args` 中
 已经声明的变量。构建参数不会自动写入最终镜像。
+
+Bocker 创建、构建和导入的容器统一使用特权容器运行策略，以保证 systemd 和嵌套命名空间
+在支持的发行版中行为一致。CLI 不提供权限模式开关。
 
 ## Incusfile.yaml
 

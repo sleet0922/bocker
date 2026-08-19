@@ -12,10 +12,6 @@ _bocker_completion() {
             mapfile -t COMPREPLY < <(compgen -W "nat bridge" -- "$cur")
             return
             ;;
-        --permission)
-            mapfile -t COMPREPLY < <(compgen -W "normal super" -- "$cur")
-            return
-            ;;
         --name|--build-arg)
             return
             ;;
@@ -44,13 +40,13 @@ _bocker_completion() {
             options="--json"
             ;;
         template:install|image:run)
-            options="--name --network --permission"
+            options="--name --network"
             ;;
         image:build)
-            options="--name --network --permission --build-arg --help"
+            options="--name --network --build-arg --help"
             ;;
         container:import)
-            options="--network --permission"
+            options="--network"
             ;;
         *)
             options=""

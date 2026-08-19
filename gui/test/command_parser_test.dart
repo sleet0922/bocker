@@ -129,7 +129,6 @@ void main() {
       image: 'debian/12',
       name: 'demo',
       network: 'nat',
-      permission: 'normal',
     );
 
     expect(args, [
@@ -138,8 +137,6 @@ void main() {
       'debian/12',
       '--network',
       'nat',
-      '--permission',
-      'normal',
       '--name',
       'demo',
     ]);
@@ -167,32 +164,20 @@ void main() {
       image: 'web-image',
       name: 'web-01',
       network: 'default',
-      permission: 'normal',
     );
     final overridden = imageRunArguments(
       image: 'web-image',
       name: 'web-02',
       network: 'nat',
-      permission: 'super',
     );
 
-    expect(defaults, [
-      'image',
-      'run',
-      'web-image',
-      '--name',
-      'web-01',
-      '--permission',
-      'normal',
-    ]);
+    expect(defaults, ['image', 'run', 'web-image', '--name', 'web-01']);
     expect(overridden, [
       'image',
       'run',
       'web-image',
       '--name',
       'web-02',
-      '--permission',
-      'super',
       '--network',
       'nat',
     ]);

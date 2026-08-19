@@ -27,10 +27,6 @@ func CmdBuild(args []string) error {
 	if err != nil {
 		return err
 	}
-	permissionMode, args, err := permissionModeFromArgs(args)
-	if err != nil {
-		return err
-	}
 	networkOverride := hasNetworkOverride(args)
 	networkMode, args, err := networkModeFromArgs(args)
 	if err != nil {
@@ -38,6 +34,7 @@ func CmdBuild(args []string) error {
 	}
 	overrideName := ""
 	incusfilePath := ""
+	showHelp := false
 
 	i := 0
 	for i < len(args) {
@@ -50,8 +47,8 @@ func CmdBuild(args []string) error {
 			overrideName = args[i+1]
 			i += 2
 		case "--help", "-h":
-			fmt.Print(buildUsage())
-			return nil
+			showHelp = true
+			i++
 		default:
 			if strings.HasPrefix(arg, "--") {
 				return fmt.Errorf("未知参数: %s (使用 --help 查看用法)", arg)
@@ -62,6 +59,10 @@ func CmdBuild(args []string) error {
 			incusfilePath = arg
 			i++
 		}
+	}
+	if showHelp {
+		fmt.Print(buildUsage())
+		return nil
 	}
 
 	f, err := parseIncusfileWithBuildArgs(incusfilePath, buildArgs)
@@ -121,7 +122,6 @@ func CmdBuild(args []string) error {
 	fmt.Printf("│ 基础镜像: %s\n", f.From)
 	fmt.Printf("│ 目标镜像: %s\n", alias)
 	fmt.Printf("│ 网络模式: %s\n", networkMode)
-	fmt.Printf("│ 构建权限: %s\n", permissionMode)
 	if f.Mirror != "" {
 		fmt.Printf("│ 软件源:   %s\n", f.Mirror)
 	}
@@ -140,7 +140,7 @@ func CmdBuild(args []string) error {
 	}
 	fmt.Printf("╰─\n\n")
 
-	if err := buildImage(client, f, alias, networkMode, permissionMode); err != nil {
+	if err := buildImage(client, f, alias, networkMode); err != nil {
 		return err
 	}
 
@@ -156,8 +156,6 @@ func buildUsage() string {
   bocker image build [Incusfile.yaml]                    构建镜像 (默认 ./Incusfile.yaml)
   bocker image build --name <name> [Incusfile.yaml]      覆盖镜像别名
   bocker image build --network <bridge|nat> [Incusfile.yaml] 覆盖构建网络
-  bocker image build --permission <normal|super> [Incusfile.yaml]
-                                                     设置所有构建阶段权限
   bocker image build --build-arg <KEY=VALUE> [Incusfile.yaml]
                                                      覆盖 YAML args 中声明的变量
 
@@ -348,7 +346,7 @@ echo "✔ 镜像源已切换为 %s"`,
 // buildImage 执行多阶段构建流程：按顺序构建各阶段，最终阶段发布为镜像。
 // 中间阶段的容器保持运行 (供后续阶段 COPY --from 引用)，最终统一清理。
 // 单阶段 YAML 构建文件只有一个阶段，仍走相同的构建路径。
-func buildImage(client *IncusClient, f *Incusfile, alias string, networkMode NetworkMode, permission PermissionMode) error {
+func buildImage(client *IncusClient, f *Incusfile, alias string, networkMode NetworkMode) error {
 	stages := f.Stages
 	contextDir := filepath.Dir(f.Path)
 	stageContainers := make([]string, len(stages))
@@ -386,7 +384,7 @@ func buildImage(client *IncusClient, f *Incusfile, alias string, networkMode Net
 		fmt.Printf("\n▶ [%d/%d] %s %q (镜像 %s) ...\n", si+1, totalStages, role, stageLabel, stage.From)
 
 		// 启动阶段容器
-		if err := client.LaunchWithNetworkAndPermissionAndFingerprint(stage.From, stage.BaseFingerprint, stageContainer, networkMode, permission); err != nil {
+		if err := client.LaunchWithNetworkAndFingerprint(stage.From, stage.BaseFingerprint, stageContainer, networkMode); err != nil {
 			return fmt.Errorf("启动阶段 %d 容器失败: %w", si+1, err)
 		}
 		actualBase, err := client.BaseImageFingerprint(stageContainer)
@@ -754,7 +752,7 @@ fi`
 }
 
 // runFromBuiltImage 从已构建的镜像启动正式容器，并应用 EXPOSE/DOMAIN/AUTOSTART。
-func runFromBuiltImage(client *IncusClient, alias string, f *Incusfile, networkMode NetworkMode, permission PermissionMode) error {
+func runFromBuiltImage(client *IncusClient, alias string, f *Incusfile, networkMode NetworkMode) error {
 	name := f.Name
 	if name == "" {
 		name = defaultNameFromImage(alias)
@@ -781,7 +779,7 @@ func runFromBuiltImage(client *IncusClient, alias string, f *Incusfile, networkM
 	}
 
 	fmt.Printf("▶ 启动容器 %s (镜像 %s) ...\n", name, alias)
-	if err := client.LaunchLocalImageWithNetworkPermissionAndConfig(alias, name, networkMode, permission, incusEnvironmentConfig(f.Env)); err != nil {
+	if err := client.LaunchLocalImageWithNetworkAndConfig(alias, name, networkMode, incusEnvironmentConfig(f.Env)); err != nil {
 		return fmt.Errorf("启动容器失败: %w", err)
 	}
 	completed := false
@@ -1126,11 +1124,6 @@ func CmdRun(args []string) error {
 	if err != nil {
 		return err
 	}
-	permissionOverride := hasPermissionOverride(args)
-	permissionMode, args, err := permissionModeFromArgs(args)
-	if err != nil {
-		return err
-	}
 	networkOverride := hasNetworkOverride(args)
 	networkMode, args, err := networkModeFromArgs(args)
 	if err != nil {
@@ -1182,13 +1175,6 @@ func CmdRun(args []string) error {
 		networkMode = selected
 		networkOverride = true
 	}
-	if interactiveImage && !permissionOverride {
-		selected, ok := selectPermissionMode(permissionMode)
-		if !ok {
-			return nil
-		}
-		permissionMode = selected
-	}
 	properties, err := client.GetImageProperties(alias)
 	if err != nil {
 		return fmt.Errorf("读取本地镜像 %s 失败: %w", alias, err)
@@ -1218,7 +1204,7 @@ func CmdRun(args []string) error {
 	}
 	fmt.Println()
 
-	return runFromBuiltImage(client, alias, f, networkMode, permissionMode)
+	return runFromBuiltImage(client, alias, f, networkMode)
 }
 
 func runtimeConfigFromImageProperties(name string, properties map[string]string) (*Incusfile, error) {

@@ -9,7 +9,7 @@ import (
 )
 
 // Version 工具版本
-const Version = "3.2.1"
+const Version = "3.2.2"
 
 // MirrorRemote 镜像源在本地的 remote 名称
 const MirrorRemote = "mirror-images"
@@ -320,7 +320,6 @@ func printUsage() {
 
 	printUsageSection("创建容器时可用", []usageEntry{
 		{"--network <nat|bridge>", "NAT 私有网络或局域网直连；默认 bridge"},
-		{"--permission <normal|super>", "普通权限或放宽隔离；默认 normal"},
 		{"--name <name>", "指定新容器的名称"},
 	})
 	printUsageSection("构建镜像时可用", []usageEntry{

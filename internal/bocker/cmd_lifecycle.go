@@ -297,10 +297,6 @@ func CmdExport(name string) error {
 
 // CmdImport 从备份文件导入容器。有参数则直接使用，无参数则扫描当前目录 .tar.gz 供选择。
 func CmdImport(args []string) error {
-	permissionMode, args, err := permissionModeFromArgs(args)
-	if err != nil {
-		return err
-	}
 	networkOverride := hasNetworkOverride(args)
 	networkMode, args, err := networkModeFromArgs(args)
 	if err != nil {
@@ -350,7 +346,7 @@ func CmdImport(args []string) error {
 		} else if err := client.ConfigureImportedNetwork(name); err != nil {
 			return err
 		}
-		if err := client.EnsurePermission(name, permissionMode); err != nil {
+		if err := client.EnsureContainerSecurity(name); err != nil {
 			return err
 		}
 	} else {
@@ -368,7 +364,7 @@ func CmdImport(args []string) error {
 		} else if err := client.ConfigureImportedNetwork(importedName); err != nil {
 			return err
 		}
-		if err := client.EnsurePermission(importedName, permissionMode); err != nil {
+		if err := client.EnsureContainerSecurity(importedName); err != nil {
 			return err
 		}
 	}

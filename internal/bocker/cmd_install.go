@@ -12,11 +12,6 @@ func CmdInstall(args []string) error {
 	if err != nil {
 		return err
 	}
-	permissionOverride := hasPermissionOverride(args)
-	permissionMode, args, err := permissionModeFromArgs(args)
-	if err != nil {
-		return err
-	}
 	networkOverride := hasNetworkOverride(args)
 	mode, args, err := networkModeFromArgs(args)
 	if err != nil {
@@ -38,8 +33,8 @@ func CmdInstall(args []string) error {
 		if err := validateBockerName(name); err != nil {
 			return fmt.Errorf("容器名称 %q 无效: %w", name, err)
 		}
-		fmt.Printf("正在安装 %s (名称: %s, 网络: %s, 权限: %s) ...\n", imageRef, name, mode, permissionMode)
-		if err := client.LaunchWithNetworkAndPermission(imageRef, name, mode, permissionMode); err != nil {
+		fmt.Printf("正在安装 %s (名称: %s, 网络: %s) ...\n", imageRef, name, mode)
+		if err := client.LaunchWithNetwork(imageRef, name, mode); err != nil {
 			return err
 		}
 		if err := finishContainerInstall(client, name, mode); err != nil {
@@ -57,14 +52,6 @@ func CmdInstall(args []string) error {
 		}
 		mode = selectedMode
 	}
-	if len(args) == 0 && !permissionOverride {
-		selectedPermission, ok := selectPermissionMode(permissionMode)
-		if !ok {
-			return nil
-		}
-		permissionMode = selectedPermission
-	}
-
 	fmt.Println("正在从镜像源获取可用发行版列表 ...")
 	groups, err := client.ListImages()
 	if err != nil {
@@ -112,7 +99,7 @@ func CmdInstall(args []string) error {
 	// version.Image 已是 alias 形式（如 debian/12），Launch 内部会处理
 	imageRef := version.Image
 	fmt.Printf("\n正在安装 %s %s (%s, 网络: %s) ...\n", group.Distro, version.Release, imageRef, mode)
-	if err := client.LaunchWithNetworkAndPermission(imageRef, name, mode, permissionMode); err != nil {
+	if err := client.LaunchWithNetwork(imageRef, name, mode); err != nil {
 		return err
 	}
 

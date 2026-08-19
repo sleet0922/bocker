@@ -256,7 +256,6 @@ class _BockerHomeState extends State<BockerHome> {
     if (templates == null || !mounted) return;
     final name = TextEditingController();
     var network = 'nat';
-    var permission = 'normal';
     var distro = templates.first.distro;
     var template = templates.first;
     final distros = templates.map((item) => item.distro).toSet().toList();
@@ -325,15 +324,6 @@ class _BockerHomeState extends State<BockerHome> {
                           setDialogState(() => network = value),
                     ),
                   ),
-                  const SizedBox(height: 16),
-                  _ChoiceSection(
-                    label: '容器权限',
-                    child: _PermissionSelector(
-                      value: permission,
-                      onChanged: (value) =>
-                          setDialogState(() => permission = value),
-                    ),
-                  ),
                 ],
               ),
             ),
@@ -346,12 +336,7 @@ class _BockerHomeState extends State<BockerHome> {
             FilledButton(
               onPressed: () => Navigator.pop(
                 context,
-                _InstallValues(
-                  template.image,
-                  name.text.trim(),
-                  network,
-                  permission,
-                ),
+                _InstallValues(template.image, name.text.trim(), network),
               ),
               child: const Text('安装'),
             ),
@@ -369,7 +354,6 @@ class _BockerHomeState extends State<BockerHome> {
       image: values.image,
       name: values.name,
       network: values.network,
-      permission: values.permission,
     );
     await _run('安装容器', args);
   }
@@ -467,7 +451,6 @@ class _BockerHomeState extends State<BockerHome> {
         : '${image.name.substring(0, 61)}-1';
     final name = TextEditingController(text: defaultName);
     var network = 'default';
-    var permission = 'normal';
     final values = await showDialog<_RunImageValues>(
       context: context,
       builder: (context) => StatefulBuilder(
@@ -499,15 +482,6 @@ class _BockerHomeState extends State<BockerHome> {
                           setDialogState(() => network = value.first),
                     ),
                   ),
-                  const SizedBox(height: 16),
-                  _ChoiceSection(
-                    label: '容器权限',
-                    child: _PermissionSelector(
-                      value: permission,
-                      onChanged: (value) =>
-                          setDialogState(() => permission = value),
-                    ),
-                  ),
                 ],
               ),
             ),
@@ -520,7 +494,7 @@ class _BockerHomeState extends State<BockerHome> {
             FilledButton(
               onPressed: () => Navigator.pop(
                 context,
-                _RunImageValues(name.text.trim(), network, permission),
+                _RunImageValues(name.text.trim(), network),
               ),
               child: const Text('创建并启动'),
             ),
@@ -541,7 +515,6 @@ class _BockerHomeState extends State<BockerHome> {
         image: image.name,
         name: values.name,
         network: values.network,
-        permission: values.permission,
       ),
     );
   }
@@ -550,7 +523,6 @@ class _BockerHomeState extends State<BockerHome> {
     final path = TextEditingController();
     final name = TextEditingController();
     var network = 'nat';
-    var permission = 'normal';
     final values = await showDialog<_ImportValues>(
       context: context,
       builder: (context) => StatefulBuilder(
@@ -594,15 +566,6 @@ class _BockerHomeState extends State<BockerHome> {
                           setDialogState(() => network = value),
                     ),
                   ),
-                  const SizedBox(height: 16),
-                  _ChoiceSection(
-                    label: '容器权限',
-                    child: _PermissionSelector(
-                      value: permission,
-                      onChanged: (value) =>
-                          setDialogState(() => permission = value),
-                    ),
-                  ),
                 ],
               ),
             ),
@@ -615,12 +578,7 @@ class _BockerHomeState extends State<BockerHome> {
             FilledButton(
               onPressed: () => Navigator.pop(
                 context,
-                _ImportValues(
-                  path.text.trim(),
-                  name.text.trim(),
-                  network,
-                  permission,
-                ),
+                _ImportValues(path.text.trim(), name.text.trim(), network),
               ),
               child: const Text('导入'),
             ),
@@ -646,8 +604,6 @@ class _BockerHomeState extends State<BockerHome> {
       if (values.name.isNotEmpty) values.name,
       '--network',
       values.network,
-      '--permission',
-      values.permission,
     ]);
   }
 
@@ -1171,35 +1127,6 @@ class _NetworkSelector extends StatelessWidget {
       onSelectionChanged: enabled
           ? (selected) => onChanged(selected.first)
           : null,
-    );
-  }
-}
-
-class _PermissionSelector extends StatelessWidget {
-  const _PermissionSelector({required this.value, required this.onChanged});
-
-  final String value;
-  final ValueChanged<String> onChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    return SegmentedButton<String>(
-      showSelectedIcon: false,
-      expandedInsets: EdgeInsets.zero,
-      segments: const [
-        ButtonSegment(
-          value: 'normal',
-          icon: Icon(Icons.shield_outlined),
-          label: Text('普通'),
-        ),
-        ButtonSegment(
-          value: 'super',
-          icon: Icon(Icons.admin_panel_settings_outlined),
-          label: Text('超级'),
-        ),
-      ],
-      selected: {value},
-      onSelectionChanged: (selected) => onChanged(selected.first),
     );
   }
 }
@@ -2283,11 +2210,10 @@ List<String> splitShellWords(String input) {
 }
 
 class _InstallValues {
-  const _InstallValues(this.image, this.name, this.network, this.permission);
+  const _InstallValues(this.image, this.name, this.network);
   final String image;
   final String name;
   final String network;
-  final String permission;
 }
 
 class _BuildValues {
@@ -2298,17 +2224,15 @@ class _BuildValues {
 }
 
 class _RunImageValues {
-  const _RunImageValues(this.name, this.network, this.permission);
+  const _RunImageValues(this.name, this.network);
   final String name;
   final String network;
-  final String permission;
 }
 
 List<String> templateInstallArguments({
   required String image,
   required String name,
   required String network,
-  required String permission,
 }) {
   return [
     'template',
@@ -2316,8 +2240,6 @@ List<String> templateInstallArguments({
     image,
     '--network',
     network,
-    '--permission',
-    permission,
     if (name.isNotEmpty) ...['--name', name],
   ];
 }
@@ -2326,7 +2248,6 @@ List<String> imageRunArguments({
   required String image,
   required String name,
   required String network,
-  required String permission,
 }) {
   return [
     'image',
@@ -2334,18 +2255,15 @@ List<String> imageRunArguments({
     image,
     '--name',
     name,
-    '--permission',
-    permission,
     if (network != 'default') ...['--network', network],
   ];
 }
 
 class _ImportValues {
-  const _ImportValues(this.path, this.name, this.network, this.permission);
+  const _ImportValues(this.path, this.name, this.network);
   final String path;
   final String name;
   final String network;
-  final String permission;
 }
 
 class _SettingsValues {
