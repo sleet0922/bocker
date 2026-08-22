@@ -640,7 +640,16 @@ func runEmbeddedDaemonSupervisor() error {
 	}
 	for _, dir := range []string{paths.incusDir, paths.logDir, paths.lxcfsDir} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return err
+			if dir == paths.lxcfsDir {
+				_ = unix.Unmount(dir, unix.MNT_DETACH)
+				if retryErr := os.MkdirAll(dir, 0o700); retryErr == nil {
+					continue
+				}
+			}
+			if _, statErr := os.Stat(dir); statErr == nil {
+				continue
+			}
+			return fmt.Errorf("bocker daemon: mkdir %s: %w", dir, err)
 		}
 	}
 	if err := allowSocketAccess(paths); err != nil {
@@ -752,6 +761,7 @@ func startEmbeddedLXCFS(paths embeddedPaths) *exec.Cmd {
 	if _, err := os.Stat(path); err != nil {
 		return nil
 	}
+	_ = unix.Unmount(paths.lxcfsDir, unix.MNT_DETACH)
 	logFile, err := openRotatedDaemonLog(filepath.Join(paths.logDir, "lxcfs.log"))
 	if err != nil {
 		return nil

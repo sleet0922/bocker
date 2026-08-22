@@ -1,7 +1,7 @@
 name: bocker_gui
 description: "Material 3 desktop interface for Bocker on Ubuntu."
 publish_to: 'none'
-version: 3.2.3+23
+version: 3.2.4+24
 
 environment:
   sdk: ^3.12.2
