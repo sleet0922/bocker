@@ -49,13 +49,14 @@ broker 转发必须是流式的：长时间运行的 `image build`、`template i
 否则用户会误以为命令没有反应。
 
 构建描述文件统一使用严格的 `Incusfile` schema，不再支持旧的逐行文本指令。顶层
-`version: 1`、`args`、`mirror`、`name`、`network` 和 `stages` 必须通过 schema 校验；未知
-字段、重复 key 和多文档直接拒绝。阶段步骤使用 `exec`（argv，不经 shell）、`shell`（显式
-shell）、`pkg`、`copy`、`env`、`workdir` 和 `mise`。运行配置只能放在最终阶段的 `runtime`。
+`version: 2`、`args`、`mirror`、`name`、`network` 和 `stages` 必须通过 schema 校验；未知
+字段、重复 key、YAML 锚点和多文档直接拒绝，旧 Incusfile 不解析。阶段按 `workdir`、`env`、
+`packages`、`tools`、`files`、`artifacts`、`fetch`、`commands` 意图声明；commands 使用 argv
+或显式 shell。运行配置只能放在最终阶段的 `runtime`。
 `MISE` 使用固定精确版本并在构建阶段提供工具链；工具和缓存不得进入最终镜像。
 
 `mirror: china` 必须位于 YAML 顶层，并为最终阶段和所有构建阶段显式固定清华软件源。
-`pkg: [...]` 在阶段内统一使用 apt/apk 安装并清理索引；两者用于减少国内环境常见的换源和
+`packages: [...]` 在阶段内统一使用 apt/apk 安装并清理索引；两者用于减少国内环境常见的换源和
 包管理样板；旧 Incusfile 格式不再兼容。
 
 内部命令 `bocker __daemon` 是 systemd 使用的私有入口，只允许 root 运行；普通用户不应

@@ -1,4 +1,4 @@
-version: 1
+version: 2
 args:
   PYTHON_VERSION: "3.13.7"
 mirror: china
@@ -7,11 +7,11 @@ network: nat
 stages:
   - name: builder
     from: debian/13
-    steps:
-      - pkg: [build-essential, ca-certificates, curl, git, libbz2-dev, libffi-dev, liblzma-dev, libreadline-dev, libsqlite3-dev, libssl-dev, xz-utils, zlib1g-dev]
-      - mise: {tool: python, version: "${PYTHON_VERSION}"}
-      - workdir: /src
-      - copy: {sources: [app.py, test_app.py], destination: /src/}
+    packages: [build-essential, ca-certificates, curl, git, libbz2-dev, libffi-dev, liblzma-dev, libreadline-dev, libsqlite3-dev, libssl-dev, xz-utils, zlib1g-dev]
+    tools: {python: "${PYTHON_VERSION}"}
+    workdir: /src
+    files: {/src/: [app.py, test_app.py]}
+    commands:
       - shell: |
           set -eu
           test "$PIP_INDEX_URL" = https://pypi.tuna.tsinghua.edu.cn/simple
@@ -21,9 +21,9 @@ stages:
           python app.py > /out/result.json
           python --version > /out/version.txt
   - from: debian/13
-    steps:
-      - workdir: /opt/bocker-mise-test
-      - copy: {from: builder, sources: [/out/result.json, /out/version.txt], destination: ./}
+    workdir: /opt/bocker-mise-test
+    artifacts: {builder: {/out/result.json: ./, /out/version.txt: ./}}
+    commands:
       - shell: |
           set -eu
           grep -Fx 'Python 3.13.7' version.txt

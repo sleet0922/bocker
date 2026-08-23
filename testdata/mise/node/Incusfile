@@ -1,4 +1,4 @@
-version: 1
+version: 2
 args:
   NODE_VERSION: "24.19.0"
 mirror: china
@@ -7,10 +7,10 @@ network: nat
 stages:
   - name: builder
     from: debian/13
-    steps:
-      - mise: {tool: node, version: "${NODE_VERSION}"}
-      - workdir: /src
-      - copy: {sources: [package.json, app.js, app.test.js], destination: /src/}
+    tools: {node: "${NODE_VERSION}"}
+    workdir: /src
+    files: {/src/: [package.json, app.js, app.test.js]}
+    commands:
       - shell: |
           set -eu
           mkdir -p /out
@@ -18,9 +18,9 @@ stages:
           node app.js > /out/result.json
           node --version > /out/version.txt
   - from: debian/13
-    steps:
-      - workdir: /opt/bocker-mise-test
-      - copy: {from: builder, sources: [/out/result.json, /out/version.txt], destination: ./}
+    workdir: /opt/bocker-mise-test
+    artifacts: {builder: {/out/result.json: ./, /out/version.txt: ./}}
+    commands:
       - shell: |
           set -eu
           grep -Fx 'v24.19.0' version.txt

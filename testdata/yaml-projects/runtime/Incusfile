@@ -1,19 +1,13 @@
-version: 1
+version: 2
 name: yaml-runtime
 network: nat
 stages:
   - from: alpine/3.24
-    steps:
-      - exec:
-          command: mkdir
-          args: [-p, /opt/yaml-runtime/logs]
-      - env:
-          APP_ENV: production
+    env: {APP_ENV: production}
+    commands: [[mkdir, -p, /opt/yaml-runtime/logs]]
     runtime:
       entrypoint: [/bin/sh]
       cmd: [-c, "printf '%s\\n' \\\"$APP_ENV\\\""]
-      expose:
-        - port: 8080
-          protocol: tcp
+      expose: [8080]
       domain: yaml-runtime.test
       autostart: false

@@ -1,23 +1,15 @@
-version: 1
+version: 2
 name: yaml-hello
 network: nat
 stages:
   - name: builder
     from: alpine/3.24
-    steps:
-      - workdir: /src
-      - copy:
-          sources: [hello.sh, message.txt]
-          destination: ./
-      - exec:
-          command: chmod
-          args: ["0755", hello.sh]
+    workdir: /src
+    files: {./: [hello.sh, message.txt]}
+    commands:
       - shell: |
           set -eu
+          chmod 0755 hello.sh
           ./hello.sh "$(cat message.txt)" > /out.txt
   - from: alpine/3.24
-    steps:
-      - copy:
-          from: builder
-          sources: [/out.txt]
-          destination: /hello.txt
+    artifacts: {builder: {/out.txt: /hello.txt}}

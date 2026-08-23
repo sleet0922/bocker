@@ -14,7 +14,9 @@ func downloadCommand(spec DownloadSpec) string {
 		attempt := spec.Attempts[i]
 		var current strings.Builder
 		current.WriteString("if wget --timeout=" + fmt.Sprint(attempt.Timeout) + " --tries=" + fmt.Sprint(attempt.Tries) + " " + shellQuote(attempt.URL) + " -O \"$archive\"; then ")
-		current.WriteString("printf '%s  %s\\n' " + shellQuote(attempt.SHA256) + " \"$archive\" | sha256sum -c -; ")
+		if strings.TrimSpace(attempt.SHA256) != "" {
+			current.WriteString("printf '%s  %s\\n' " + shellQuote(attempt.SHA256) + " \"$archive\" | sha256sum -c -; ")
+		}
 		switch attempt.Format {
 		case "zip":
 			current.WriteString("unzip -q \"$archive\" -d " + shellQuote(spec.Extract) + "; ")
@@ -34,7 +36,7 @@ func downloadCommand(spec DownloadSpec) string {
 		action = current.String()
 	}
 	body := strings.Builder{}
-	body.WriteString("set -eu; archive=" + shellQuote(spec.Output) + "; trap 'rm -f \"$archive\"' EXIT HUP INT TERM; " + action)
+	body.WriteString("set -eu; mkdir -p " + shellQuote(spec.Extract) + "; archive=" + shellQuote(spec.Output) + "; trap 'rm -f \"$archive\"' EXIT HUP INT TERM; " + action)
 	if spec.Verify != nil {
 		body.WriteString("; actual=$(sed -n " + shellQuote(spec.Verify.Pattern) + " " + shellQuote(spec.Verify.Path) + "); test \"$actual\" = " + shellQuote(spec.Verify.Value))
 	}

@@ -1,0 +1,19 @@
+version: 2
+mirror: china
+name: bocker-language-c-e2e
+network: nat
+stages:
+  - name: builder
+    from: debian/13
+    packages: [build-essential]
+    workdir: /src
+    files: {/src/: [main.c]}
+    commands:
+      - [mkdir, -p, /out]
+      - [cc, -std=c17, -O2, -Wall, -Wextra, -o, /out/c-app, main.c]
+      - [chmod, "0755", /out/c-app]
+  - from: debian/13
+    artifacts: {builder: {/out/c-app: /usr/local/bin/c-app}}
+    commands:
+      - [/usr/local/bin/c-app]
+    runtime: {autostart: false}

@@ -91,7 +91,7 @@ func CmdBuild(args []string) error {
 	client := NewIncusClient()
 
 	execCount, shellCount, packageCount, copyCount, envCount, miseCount := 0, 0, 0, 0, 0, 0
-	downloadCount, writeCount, serviceCount := 0, 0, 0
+	downloadCount := 0
 	for _, stage := range f.Stages {
 		for _, step := range stage.Steps {
 			switch step.Kind {
@@ -109,10 +109,6 @@ func CmdBuild(args []string) error {
 				miseCount++
 			case "DOWNLOAD":
 				downloadCount++
-			case "WRITE":
-				writeCount++
-			case "SERVICE":
-				serviceCount++
 			}
 		}
 	}
@@ -125,7 +121,7 @@ func CmdBuild(args []string) error {
 	if f.Mirror != "" {
 		fmt.Printf("│ 软件源:   %s\n", f.Mirror)
 	}
-	fmt.Printf("│ ARG: %d  EXEC: %d  SHELL: %d  MISE: %d  PKG: %d  COPY: %d  ENV: %d  DOWNLOAD: %d  WRITE: %d  SERVICE: %d  EXPOSE: %d  步骤: %d\n", len(f.Args), execCount, shellCount, miseCount, packageCount, copyCount, envCount, downloadCount, writeCount, serviceCount, len(f.Exposes), len(f.Steps))
+	fmt.Printf("│ ARG: %d  EXEC: %d  SHELL: %d  MISE: %d  PKG: %d  COPY: %d  ENV: %d  FETCH: %d  EXPOSE: %d  步骤: %d\n", len(f.Args), execCount, shellCount, miseCount, packageCount, copyCount, envCount, downloadCount, len(f.Exposes), len(f.Steps))
 	if f.Domain != "" {
 		fmt.Printf("│ DOMAIN:   %s\n", f.Domain)
 	}
@@ -160,30 +156,30 @@ func buildUsage() string {
                                                      覆盖 YAML args 中声明的变量
 
 YAML 顶层字段:
-  version: 1
+  version: 2
   args: {KEY: VALUE}
   mirror: china
   name: image-name
   network: nat
   stages: [...]
 
-阶段步骤只能使用以下结构化类型之一:
-  - exec: {command: chmod, args: ["0755", "/var/log/app"]}
-    # 可选 capture: NAME，把 stdout 放入后续步骤的构建变量
-  - shell: |            # 只有这里允许 shell 管道、重定向和条件
-      set -eu
-      echo ready
-  - pkg: [ca-certificates, curl]
-  - workdir: /src
-  - copy: {sources: [a, b], destination: /src/}
-  - env: {APP_ENV: production}
-  - mise: {tool: go, version: "1.26.6"}  # 仅限非最终阶段
-  - download: {output: /tmp/src.tar.gz, extract: /src, attempts: [...]}
-  - write: {path: /etc/app.env, content: "APP_ENV=production\n", mode: "0600"}
-  - service: {start: [...], stop: [...], enable: [...]}
+阶段按意图声明:
+  workdir: /src
+  env: {APP_ENV: production}
+  packages: [ca-certificates, curl]
+  tools: {go: "1.26.6"}       # 仅限非最终阶段
+  files: {/src/: [go.mod, cmd]}
+  artifacts: {builder: {/out/app: /usr/local/bin/app}}
+  fetch: [{url: https://example.test/app.tar.gz, extract: /out, format: tar.gz}]
+  commands:
+    - [go, build, -o, /out/app, ./cmd/app]
+    - shell: |
+        set -eu
+        echo ready
 
 最终阶段可选 runtime: {entrypoint: [...], cmd: [...], env: {...}, expose: [...], domain: ..., autostart: true}
-未知字段、重复 YAML key、旧文本指令和多余步骤字段都会拒绝。
+命令支持 argv 列表，或 run/shell 映射；run 可配 capture 保存 stdout。
+未知字段、重复 YAML key、YAML 锚点、旧版本和 steps 字段都会拒绝。
 `
 }
 

@@ -1,0 +1,20 @@
+version: 2
+mirror: china
+name: bocker-language-java-e2e
+network: nat
+stages:
+  - name: builder
+    from: debian/13
+    packages: [default-jdk-headless]
+    workdir: /src
+    files: {/src/: [Main.java]}
+    commands:
+      - [mkdir, -p, /out/classes]
+      - [javac, -d, /out/classes, Main.java]
+      - [jar, --create, --file, /out/java-app.jar, --main-class, Main, -C, /out/classes, Main.class]
+  - from: debian/13
+    packages: [default-jre-headless]
+    artifacts: {builder: {/out/java-app.jar: /opt/java-app.jar}}
+    commands:
+      - [java, -jar, /opt/java-app.jar]
+    runtime: {autostart: false}

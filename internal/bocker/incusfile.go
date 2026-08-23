@@ -131,7 +131,7 @@ func parseIncusfile(path string) (*Incusfile, error) {
 }
 
 func parseIncusfileWithBuildArgs(path string, overrides map[string]string) (*Incusfile, error) {
-	return parseYAMLBuildFile(path, overrides)
+	return parseV2BuildFile(path, overrides)
 }
 
 func validateStageName(name string) error {

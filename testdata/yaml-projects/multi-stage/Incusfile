@@ -1,23 +1,15 @@
-version: 1
+version: 2
 name: yaml-multi-stage
 network: nat
 stages:
   - name: build
     from: alpine/3.24
-    steps:
-      - workdir: /src
-      - copy:
-          sources: [main.sh]
-          destination: ./
-      - exec:
-          command: chmod
-          args: ["0755", main.sh]
-      - exec:
-          command: ./main.sh
-          args: []
+    workdir: /src
+    files: {./: [main.sh]}
+    commands:
+      - shell: |
+          set -eu
+          chmod 0755 main.sh
+          ./main.sh
   - from: alpine/3.24
-    steps:
-      - copy:
-          from: build
-          sources: [/src/result.txt]
-          destination: /result.txt
+    artifacts: {build: {/src/result.txt: /result.txt}}

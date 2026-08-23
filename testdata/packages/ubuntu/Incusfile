@@ -1,11 +1,11 @@
-version: 1
+version: 2
 mirror: china
 name: bocker-packages-ubuntu-e2e
 network: nat
 stages:
   - from: ubuntu/24.04
-    steps:
-      - pkg: [ca-certificates, curl]
+    packages: [ca-certificates, curl]
+    commands:
       - shell: |
           set -eu
           grep -R -F 'mirrors.tuna.tsinghua.edu.cn/ubuntu' /etc/apt

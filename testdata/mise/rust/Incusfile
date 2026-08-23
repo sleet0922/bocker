@@ -1,4 +1,4 @@
-version: 1
+version: 2
 args:
   RUST_VERSION: "1.89.0"
 mirror: china
@@ -7,11 +7,11 @@ network: nat
 stages:
   - name: builder
     from: debian/13
-    steps:
-      - pkg: [build-essential, ca-certificates, curl, git]
-      - mise: {tool: rust, version: "${RUST_VERSION}"}
-      - workdir: /src
-      - copy: {sources: [Cargo.toml, src], destination: /src/}
+    packages: [build-essential, ca-certificates, curl, git]
+    tools: {rust: "${RUST_VERSION}"}
+    workdir: /src
+    files: {/src/: [Cargo.toml], /src/src/: [src]}
+    commands:
       - shell: |
           set -eu
           test "$CARGO_REGISTRIES_CRATES_IO_INDEX" = sparse+https://rsproxy.cn/index/
@@ -21,10 +21,9 @@ stages:
           cp target/release/bocker-mise-rust-e2e /out/app
           rustc --version > /out/version.txt
   - from: debian/13
-    steps:
-      - workdir: /opt/bocker-mise-test
-      - copy: {from: builder, sources: [/out/app], destination: /usr/local/bin/bocker-mise-rust-e2e}
-      - copy: {from: builder, sources: [/out/version.txt], destination: ./}
+    workdir: /opt/bocker-mise-test
+    artifacts: {builder: {/out/app: /usr/local/bin/bocker-mise-rust-e2e, /out/version.txt: ./}}
+    commands:
       - shell: |
           set -eu
           test "$(/usr/local/bin/bocker-mise-rust-e2e)" = '{"language":"rust","version":"1.89.0","checksum":28}'
