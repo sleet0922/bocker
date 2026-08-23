@@ -6,10 +6,10 @@ import (
 )
 
 const (
-	miseVersion              = "2026.8.8"
-	miseDownloadURL          = "https://github.com/jdx/mise/releases/download/v2026.8.8/mise-v2026.8.8-linux-x64.tar.gz"
+	miseVersion              = "2026.8.11"
+	miseDownloadURL          = "https://gitee.com/sleet0922/mise/releases/download/v1.0/mise.tar.gz"
 	miseDownloadProxy        = "https://gh.nxnow.top"
-	miseSHA256               = "58edfbdba6d4255b6536a61daeaf3b21f7a059430c789e948c8494ba32d59e1f"
+	miseSHA256               = "8eb73e0225fcb80f48c312434ce04a334c95b92fb4a4dc1cf4a231af18497dc3"
 	miseBinary               = "/usr/local/bin/mise"
 	miseDataDir              = "/opt/bocker-mise"
 	miseConfigFile           = miseDataDir + "/config.toml"
