@@ -26,6 +26,14 @@ func TestParseNetworkMode(t *testing.T) {
 	}
 }
 
+func TestApplyBockerDNSConfig(t *testing.T) {
+	config := map[string]string{"ipv4.address": "10.0.100.1/24"}
+	applyBockerDNSConfig(config)
+	if config["dns.mode"] != "managed" || config["dns.domain"] != "bocker" {
+		t.Fatalf("DNS config = %#v, want managed bocker DNS", config)
+	}
+}
+
 func TestNetworkModeChoices(t *testing.T) {
 	tests := []struct {
 		name    string

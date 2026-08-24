@@ -30,6 +30,7 @@ const (
 	bridgeNetworkName                  = "bocker-br0"
 	bridgeNetworkCIDR                  = "10.0.200.1/24"
 	bridgeNetworkCIDREnv               = "BOCKER_BRIDGE_CIDR"
+	containerDNSDomain                 = "bocker"
 	containerNetworkConfig             = "user.bocker.network"
 )
 
@@ -210,6 +211,14 @@ func applyNATIPv6Config(config api.ConfigMap, cidr string) {
 	config["ipv6.dhcp.stateful"] = "false"
 }
 
+// applyBockerDNSConfig delegates service discovery to Incus' managed
+// dnsmasq. Records follow container lifecycle, so names remain stable while
+// container IPs change: <container-name>.bocker.
+func applyBockerDNSConfig(config api.ConfigMap) {
+	config["dns.mode"] = "managed"
+	config["dns.domain"] = containerDNSDomain
+}
+
 func (c *IncusClient) ensureNATNetwork() error {
 	if err := c.ready(); err != nil {
 		return err
@@ -237,6 +246,7 @@ func (c *IncusClient) ensureNATNetwork() error {
 			"ipv4.address": cidr,
 			"ipv4.nat":     "true",
 		}
+		applyBockerDNSConfig(config)
 		applyNATIPv6Config(config, ipv6CIDR)
 		if err := c.server.CreateNetwork(api.NetworksPost{
 			Name: natNetworkName,
@@ -263,6 +273,8 @@ func (c *IncusClient) ensureNATNetwork() error {
 	for key, value := range map[string]string{
 		"ipv4.address": cidr,
 		"ipv4.nat":     "true",
+		"dns.mode":     "managed",
+		"dns.domain":   containerDNSDomain,
 	} {
 		if config[key] != value {
 			config[key] = value
@@ -365,6 +377,7 @@ func (c *IncusClient) ensureBridgeNetwork() error {
 			"ipv4.address": cidr,
 			"ipv4.nat":     "true",
 		}
+		applyBockerDNSConfig(config)
 		applyNATIPv6Config(config, ipv6CIDR)
 		if err := c.server.CreateNetwork(api.NetworksPost{
 			Name: bridgeNetworkName,
@@ -391,6 +404,8 @@ func (c *IncusClient) ensureBridgeNetwork() error {
 	for key, value := range map[string]string{
 		"ipv4.address": cidr,
 		"ipv4.nat":     "true",
+		"dns.mode":     "managed",
+		"dns.domain":   containerDNSDomain,
 	} {
 		if config[key] != value {
 			config[key] = value

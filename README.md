@@ -55,6 +55,12 @@ Top-level fields:
 - `name` is the default image alias. `network` is `nat` or `bridge`.
 - `stages` contains one or more ordered stages. Every stage needs `from`, unless top-level `base` is set.
 
+Bocker enables Incus managed DNS on its private networks. Containers resolve
+each other as `<container-name>.bocker`; records follow container lifecycle
+and IP changes. Use the container name as the service name instead of an IP.
+`runtime.domain` remains the host-side `/etc/hosts` mapping for a chosen
+external name, and is intentionally separate from internal service discovery.
+
 ## Stage intent
 
 `workdir` creates and selects the working directory for subsequent commands. `env` sets build environment variables and persists them into the image only when declared in the final stage. `packages` installs apt/apk packages through the base distribution's package manager.
