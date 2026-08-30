@@ -37,6 +37,8 @@ func CmdSet(args []string) error {
 			return removeDomain(client, ct)
 		case "port":
 			return cmdSetPort(client, ct, args[2:])
+		case "mount":
+			return cmdSetMount(client, ct, args[2:])
 		case "autostart":
 			if len(args) != 3 {
 				return fmt.Errorf("用法: bocker container set %s autostart on|off", name)
@@ -71,7 +73,7 @@ func CmdSet(args []string) error {
 			fmt.Printf("✔ 容器 %s 网络已设置为 %s\n", name, mode)
 			return nil
 		default:
-			return fmt.Errorf("未知 container set 设置: %s (可用: domain, port, autostart, network)", sub)
+			return fmt.Errorf("未知 container set 设置: %s (可用: domain, port, mount, autostart, network)", sub)
 		}
 	}
 
@@ -156,6 +158,59 @@ func cmdSetPortRemoveInteractive(client *IncusClient, ct *Container) error {
 	}
 	fmt.Printf("✔ 已移除端口映射 %d/%s\n", m.HostPort, m.Protocol)
 	return nil
+}
+
+func cmdSetMount(client *IncusClient, ct *Container, args []string) error {
+	if len(args) == 0 || args[0] == "list" {
+		if len(args) > 1 {
+			return fmt.Errorf("用法: bocker container set %s mount list", ct.Name)
+		}
+		mounts, err := client.ListMounts(ct.Name)
+		if err != nil {
+			return err
+		}
+		if len(mounts) == 0 {
+			fmt.Println("该容器未配置挂载。")
+			return nil
+		}
+		for _, m := range mounts {
+			mode := "rw"
+			if m.Readonly {
+				mode = "ro"
+			}
+			fmt.Printf("%s: %s -> %s (%s)\n", m.Name, m.Source, m.Target, mode)
+		}
+		return nil
+	}
+	switch strings.ToLower(args[0]) {
+	case "add":
+		if len(args) < 3 || len(args) > 4 {
+			return fmt.Errorf("用法: bocker container set %s mount add <宿主绝对路径> <容器绝对路径> [ro|rw]", ct.Name)
+		}
+		mode := "rw"
+		if len(args) == 4 {
+			mode = strings.ToLower(args[3])
+		}
+		if mode != "ro" && mode != "rw" {
+			return fmt.Errorf("挂载模式必须是 ro 或 rw")
+		}
+		if err := client.AddMount(ct.Name, args[1], args[2], mode == "ro"); err != nil {
+			return err
+		}
+		fmt.Printf("✔ 已添加挂载: %s -> %s (%s)\n", args[1], args[2], mode)
+		return nil
+	case "rm", "remove":
+		if len(args) != 2 {
+			return fmt.Errorf("用法: bocker container set %s mount rm <挂载名称>", ct.Name)
+		}
+		if err := client.RemoveMount(ct.Name, args[1]); err != nil {
+			return err
+		}
+		fmt.Printf("✔ 已删除挂载: %s\n", args[1])
+		return nil
+	default:
+		return fmt.Errorf("用法: bocker container set %s mount list|add|rm", ct.Name)
+	}
 }
 
 // orNA 空值显示为 N/A。

@@ -9,7 +9,7 @@ import (
 )
 
 // Version 工具版本
-const Version = "3.3.0"
+const Version = "3.3.3"
 
 // MirrorRemote 镜像源在本地的 remote 名称
 const MirrorRemote = "mirror-images"
@@ -315,7 +315,7 @@ func printUsage() {
 		{"bocker container remove [name]", "删除容器"},
 		{"bocker container export [name]", "导出容器备份"},
 		{"bocker container import [file] [name]", "导入容器备份"},
-		{"bocker container set <name> <setting> ...", "修改端口、域名、自启动或网络"},
+		{"bocker container set <name> <setting> ...", "修改端口、挂载、域名、自启动或网络"},
 	})
 
 	printUsageSection("创建容器时可用", []usageEntry{

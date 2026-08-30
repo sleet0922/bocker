@@ -685,6 +685,8 @@ class _BockerHomeState extends State<BockerHome> {
   Future<void> _settingsDialog(ContainerInfo container) async {
     final domain = TextEditingController(text: container.domain);
     final port = TextEditingController();
+    final mountSource = TextEditingController();
+    final mountTarget = TextEditingController();
     final removablePorts = removablePortSpecs(container.ports);
     var removePort = '';
     var autostart = container.autostart == 'on';
@@ -716,6 +718,22 @@ class _BockerHomeState extends State<BockerHome> {
                     decoration: const InputDecoration(
                       labelText: '新增端口映射',
                       hintText: '例如 8080:80/tcp',
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  TextField(
+                    controller: mountSource,
+                    decoration: const InputDecoration(
+                      labelText: '新增宿主机挂载源',
+                      hintText: '例如 /home/user/Downloads',
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: mountTarget,
+                    decoration: const InputDecoration(
+                      labelText: '容器内目标路径',
+                      hintText: '例如 /mnt/downloads',
                     ),
                   ),
                   if (removablePorts.isNotEmpty) ...[
@@ -778,6 +796,8 @@ class _BockerHomeState extends State<BockerHome> {
                   removePort,
                   autostart,
                   network,
+                  mountSource.text.trim(),
+                  mountTarget.text.trim(),
                 ),
               ),
               child: const Text('保存'),
@@ -788,6 +808,8 @@ class _BockerHomeState extends State<BockerHome> {
     );
     domain.dispose();
     port.dispose();
+    mountSource.dispose();
+    mountTarget.dispose();
     if (values == null) return;
     if (values.domain.isNotEmpty &&
         values.domain != '-' &&
@@ -798,6 +820,13 @@ class _BockerHomeState extends State<BockerHome> {
     if (values.port.isNotEmpty && !isValidPortMapping(values.port)) {
       _showInputError('端口映射格式无效，例如 8080:80/tcp。');
       return;
+    }
+    if (values.mountSource.isNotEmpty || values.mountTarget.isNotEmpty) {
+      if (!values.mountSource.startsWith('/') ||
+          !values.mountTarget.startsWith('/')) {
+        _showInputError('挂载源和目标路径都必须是绝对路径。');
+        return;
+      }
     }
     var ok = true;
     if (values.domain != container.domain) {
@@ -828,6 +857,18 @@ class _BockerHomeState extends State<BockerHome> {
         'port',
         'rm',
         values.removePort,
+      ], refresh: false)).ok;
+    }
+    if (ok && values.mountSource.isNotEmpty && values.mountTarget.isNotEmpty) {
+      ok = (await _run('添加目录挂载', [
+        'container',
+        'set',
+        container.name,
+        'mount',
+        'add',
+        values.mountSource,
+        values.mountTarget,
+        'rw',
       ], refresh: false)).ok;
     }
     if (ok && values.autostart != (container.autostart == 'on')) {
@@ -1231,6 +1272,7 @@ class _ContainersView extends StatelessWidget {
                     DataColumn(label: Text('网络')),
                     DataColumn(label: Text('IPv4')),
                     DataColumn(label: Text('IPv6')),
+                    DataColumn(label: Text('内存')),
                     DataColumn(label: Text('域名')),
                     DataColumn(label: Text('端口')),
                     DataColumn(label: Text('自启动')),
@@ -1266,6 +1308,9 @@ class _ContainersView extends StatelessWidget {
                             DataCell(Text(item.network)),
                             DataCell(CopyableText(text: item.ipv4)),
                             DataCell(CopyableText(text: item.ipv6)),
+                            DataCell(
+                              Text(item.memory.isEmpty ? '-' : item.memory),
+                            ),
                             DataCell(
                               ConstrainedBox(
                                 constraints: const BoxConstraints(
@@ -1471,6 +1516,10 @@ class _ContainerCard extends StatelessWidget {
                     icon: Icons.language_outlined,
                     label: container.ipv6,
                   ),
+                _ContainerDetail(
+                  icon: Icons.memory_outlined,
+                  label: container.memory.isEmpty ? '-' : container.memory,
+                ),
                 if (container.domain.isNotEmpty)
                   _ContainerDetail(
                     icon: Icons.alternate_email,
@@ -2003,6 +2052,7 @@ class ContainerInfo {
     required this.network,
     required this.ipv4,
     required this.ipv6,
+    required this.memory,
     required this.domain,
     required this.autostart,
     required this.ports,
@@ -2012,6 +2062,7 @@ class ContainerInfo {
   final String network;
   final String ipv4;
   final String ipv6;
+  final String memory;
   final String domain;
   final String autostart;
   final String ports;
@@ -2058,6 +2109,7 @@ List<ContainerInfo> parseContainers(String output) {
         network: jsonText(item, 'network'),
         ipv4: jsonText(item, 'ipv4'),
         ipv6: jsonText(item, 'ipv6'),
+        memory: jsonText(item, 'memory'),
         domain: jsonText(item, 'domain'),
         autostart: jsonText(item, 'autostart'),
         ports: jsonText(item, 'ports'),
@@ -2273,10 +2325,14 @@ class _SettingsValues {
     this.removePort,
     this.autostart,
     this.network,
+    this.mountSource,
+    this.mountTarget,
   );
   final String domain;
   final String port;
   final String removePort;
   final bool autostart;
   final String network;
+  final String mountSource;
+  final String mountTarget;
 }

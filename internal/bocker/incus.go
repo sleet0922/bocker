@@ -186,8 +186,9 @@ type Container struct {
 }
 
 type ContainerState struct {
-	Network map[string]NICState
-	Pid     int64
+	Network     map[string]NICState
+	Pid         int64
+	MemoryUsage int64
 }
 
 type NICState struct {
@@ -219,7 +220,11 @@ func convertContainer(full *api.InstanceFull) *Container {
 	if full.State == nil {
 		return c
 	}
-	c.State = &ContainerState{Network: make(map[string]NICState), Pid: full.State.Pid}
+	c.State = &ContainerState{
+		Network:     make(map[string]NICState),
+		Pid:         full.State.Pid,
+		MemoryUsage: full.State.Memory.Usage,
+	}
 	for name, nic := range full.State.Network {
 		state := NICState{HwAddr: nic.Hwaddr, State: nic.State, Type: nic.Type}
 		for _, addr := range nic.Addresses {
