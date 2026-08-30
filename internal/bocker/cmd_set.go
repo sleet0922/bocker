@@ -79,13 +79,9 @@ func CmdSet(args []string) error {
 
 	options := []string{
 		"域名映射",
-		"取消域名映射",
 		"端口映射",
-		"取消端口映射",
-		"添加目录挂载",
-		"删除目录挂载",
+		"目录挂载",
 		"开机自启动",
-		"关闭开机自启动",
 		"网络模式",
 	}
 
@@ -99,17 +95,29 @@ func CmdSet(args []string) error {
 
 	switch choice {
 	case 0:
-		domain := prompt("域名 (如 alpine.test): ")
-		return applyDomain(client, ct, domain)
+		action := selectMenu([]string{"设置域名映射", "取消域名映射"}, "选择域名操作")
+		if action == 0 {
+			return applyDomain(client, ct, prompt("域名 (如 alpine.test): "))
+		}
+		if action == 1 {
+			return removeDomain(client, ct)
+		}
 	case 1:
-		return removeDomain(client, ct)
+		action := selectMenu([]string{"添加端口映射", "删除端口映射"}, "选择端口操作")
+		if action == 0 {
+			return cmdSetPort(client, ct, nil)
+		}
+		if action == 1 {
+			return cmdSetPortRemoveInteractive(client, ct)
+		}
 	case 2:
-		// 进入端口映射交互菜单
-		return cmdSetPort(client, ct, nil)
-	case 3:
-		// 直接进入“取消端口映射”流程：列出当前映射并选择移除
-		return cmdSetPortRemoveInteractive(client, ct)
-	case 4:
+		action := selectMenu([]string{"添加目录挂载", "删除目录挂载"}, "选择挂载操作")
+		if action == 1 {
+			return cmdSetMountRemoveInteractive(client, ct)
+		}
+		if action != 0 {
+			return nil
+		}
 		source := prompt("宿主机绝对路径: ")
 		target := prompt("容器内绝对路径: ")
 		mode := strings.ToLower(prompt("模式 (ro/rw，默认 rw): "))
@@ -123,19 +131,21 @@ func CmdSet(args []string) error {
 			return err
 		}
 		fmt.Printf("✔ 已添加挂载: %s -> %s (%s)\n", source, target, mode)
-	case 5:
-		return cmdSetMountRemoveInteractive(client, ct)
-	case 6:
-		if err := client.SetBootAutostart(name, true); err != nil {
+	case 3:
+		action := selectMenu([]string{"开启开机自启动", "关闭开机自启动"}, "选择自启动操作")
+		if action < 0 {
+			return nil
+		}
+		on := action == 0
+		if err := client.SetBootAutostart(name, on); err != nil {
 			return err
 		}
-		fmt.Printf("✔ 容器 %s 已开启开机自启动\n", name)
-	case 7:
-		if err := client.SetBootAutostart(name, false); err != nil {
-			return err
+		if on {
+			fmt.Printf("✔ 容器 %s 已开启开机自启动\n", name)
+		} else {
+			fmt.Printf("✔ 容器 %s 已关闭开机自启动\n", name)
 		}
-		fmt.Printf("✔ 容器 %s 已关闭开机自启动\n", name)
-	case 8:
+	case 4:
 		if strings.EqualFold(ct.Status, "Running") {
 			return fmt.Errorf("容器 %s 正在运行，请先 stop 后再切换网络", name)
 		}
