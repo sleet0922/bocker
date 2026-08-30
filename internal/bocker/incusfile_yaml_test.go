@@ -127,10 +127,159 @@ func TestV2RealProjectFixturesParse(t *testing.T) {
 		"packages/ubuntu",
 		"languages/c",
 		"languages/java",
+		"languages/go",
+		"languages/node",
+		"languages/python",
 	}
 	for _, project := range projects {
 		if _, err := parseIncusfile(filepath.Join(root, project, "Incusfile")); err != nil {
 			t.Fatalf("fixture %s: %v", project, err)
+		}
+	}
+}
+
+func TestV2RuntimeMountsNormalizeAndRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "data"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "app.conf"), []byte("ready\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(dir, "Incusfile")
+	content := `version: 2
+name: mounted-app
+stages:
+  - from: alpine/3.24
+    runtime:
+      mounts:
+        - source: ./data
+          target: /srv/data
+          mode: ro
+        - source: ./app.conf
+          target: /etc/mounted-app.conf
+          readonly: true
+`
+	if err := os.WriteFile(file, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f, err := parseIncusfile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.Mounts) != 2 {
+		t.Fatalf("mounts = %#v", f.Mounts)
+	}
+	wantSource := filepath.Join(dir, "data")
+	if f.Mounts[0] != (RuntimeMount{Source: wantSource, Target: "/srv/data", Mode: "ro"}) {
+		t.Fatalf("first mount = %#v", f.Mounts[0])
+	}
+	if f.Mounts[1].Source != filepath.Join(dir, "app.conf") || f.Mounts[1].Target != "/etc/mounted-app.conf" || f.Mounts[1].Mode != "ro" {
+		t.Fatalf("second mount = %#v", f.Mounts[1])
+	}
+	f.Entrypoint = []string{"/bin/sh"}
+	f.Cmd = []string{"-c", "printf '${APP_ENV}'"}
+	properties := buildImageProperties(f)
+	roundTrip, err := runtimeConfigFromImageProperties("mounted-app", properties)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(roundTrip.Mounts, f.Mounts) {
+		t.Fatalf("round-trip mounts = %#v, want %#v", roundTrip.Mounts, f.Mounts)
+	}
+	if !reflect.DeepEqual(roundTrip.Entrypoint, f.Entrypoint) || !reflect.DeepEqual(roundTrip.Cmd, f.Cmd) {
+		t.Fatalf("round-trip command = %#v %#v, want %#v %#v", roundTrip.Entrypoint, roundTrip.Cmd, f.Entrypoint, f.Cmd)
+	}
+	devices, err := runtimeMountDevices(f.Mounts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if devices["mount-runtime-0"]["type"] != "disk" || devices["mount-runtime-0"]["readonly"] != "true" || devices["mount-runtime-0"]["source"] != wantSource {
+		t.Fatalf("directory device = %#v", devices["mount-runtime-0"])
+	}
+	if devices["mount-runtime-1"]["type"] != "disk" || devices["mount-runtime-1"]["readonly"] != "true" || devices["mount-runtime-1"]["source"] != filepath.Join(dir, "app.conf") {
+		t.Fatalf("file device = %#v", devices["mount-runtime-1"])
+	}
+}
+
+func TestV2RuntimeMountsExpandBuildArgsInMode(t *testing.T) {
+	file := writeV2BuildFile(t, `version: 2
+args:
+  MOUNT_MODE: ro
+stages:
+  - from: alpine/3.24
+    runtime:
+      mounts:
+        - source: /tmp
+          target: /data
+          mode: ${MOUNT_MODE}
+`)
+	f, err := parseIncusfile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.Mounts) != 1 || f.Mounts[0].Mode != "ro" {
+		t.Fatalf("mounts = %#v, want one read-only mount", f.Mounts)
+	}
+}
+
+func TestV2RuntimeMountsRejectInvalidDefinitions(t *testing.T) {
+	cases := []string{
+		`version: 2
+stages:
+  - from: alpine/3.24
+    runtime:
+      mounts: [{source: /tmp, target: /data, mode: bad}]
+`,
+		`version: 2
+stages:
+  - from: alpine/3.24
+    runtime:
+      mounts: [{source: /tmp, target: /}]
+`,
+		`version: 2
+stages:
+  - from: alpine/3.24
+    runtime:
+      mounts: [{source: /tmp, target: data}]
+`,
+		`version: 2
+stages:
+  - from: alpine/3.24
+    runtime:
+      mounts:
+        - {source: /tmp, target: /data}
+        - {source: /tmp, target: /data}
+`,
+		`version: 2
+stages:
+  - from: alpine/3.24
+    runtime:
+      mounts: [{source: /tmp, target: /data, mode: rw, readonly: true}]
+`,
+		`version: 2
+stages:
+  - from: alpine/3.24
+    runtime:
+      mounts: [{source: /tmp, target: /data, mode: "", readonly: true}]
+`,
+		`version: 2
+stages:
+  - from: alpine/3.24
+    runtime:
+      mounts: [{source: /tmp, target: /data, mode: null, readonly: false}]
+`,
+		`version: 2
+stages:
+  - from: alpine/3.24
+    runtime:
+      mounts: [{source: /tmp, target: /data}]
+  - from: alpine/3.24
+`,
+	}
+	for _, content := range cases {
+		if _, err := parseIncusfile(writeV2BuildFile(t, content)); err == nil {
+			t.Fatalf("invalid runtime.mounts unexpectedly accepted:\n%s", content)
 		}
 	}
 }

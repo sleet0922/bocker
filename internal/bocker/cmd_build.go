@@ -128,6 +128,9 @@ func CmdBuild(args []string) error {
 	if f.Autostart != nil {
 		fmt.Printf("│ AUTOSTART: %s\n", strconv.FormatBool(*f.Autostart))
 	}
+	if len(f.Mounts) > 0 {
+		fmt.Printf("│ MOUNTS:    %d\n", len(f.Mounts))
+	}
 	if len(f.Entrypoint) > 0 {
 		fmt.Printf("│ ENTRYPOINT: %s\n", strings.Join(f.Entrypoint, " "))
 	}
@@ -177,7 +180,8 @@ YAML 顶层字段:
         set -eu
         echo ready
 
-最终阶段可选 runtime: {entrypoint: [...], cmd: [...], env: {...}, expose: [...], domain: ..., autostart: true}
+最终阶段可选 runtime: {entrypoint: [...], cmd: [...], env: {...}, expose: [...], mounts: [...], domain: ..., autostart: true}
+mounts 项格式为 {source: ./data, target: /var/lib/app, mode: rw|ro}，也可使用 readonly: true|false。
 命令支持 argv 列表，或 run/shell 映射；run 可配 capture 保存 stdout。
 未知字段、重复 YAML key、YAML 锚点、旧版本和 steps 字段都会拒绝。
 `
@@ -660,6 +664,9 @@ func buildImageProperties(f *Incusfile) map[string]string {
 	if data, err := json.Marshal(f.Cmd); err == nil && len(f.Cmd) > 0 {
 		p["user.bocker.cmd"] = string(data)
 	}
+	if data, err := json.Marshal(f.Mounts); err == nil && len(f.Mounts) > 0 {
+		p["user.bocker.mounts"] = string(data)
+	}
 	return p
 }
 
@@ -773,9 +780,13 @@ func runFromBuiltImage(client *IncusClient, alias string, f *Incusfile, networkM
 	if err := validateRuntimePortMappings(f.Exposes, containers); err != nil {
 		return err
 	}
+	mountDevices, err := runtimeMountDevices(f.Mounts)
+	if err != nil {
+		return fmt.Errorf("校验运行时挂载失败: %w", err)
+	}
 
 	fmt.Printf("▶ 启动容器 %s (镜像 %s) ...\n", name, alias)
-	if err := client.LaunchLocalImageWithNetworkAndConfig(alias, name, networkMode, incusEnvironmentConfig(f.Env)); err != nil {
+	if err := client.LaunchLocalImageWithNetworkAndConfigAndDevices(alias, name, networkMode, incusEnvironmentConfig(f.Env), mountDevices); err != nil {
 		return fmt.Errorf("启动容器失败: %w", err)
 	}
 	completed := false
@@ -838,6 +849,43 @@ func runFromBuiltImage(client *IncusClient, alias string, f *Incusfile, networkM
 
 	completed = true
 	return nil
+}
+
+func runtimeMountDevices(mounts []RuntimeMount) (map[string]map[string]string, error) {
+	if len(mounts) == 0 {
+		return nil, nil
+	}
+	if err := validateRuntimeMounts(mounts); err != nil {
+		return nil, err
+	}
+	devices := make(map[string]map[string]string, len(mounts))
+	for index, mount := range mounts {
+		source, target, err := validateMountPaths(mount.Source, mount.Target)
+		if err != nil {
+			return nil, fmt.Errorf("mounts[%d]: %w", index, err)
+		}
+		info, err := os.Stat(source)
+		if err != nil {
+			return nil, fmt.Errorf("mounts[%d].source %s 不可访问: %w", index, source, err)
+		}
+		if !info.IsDir() && !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("mounts[%d].source %s 必须是普通文件或目录", index, source)
+		}
+		mode := strings.ToLower(strings.TrimSpace(mount.Mode))
+		if mode == "" {
+			mode = "rw"
+		}
+		// Incus determines whether the disk source is a file or directory from
+		// the host path. The `create` device key is not part of the Incus 7
+		// disk-device schema and would make instance creation fail.
+		devices[fmt.Sprintf("mount-runtime-%d", index)] = map[string]string{
+			"type":     "disk",
+			"source":   source,
+			"path":     target,
+			"readonly": strconv.FormatBool(mode == "ro"),
+		}
+	}
+	return devices, nil
 }
 
 func validateRuntimePortMappings(exposes []PortSpec, containers []Container) error {
@@ -1198,6 +1246,9 @@ func CmdRun(args []string) error {
 	if f.Autostart != nil {
 		fmt.Printf("  AUTOSTART: %s\n", strconv.FormatBool(*f.Autostart))
 	}
+	for _, mount := range f.Mounts {
+		fmt.Printf("  MOUNT: %s -> %s (%s)\n", mount.Source, mount.Target, mount.Mode)
+	}
 	fmt.Println()
 
 	return runFromBuiltImage(client, alias, f, networkMode)
@@ -1216,6 +1267,22 @@ func runtimeConfigFromImageProperties(name string, properties map[string]string)
 		}
 		f.Autostart = &autostart
 	}
+	if value := properties["user.bocker.entrypoint"]; value != "" {
+		if err := json.Unmarshal([]byte(value), &f.Entrypoint); err != nil {
+			return nil, fmt.Errorf("ENTRYPOINT: %w", err)
+		}
+		if err := validateCommandArgv(f.Entrypoint); err != nil {
+			return nil, fmt.Errorf("ENTRYPOINT: %w", err)
+		}
+	}
+	if value := properties["user.bocker.cmd"]; value != "" {
+		if err := json.Unmarshal([]byte(value), &f.Cmd); err != nil {
+			return nil, fmt.Errorf("CMD: %w", err)
+		}
+		if err := validateCommandArgv(f.Cmd); err != nil {
+			return nil, fmt.Errorf("CMD: %w", err)
+		}
+	}
 	if value := properties["user.bocker.env"]; value != "" {
 		if err := json.Unmarshal([]byte(value), &f.Env); err != nil {
 			return nil, fmt.Errorf("ENV: %w", err)
@@ -1226,6 +1293,22 @@ func runtimeConfigFromImageProperties(name string, properties map[string]string)
 			}
 		}
 		f.Env = dedupeEnvSpecs(f.Env)
+	}
+	if value := properties["user.bocker.mounts"]; value != "" {
+		if err := json.Unmarshal([]byte(value), &f.Mounts); err != nil {
+			return nil, fmt.Errorf("MOUNTS: %w", err)
+		}
+		for index := range f.Mounts {
+			f.Mounts[index].Source = strings.TrimSpace(f.Mounts[index].Source)
+			f.Mounts[index].Target = strings.TrimSpace(f.Mounts[index].Target)
+			f.Mounts[index].Mode = strings.ToLower(strings.TrimSpace(f.Mounts[index].Mode))
+			if f.Mounts[index].Mode == "" {
+				f.Mounts[index].Mode = "rw"
+			}
+		}
+		if err := validateRuntimeMounts(f.Mounts); err != nil {
+			return nil, fmt.Errorf("MOUNTS: %w", err)
+		}
 	}
 	return f, nil
 }

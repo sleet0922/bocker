@@ -2,6 +2,7 @@ package bocker
 
 import (
 	"fmt"
+	"path"
 	"sort"
 	"strings"
 
@@ -125,6 +126,45 @@ func expandCommand(command []string, values map[string]string) ([]string, error)
 		result[i] = expanded
 	}
 	return result, nil
+}
+
+func validateRuntimeMounts(mounts []RuntimeMount) error {
+	seenTargets := make(map[string]int, len(mounts))
+	for index, mount := range mounts {
+		source := strings.TrimSpace(mount.Source)
+		if source == "" {
+			return fmt.Errorf("mounts[%d].source 不能为空", index)
+		}
+		if strings.ContainsRune(source, '\x00') {
+			return fmt.Errorf("mounts[%d].source 不能包含 NUL 字符", index)
+		}
+		if !path.IsAbs(source) {
+			return fmt.Errorf("mounts[%d].source 必须是绝对宿主路径", index)
+		}
+		target := strings.TrimSpace(mount.Target)
+		if target == "" || !path.IsAbs(target) {
+			return fmt.Errorf("mounts[%d].target 必须是绝对容器路径", index)
+		}
+		if strings.ContainsRune(target, '\x00') {
+			return fmt.Errorf("mounts[%d].target 不能包含 NUL 字符", index)
+		}
+		target = path.Clean(target)
+		if target == "/" {
+			return fmt.Errorf("mounts[%d].target 不能是容器根路径 /", index)
+		}
+		mode := strings.ToLower(strings.TrimSpace(mount.Mode))
+		if mode == "" {
+			mode = "rw"
+		}
+		if mode != "ro" && mode != "rw" {
+			return fmt.Errorf("mounts[%d].mode 必须是 ro 或 rw", index)
+		}
+		if previous, ok := seenTargets[target]; ok {
+			return fmt.Errorf("mounts[%d].target %q 与 mounts[%d] 重复", index, target, previous)
+		}
+		seenTargets[target] = index
+	}
+	return nil
 }
 
 func validateYAMLStageReferences(stages []Stage, filePath string) error {

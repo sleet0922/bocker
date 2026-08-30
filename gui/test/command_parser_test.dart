@@ -4,9 +4,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 class _FakeBockerCommand extends BockerCommand {
-  _FakeBockerCommand({this.containers = '[]'});
+  _FakeBockerCommand({this.containers = '[]', this.mounts = '[]'});
 
   final String containers;
+  final String mounts;
+  final calls = <List<String>>[];
 
   @override
   Future<CommandResult> run(
@@ -14,6 +16,7 @@ class _FakeBockerCommand extends BockerCommand {
     String? workingDirectory,
     ValueChanged<String>? onOutput,
   }) async {
+    calls.add(List<String>.from(arguments));
     if (arguments.length >= 2 &&
         arguments[0] == 'template' &&
         arguments[1] == 'list') {
@@ -27,6 +30,13 @@ class _FakeBockerCommand extends BockerCommand {
         arguments[0] == 'container' &&
         arguments[1] == 'list') {
       return CommandResult(true, containers, 0);
+    }
+    if (arguments.length >= 5 &&
+        arguments[0] == 'container' &&
+        arguments[1] == 'set' &&
+        arguments[3] == 'mount' &&
+        arguments[4] == 'list') {
+      return CommandResult(true, mounts, 0);
     }
     return const CommandResult(true, '[]', 0);
   }
@@ -95,6 +105,32 @@ void main() {
     expect(containers.single.name, '123');
     expect(containers.single.status, 'true');
     expect(containers.single.ipv4, '');
+  });
+
+  test('parses file and directory mount summaries', () {
+    const output = '''[
+      {"name":"mount-readme-1","source":"/home/user/README.md","target":"/work/README.md","readonly":true,"inherited":false},
+      {"name":"mount-data-2","source":"/srv/project:blue -> raw","target":"/mnt/data:final -> path","readonly":false,"inherited":true}
+    ]''';
+
+    final mounts = parseMounts(output);
+
+    expect(mounts, hasLength(2));
+    expect(mounts[0].name, 'mount-readme-1');
+    expect(mounts[0].source, '/home/user/README.md');
+    expect(mounts[0].target, '/work/README.md');
+    expect(mounts[0].readonly, isTrue);
+    expect(mounts[1].source, '/srv/project:blue -> raw');
+    expect(mounts[1].target, '/mnt/data:final -> path');
+    expect(mounts[1].readonly, isFalse);
+    expect(mounts[1].inherited, isTrue);
+    expect(parseMounts('mount-demo: /host -> /container (rw)'), isEmpty);
+  });
+
+  test('normalizes container targets for duplicate detection', () {
+    expect(normalizeContainerPath('/mnt/data/'), '/mnt/data');
+    expect(normalizeContainerPath('/mnt//data///'), '/mnt/data');
+    expect(normalizeContainerPath('/'), '/');
   });
 
   test('parses local image JSON', () {
@@ -271,6 +307,216 @@ void main() {
     );
     expect(selectors, isNotEmpty);
     expect(selectors.first.selected, {'nat'});
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('settings lists and removes existing mounts', (tester) async {
+    tester.view.physicalSize = const Size(1100, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    const containers = '''[
+      {"name":"worker","status":"stopped","network":"nat","ipv4":"","ipv6":"","domain":"","autostart":"off","ports":"-"}
+    ]''';
+    final command = _FakeBockerCommand(
+      containers: containers,
+      mounts:
+          '[{"name":"mount-data-1","source":"/tmp/data","target":"/mnt/data","readonly":true,"inherited":false}]',
+    );
+
+    await tester.pumpWidget(MaterialApp(home: BockerHome(command: command)));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('更多操作').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('设置'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('/tmp/data'), findsOneWidget);
+    expect(find.text('→ /mnt/data'), findsOneWidget);
+    expect(find.text('ro'), findsOneWidget);
+    expect(
+      command.calls.any(
+        (call) =>
+            call.join('\u0000') ==
+            const [
+              'container',
+              'set',
+              'worker',
+              'mount',
+              'list',
+              '--json',
+            ].join('\u0000'),
+      ),
+      isTrue,
+    );
+
+    await tester.tap(find.byTooltip('删除挂载'));
+    await tester.pump();
+    expect(find.text('1 个挂载将在保存时删除'), findsOneWidget);
+    await tester.tap(find.text('保存'));
+    await tester.pumpAndSettle();
+
+    expect(
+      command.calls.any(
+        (call) =>
+            call.join('\u0000') ==
+            const [
+              'container',
+              'set',
+              'worker',
+              'mount',
+              'rm',
+              'mount-data-1',
+            ].join('\u0000'),
+      ),
+      isTrue,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('running containers disable mount editing', (tester) async {
+    tester.view.physicalSize = const Size(1100, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    const containers = '''[
+      {"name":"web","status":"running","network":"nat","ipv4":"10.0.100.24","ipv6":"","domain":"","autostart":"off","ports":"-"}
+    ]''';
+    final command = _FakeBockerCommand(
+      containers: containers,
+      mounts:
+          '[{"name":"mount-data-1","source":"/tmp/data","target":"/mnt/data","readonly":false,"inherited":false}]',
+    );
+
+    await tester.pumpWidget(MaterialApp(home: BockerHome(command: command)));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('更多操作').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('设置'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('停止容器后才能添加、删除或修改挂载'), findsOneWidget);
+    final sourceField = tester.widget<TextField>(
+      find.byWidgetPredicate(
+        (widget) =>
+            widget is TextField && widget.decoration?.labelText == '宿主机源路径',
+      ),
+    );
+    expect(sourceField.enabled, isFalse);
+    expect(find.byTooltip('停止容器后才能删除挂载'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('settings updates an existing mount mode atomically', (tester) async {
+    tester.view.physicalSize = const Size(1100, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    const containers = '''[
+      {"name":"worker","status":"stopped","network":"nat","ipv4":"","ipv6":"","domain":"","autostart":"off","ports":"-"}
+    ]''';
+    final command = _FakeBockerCommand(
+      containers: containers,
+      mounts:
+          '[{"name":"mount-data-1","source":"/tmp/data","target":"/mnt/data","readonly":true,"inherited":false}]',
+    );
+
+    await tester.pumpWidget(MaterialApp(home: BockerHome(command: command)));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('更多操作').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('设置'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('rw'));
+    await tester.pump();
+    await tester.tap(find.text('保存'));
+    await tester.pumpAndSettle();
+
+    expect(
+      command.calls.any(
+        (call) =>
+            call.join('\u0000') ==
+            const [
+              'container',
+              'set',
+              'worker',
+              'mount',
+              'update',
+              'mount-data-1',
+              'rw',
+            ].join('\u0000'),
+      ),
+      isTrue,
+    );
+    expect(
+      command.calls.any(
+        (call) =>
+            call.length >= 5 &&
+            call[0] == 'container' &&
+            call[1] == 'set' &&
+            call[3] == 'mount' &&
+            call[4] == 'rm',
+      ),
+      isFalse,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('queues a read-only file mount and submits its mode', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1100, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    const containers = '''[
+      {"name":"worker","status":"stopped","network":"nat","ipv4":"","ipv6":"","domain":"","autostart":"off","ports":"-"}
+    ]''';
+    final command = _FakeBockerCommand(containers: containers);
+
+    await tester.pumpWidget(MaterialApp(home: BockerHome(command: command)));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('更多操作').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('设置'));
+    await tester.pumpAndSettle();
+
+    final source = find.byWidgetPredicate(
+      (widget) =>
+          widget is TextField && widget.decoration?.labelText == '宿主机源路径',
+    );
+    final target = find.byWidgetPredicate(
+      (widget) =>
+          widget is TextField && widget.decoration?.labelText == '容器内目标路径',
+    );
+    await tester.enterText(source, '/tmp/readme.txt');
+    await tester.enterText(target, '/etc/readme.txt');
+    await tester.tap(find.text('只读 (ro)'));
+    await tester.tap(find.text('加入待添加列表'));
+    await tester.pump();
+
+    expect(find.text('→ /etc/readme.txt · ro · 待添加'), findsOneWidget);
+    await tester.tap(find.text('保存'));
+    await tester.pumpAndSettle();
+
+    expect(
+      command.calls.any(
+        (call) =>
+            call.join('\u0000') ==
+            const [
+              'container',
+              'set',
+              'worker',
+              'mount',
+              'add',
+              '/tmp/readme.txt',
+              '/etc/readme.txt',
+              'ro',
+            ].join('\u0000'),
+      ),
+      isTrue,
+    );
     expect(tester.takeException(), isNull);
   });
 }

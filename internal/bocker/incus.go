@@ -990,6 +990,14 @@ func (c *IncusClient) LaunchLocalImageWithNetwork(alias, name string, mode Netwo
 // LaunchLocalImageWithNetworkAndConfig starts a local image with
 // additional instance configuration applied before its init process starts.
 func (c *IncusClient) LaunchLocalImageWithNetworkAndConfig(alias, name string, mode NetworkMode, extraConfig map[string]string) error {
+	return c.LaunchLocalImageWithNetworkAndConfigAndDevices(alias, name, mode, extraConfig, nil)
+}
+
+// LaunchLocalImageWithNetworkAndConfigAndDevices creates a stopped instance
+// from a local image, applies the requested config and devices, then starts
+// it. Devices are supplied before start so disk mounts are available from the
+// first process in the container.
+func (c *IncusClient) LaunchLocalImageWithNetworkAndConfigAndDevices(alias, name string, mode NetworkMode, extraConfig map[string]string, extraDevices map[string]map[string]string) error {
 	if err := c.ready(); err != nil {
 		return err
 	}
@@ -1010,12 +1018,22 @@ func (c *IncusClient) LaunchLocalImageWithNetworkAndConfig(alias, name string, m
 		config[key] = value
 	}
 	applyContainerSecurity(config)
+	devices := map[string]map[string]string{defaultNICName: nic}
+	for deviceName, device := range extraDevices {
+		if strings.TrimSpace(deviceName) == "" || deviceName == defaultNICName {
+			return fmt.Errorf("无效的额外设备名称: %q", deviceName)
+		}
+		if device == nil {
+			return fmt.Errorf("额外设备 %q 配置为空", deviceName)
+		}
+		devices[deviceName] = device
+	}
 	req := api.InstancesPost{
 		Name: name,
 		Type: api.InstanceTypeContainer,
 		InstancePut: api.InstancePut{
 			Config:  config,
-			Devices: apiDevices(map[string]map[string]string{defaultNICName: nic}),
+			Devices: apiDevices(devices),
 		},
 		Source: api.InstanceSource{
 			Type:  "image",

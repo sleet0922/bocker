@@ -52,7 +52,8 @@ broker 转发必须是流式的：长时间运行的 `image build`、`template i
 `version: 2`、`args`、`mirror`、`name`、`network` 和 `stages` 必须通过 schema 校验；未知
 字段、重复 key、YAML 锚点和多文档直接拒绝，旧 Incusfile 不解析。阶段按 `workdir`、`env`、
 `packages`、`tools`、`files`、`artifacts`、`fetch`、`commands` 意图声明；commands 使用 argv
-或显式 shell。运行配置只能放在最终阶段的 `runtime`。
+或显式 shell。运行配置只能放在最终阶段的 `runtime`；其中 `runtime.mounts` 可声明宿主机
+文件或目录挂载到容器，使用 `source`、`target` 与 `mode: ro|rw`（或 `readonly`）字段。
 `MISE` 使用固定精确版本并在构建阶段提供工具链；工具和缓存不得进入最终镜像。
 
 `mirror: china` 必须位于 YAML 顶层，并为最终阶段和所有构建阶段显式固定清华软件源。

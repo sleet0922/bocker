@@ -48,4 +48,26 @@ contains --build-arg
 complete_words image build --build-arg ""
 [[ ${#COMPREPLY[@]} -eq 0 ]]
 
+complete_words container set demo ""
+contains domain
+contains port
+contains mount
+contains autostart
+contains network
+
+complete_words container set demo mount ""
+contains list
+contains add
+contains update
+contains rm
+contains remove
+
+complete_words container set demo mount add /tmp /var/lib ""
+contains ro
+contains rw
+
+complete_words container set demo mount update mount-target ""
+contains ro
+contains rw
+
 echo "Bash completion tests passed"

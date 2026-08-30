@@ -9,5 +9,8 @@ stages:
       entrypoint: [/bin/sh]
       cmd: [-c, "printf '%s\\n' \\\"$APP_ENV\\\""]
       expose: [8080]
+      mounts:
+        - {source: ./runtime-data, target: /opt/yaml-runtime/data, mode: rw}
+        - {source: ./runtime-message.txt, target: /opt/yaml-runtime/message.txt, readonly: true}
       domain: yaml-runtime.test
       autostart: false

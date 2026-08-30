@@ -35,6 +35,53 @@ _bocker_completion() {
     fi
 
     action="${COMP_WORDS[2]}"
+
+    # Nested completion for container settings. The mount subcommands accept
+    # source/target paths followed by an optional ro/rw mode.
+    if [[ "$resource:$action" == "container:set" ]]; then
+        if (( COMP_CWORD == 4 )); then
+            options="domain port mount autostart network"
+            mapfile -t COMPREPLY < <(compgen -W "$options" -- "$cur")
+            return
+        fi
+        if (( COMP_CWORD >= 5 )) && [[ "${COMP_WORDS[4],,}" == "mount" ]]; then
+            case "${COMP_WORDS[5],,}" in
+                "")
+                    options="list add update rm remove"
+                    mapfile -t COMPREPLY < <(compgen -W "$options" -- "$cur")
+                    return
+                    ;;
+                list)
+                    if (( COMP_CWORD == 6 )); then
+                        options="--json"
+                        mapfile -t COMPREPLY < <(compgen -W "$options" -- "$cur")
+                    fi
+                    return
+                    ;;
+                add)
+                    if (( COMP_CWORD == 6 || COMP_CWORD == 7 )); then
+                        mapfile -t COMPREPLY < <(compgen -f -- "$cur")
+                        return
+                    fi
+                    if (( COMP_CWORD == 8 )); then
+                        options="ro rw"
+                        mapfile -t COMPREPLY < <(compgen -W "$options" -- "$cur")
+                        return
+                    fi
+                    ;;
+                update)
+                    if (( COMP_CWORD == 7 )); then
+                        options="ro rw"
+                        mapfile -t COMPREPLY < <(compgen -W "$options" -- "$cur")
+                        return
+                    fi
+                    ;;
+            esac
+            return
+        fi
+        return
+    fi
+
     case "$resource:$action" in
         template:list|image:list|container:list)
             options="--json"

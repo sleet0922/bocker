@@ -22,6 +22,7 @@ cleanup() {
 	for image in "$hello_image" "$multi_image" "$runtime_image" "$c_image" "$java_image"; do
 		"$bocker_bin" image remove "$image" </dev/null >/dev/null 2>&1 || true
 	done
+	rm -f "$project_dir/runtime/runtime-data/check.txt"
 }
 trap cleanup EXIT
 
@@ -38,7 +39,7 @@ test "$("$bocker_bin" container exec "$multi_container" cat /result.txt)" = "mul
 "$bocker_bin" image build --name "$runtime_image" "$project_dir/runtime/Incusfile"
 "$bocker_bin" image run "$runtime_image" --name "$runtime_container"
 "$bocker_bin" container exec "$runtime_container" sh -c \
-	'test -d /opt/yaml-runtime/logs && test -x /etc/init.d/bocker-entrypoint && grep -Fx '\''APP_ENV="production"'\'' /etc/environment'
+	'test -d /opt/yaml-runtime/logs && test -d /opt/yaml-runtime/data && test "$(cat /opt/yaml-runtime/message.txt)" = "hello from yaml runtime mount" && echo ok > /opt/yaml-runtime/data/check.txt && test -x /etc/init.d/bocker-entrypoint && grep -Fx '\''APP_ENV="production"'\'' /etc/environment'
 
 "$bocker_bin" image build --name "$c_image" "$project_dir/../languages/c/Incusfile"
 "$bocker_bin" image run "$c_image" --name "$c_container"

@@ -2,8 +2,8 @@
 
 These fixtures exercise structured argv execution, explicit shell execution,
 host and cross-stage copies, working directories, runtime environment, ports,
-domains, entrypoints, commands, and autostart metadata against a real Bocker
-daemon.
+domains, entrypoints, commands, autostart metadata, and runtime host file/directory
+mounts against a real Bocker daemon.
 
 Run all projects and assertions with:
 

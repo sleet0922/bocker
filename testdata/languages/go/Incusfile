@@ -1,0 +1,20 @@
+version: 2
+name: bocker-language-go-mount-e2e
+network: nat
+stages:
+  - name: builder
+    from: debian/13
+    packages: [golang-go]
+    workdir: /src
+    files: {/src/: [go.mod, main.go]}
+    commands:
+      - [mkdir, -p, /out]
+      - [go, build, -trimpath, -o, /out/go-mount-app, .]
+  - from: debian/13
+    artifacts: {builder: {/out/go-mount-app: /usr/local/bin/go-mount-app}}
+    runtime:
+      entrypoint: [/usr/local/bin/go-mount-app]
+      mounts:
+        - {source: ./runtime-data, target: /var/lib/go-mount-app, mode: rw}
+        - {source: ./runtime-message.txt, target: /etc/go-mount-message, readonly: true}
+      autostart: false

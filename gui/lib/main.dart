@@ -682,15 +682,95 @@ class _BockerHomeState extends State<BockerHome> {
     );
   }
 
+  Future<List<MountInfo>> _loadContainerMounts(ContainerInfo container) async {
+    if (mounted) {
+      setState(() {
+        _loading = true;
+        _busyLabel = '正在加载挂载';
+      });
+    }
+    final result = await _bocker.run([
+      'container',
+      'set',
+      container.name,
+      'mount',
+      'list',
+      '--json',
+    ]);
+    if (!mounted) return const [];
+    setState(() {
+      _loading = false;
+      _busyLabel = null;
+      _lastOutput = result.output;
+    });
+    if (!result.ok) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('读取挂载失败: ${result.summary}'),
+          behavior: SnackBarBehavior.floating,
+          backgroundColor: Theme.of(context).colorScheme.error,
+        ),
+      );
+    }
+    return result.ok ? parseMounts(result.output) : const [];
+  }
+
   Future<void> _settingsDialog(ContainerInfo container) async {
+    final mounts = await _loadContainerMounts(container);
+    if (!mounted) return;
     final domain = TextEditingController(text: container.domain);
     final port = TextEditingController();
     final mountSource = TextEditingController();
     final mountTarget = TextEditingController();
     final removablePorts = removablePortSpecs(container.ports);
+    final currentMounts = List<MountInfo>.from(mounts);
+    final removedMounts = <String>[];
+    final pendingMounts = <_PendingMount>[];
+    final mountModes = <String, bool>{
+      for (final mount in currentMounts) mount.name: mount.readonly,
+    };
     var removePort = '';
     var autostart = container.autostart == 'on';
     var network = container.network == 'bridge' ? 'bridge' : 'nat';
+    var mountMode = 'rw';
+    String? mountError;
+
+    bool targetIsUsed(String target) {
+      final normalizedTarget = normalizeContainerPath(target);
+      return currentMounts.any(
+            (mount) =>
+                !removedMounts.contains(mount.name) &&
+                normalizeContainerPath(mount.target) == normalizedTarget,
+          ) ||
+          pendingMounts.any(
+            (mount) => normalizeContainerPath(mount.target) == normalizedTarget,
+          );
+    }
+
+    void queueMount(void Function(void Function()) setDialogState) {
+      final source = mountSource.text.trim();
+      final target = mountTarget.text.trim();
+      if (source.isEmpty || target.isEmpty) {
+        setDialogState(() => mountError = '请输入宿主机源路径和容器内目标路径。');
+        return;
+      }
+      if (!source.startsWith('/') || !target.startsWith('/')) {
+        setDialogState(() => mountError = '挂载源和目标路径都必须是绝对路径。');
+        return;
+      }
+      if (targetIsUsed(target)) {
+        setDialogState(() => mountError = '目标路径已配置挂载，请先删除原挂载后再添加。');
+        return;
+      }
+      setDialogState(() {
+        pendingMounts.add(_PendingMount(source, target, mountMode == 'ro'));
+        mountSource.clear();
+        mountTarget.clear();
+        mountMode = 'rw';
+        mountError = null;
+      });
+    }
+
     final values = await showDialog<_SettingsValues>(
       context: context,
       builder: (context) => StatefulBuilder(
@@ -723,19 +803,141 @@ class _BockerHomeState extends State<BockerHome> {
                   const SizedBox(height: 16),
                   TextField(
                     controller: mountSource,
-                    decoration: const InputDecoration(
-                      labelText: '新增宿主机挂载源',
-                      hintText: '例如 /home/user/Downloads',
+                    decoration: InputDecoration(
+                      labelText: '宿主机源路径',
+                      hintText: '文件或目录，例如 /home/user/README.md',
+                      suffixIcon: PopupMenuButton<String>(
+                        tooltip: '选择宿主机路径',
+                        onSelected: (choice) async {
+                          final selected = choice == 'file'
+                              ? await _selectFile()
+                              : await getDirectoryPath();
+                          if (selected != null) {
+                            setDialogState(() => mountSource.text = selected);
+                          }
+                        },
+                        itemBuilder: (context) => const [
+                          PopupMenuItem(
+                            value: 'file',
+                            child: ListTile(
+                              leading: Icon(Icons.description_outlined),
+                              title: Text('选择文件'),
+                            ),
+                          ),
+                          PopupMenuItem(
+                            value: 'directory',
+                            child: ListTile(
+                              leading: Icon(Icons.folder_outlined),
+                              title: Text('选择目录'),
+                            ),
+                          ),
+                        ],
+                        icon: const Icon(Icons.folder_open_outlined),
+                      ),
                     ),
+                    enabled: !container.isRunning,
                   ),
                   const SizedBox(height: 10),
                   TextField(
                     controller: mountTarget,
                     decoration: const InputDecoration(
                       labelText: '容器内目标路径',
-                      hintText: '例如 /mnt/downloads',
+                      hintText: '例如 /mnt/data',
+                    ),
+                    enabled: !container.isRunning,
+                  ),
+                  const SizedBox(height: 12),
+                  _ChoiceSection(
+                    label: '挂载权限',
+                    supportingText: container.isRunning
+                        ? '停止容器后才能添加、删除或修改挂载'
+                        : '只读挂载会阻止容器写入宿主机路径',
+                    child: SegmentedButton<String>(
+                      showSelectedIcon: false,
+                      expandedInsets: EdgeInsets.zero,
+                      segments: const [
+                        ButtonSegment(value: 'rw', label: Text('读写 (rw)')),
+                        ButtonSegment(value: 'ro', label: Text('只读 (ro)')),
+                      ],
+                      selected: {mountMode},
+                      onSelectionChanged: container.isRunning
+                          ? null
+                          : (selected) => setDialogState(
+                              () => mountMode = selected.first,
+                            ),
                     ),
                   ),
+                  const SizedBox(height: 10),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: FilledButton.tonalIcon(
+                      onPressed: container.isRunning
+                          ? null
+                          : () => queueMount(setDialogState),
+                      icon: const Icon(Icons.add),
+                      label: const Text('加入待添加列表'),
+                    ),
+                  ),
+                  if (mountError != null) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      mountError!,
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.error,
+                      ),
+                    ),
+                  ],
+                  const SizedBox(height: 16),
+                  Text('现有挂载', style: Theme.of(context).textTheme.titleSmall),
+                  const SizedBox(height: 8),
+                  if (currentMounts.isEmpty && pendingMounts.isEmpty)
+                    Text(
+                      '暂无挂载。',
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
+                    )
+                  else
+                    ConstrainedBox(
+                      constraints: const BoxConstraints(maxHeight: 260),
+                      child: SingleChildScrollView(
+                        child: Column(
+                          children: [
+                            for (final mount in currentMounts)
+                              if (!removedMounts.contains(mount.name))
+                                _MountEditorRow(
+                                  mount: mount,
+                                  readonly:
+                                      mountModes[mount.name] ?? mount.readonly,
+                                  enabled:
+                                      !container.isRunning && !mount.inherited,
+                                  onModeChanged: (readonly) => setDialogState(
+                                    () => mountModes[mount.name] = readonly,
+                                  ),
+                                  onRemove: () => setDialogState(
+                                    () => removedMounts.add(mount.name),
+                                  ),
+                                ),
+                            for (final pending in pendingMounts)
+                              _PendingMountEditorRow(
+                                mount: pending,
+                                onRemove: () => setDialogState(
+                                  () => pendingMounts.remove(pending),
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  if (removedMounts.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      '${removedMounts.length} 个挂载将在保存时删除',
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.error,
+                      ),
+                    ),
+                  ],
                   if (removablePorts.isNotEmpty) ...[
                     const SizedBox(height: 16),
                     DropdownButtonFormField<String>(
@@ -796,8 +998,21 @@ class _BockerHomeState extends State<BockerHome> {
                   removePort,
                   autostart,
                   network,
-                  mountSource.text.trim(),
-                  mountTarget.text.trim(),
+                  removedMounts.toList(growable: false),
+                  pendingMounts.toList(growable: false),
+                  [
+                    for (final mount in currentMounts)
+                      if (!mount.inherited &&
+                          !removedMounts.contains(mount.name) &&
+                          (mountModes[mount.name] ?? mount.readonly) !=
+                              mount.readonly)
+                        _MountUpdate(
+                          mount.name,
+                          mount.source,
+                          mount.target,
+                          mountModes[mount.name] ?? mount.readonly,
+                        ),
+                  ],
                 ),
               ),
               child: const Text('保存'),
@@ -806,6 +1021,9 @@ class _BockerHomeState extends State<BockerHome> {
         ),
       ),
     );
+    // `showDialog` completes when pop starts; let the route finish its reverse
+    // transition before disposing controllers still referenced by TextFields.
+    await Future<void>.delayed(const Duration(milliseconds: 300));
     domain.dispose();
     port.dispose();
     mountSource.dispose();
@@ -820,13 +1038,6 @@ class _BockerHomeState extends State<BockerHome> {
     if (values.port.isNotEmpty && !isValidPortMapping(values.port)) {
       _showInputError('端口映射格式无效，例如 8080:80/tcp。');
       return;
-    }
-    if (values.mountSource.isNotEmpty || values.mountTarget.isNotEmpty) {
-      if (!values.mountSource.startsWith('/') ||
-          !values.mountTarget.startsWith('/')) {
-        _showInputError('挂载源和目标路径都必须是绝对路径。');
-        return;
-      }
     }
     var ok = true;
     if (values.domain != container.domain) {
@@ -859,16 +1070,40 @@ class _BockerHomeState extends State<BockerHome> {
         values.removePort,
       ], refresh: false)).ok;
     }
-    if (ok && values.mountSource.isNotEmpty && values.mountTarget.isNotEmpty) {
-      ok = (await _run('添加目录挂载', [
+    for (final mountName in values.removeMounts) {
+      if (!ok) break;
+      ok = (await _run('删除文件挂载', [
+        'container',
+        'set',
+        container.name,
+        'mount',
+        'rm',
+        mountName,
+      ], refresh: false)).ok;
+    }
+    for (final mount in values.mountUpdates) {
+      if (!ok) break;
+      ok = (await _run('更新文件挂载', [
+        'container',
+        'set',
+        container.name,
+        'mount',
+        'update',
+        mount.name,
+        mount.readonly ? 'ro' : 'rw',
+      ], refresh: false)).ok;
+    }
+    for (final mount in values.addMounts) {
+      if (!ok) break;
+      ok = (await _run('添加文件挂载', [
         'container',
         'set',
         container.name,
         'mount',
         'add',
-        values.mountSource,
-        values.mountTarget,
-        'rw',
+        mount.source,
+        mount.target,
+        mount.readonly ? 'ro' : 'rw',
       ], refresh: false)).ok;
     }
     if (ok && values.autostart != (container.autostart == 'on')) {
@@ -1168,6 +1403,133 @@ class _NetworkSelector extends StatelessWidget {
       onSelectionChanged: enabled
           ? (selected) => onChanged(selected.first)
           : null,
+    );
+  }
+}
+
+class _MountEditorRow extends StatelessWidget {
+  const _MountEditorRow({
+    required this.mount,
+    required this.readonly,
+    required this.enabled,
+    required this.onModeChanged,
+    required this.onRemove,
+  });
+
+  final MountInfo mount;
+  final bool readonly;
+  final bool enabled;
+  final ValueChanged<bool> onModeChanged;
+  final VoidCallback onRemove;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          border: Border.all(color: colors.outlineVariant),
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(10, 8, 4, 8),
+          child: Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      mount.source,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodyMedium,
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      '→ ${mount.target}${mount.inherited ? ' · profile' : ''}',
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: colors.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              SegmentedButton<String>(
+                showSelectedIcon: false,
+                segments: const [
+                  ButtonSegment(value: 'rw', label: Text('rw')),
+                  ButtonSegment(value: 'ro', label: Text('ro')),
+                ],
+                selected: {readonly ? 'ro' : 'rw'},
+                onSelectionChanged: enabled
+                    ? (selected) => onModeChanged(selected.first == 'ro')
+                    : null,
+              ),
+              IconButton(
+                tooltip: enabled
+                    ? '删除挂载'
+                    : mount.inherited
+                    ? '来自 profile 的挂载不能删除'
+                    : '停止容器后才能删除挂载',
+                onPressed: enabled ? onRemove : null,
+                icon: const Icon(Icons.delete_outline),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _PendingMountEditorRow extends StatelessWidget {
+  const _PendingMountEditorRow({required this.mount, required this.onRemove});
+
+  final _PendingMount mount;
+  final VoidCallback onRemove;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: colors.secondaryContainer,
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(10, 8, 4, 8),
+          child: Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(mount.source, overflow: TextOverflow.ellipsis),
+                    const SizedBox(height: 2),
+                    Text(
+                      '→ ${mount.target} · ${mount.readonly ? 'ro' : 'rw'} · 待添加',
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: colors.onSecondaryContainer,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              IconButton(
+                tooltip: '移除待添加项',
+                onPressed: onRemove,
+                icon: const Icon(Icons.close),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
@@ -2073,6 +2435,22 @@ class ContainerInfo {
   }
 }
 
+class MountInfo {
+  const MountInfo({
+    required this.name,
+    required this.source,
+    required this.target,
+    required this.readonly,
+    this.inherited = false,
+  });
+
+  final String name;
+  final String source;
+  final String target;
+  final bool readonly;
+  final bool inherited;
+}
+
 class ImageInfo {
   const ImageInfo({
     required this.name,
@@ -2118,6 +2496,49 @@ List<ContainerInfo> parseContainers(String output) {
   } catch (_) {
     return const [];
   }
+}
+
+List<MountInfo> parseMounts(String output) {
+  try {
+    final decoded = jsonDecode(output);
+    if (decoded is! List) return const [];
+    return decoded
+        .whereType<Map>()
+        .map((item) {
+          return MountInfo(
+            name: jsonText(item, 'name'),
+            source: jsonText(item, 'source'),
+            target: jsonText(item, 'target'),
+            readonly: jsonBool(item, 'readonly'),
+            inherited: jsonBool(item, 'inherited'),
+          );
+        })
+        .where((mount) {
+          return mount.name.isNotEmpty &&
+              mount.source.isNotEmpty &&
+              mount.target.isNotEmpty;
+        })
+        .toList();
+  } catch (_) {
+    return const [];
+  }
+}
+
+String normalizeContainerPath(String path) {
+  final trimmed = path.trim();
+  if (trimmed.isEmpty || trimmed == '/') return '/';
+  final normalized = trimmed.replaceAll(RegExp(r'/+'), '/');
+  return normalized.endsWith('/')
+      ? normalized.substring(0, normalized.length - 1)
+      : normalized;
+}
+
+bool jsonBool(Map item, String key) {
+  final value = item[key];
+  if (value is bool) return value;
+  if (value is num) return value != 0;
+  final text = value?.toString().trim().toLowerCase();
+  return text == '1' || text == 'true' || text == 'yes' || text == 'on';
 }
 
 List<ImageInfo> parseImages(String output) {
@@ -2325,14 +2746,33 @@ class _SettingsValues {
     this.removePort,
     this.autostart,
     this.network,
-    this.mountSource,
-    this.mountTarget,
+    this.removeMounts,
+    this.addMounts,
+    this.mountUpdates,
   );
   final String domain;
   final String port;
   final String removePort;
   final bool autostart;
   final String network;
-  final String mountSource;
-  final String mountTarget;
+  final List<String> removeMounts;
+  final List<_PendingMount> addMounts;
+  final List<_MountUpdate> mountUpdates;
+}
+
+class _PendingMount {
+  const _PendingMount(this.source, this.target, this.readonly);
+
+  final String source;
+  final String target;
+  final bool readonly;
+}
+
+class _MountUpdate {
+  const _MountUpdate(this.name, this.source, this.target, this.readonly);
+
+  final String name;
+  final String source;
+  final String target;
+  final bool readonly;
 }

@@ -1,0 +1,21 @@
+version: 2
+name: bocker-language-python-mount-e2e
+network: nat
+stages:
+  - name: builder
+    from: debian/13
+    packages: [python3]
+    workdir: /src
+    files: {/src/: [app.py]}
+    commands:
+      - [mkdir, -p, /out]
+      - [cp, app.py, /out/python-mount-app.py]
+  - from: debian/13
+    packages: [python3]
+    artifacts: {builder: {/out/python-mount-app.py: /usr/local/lib/python-mount-app.py}}
+    runtime:
+      entrypoint: [python3, /usr/local/lib/python-mount-app.py]
+      mounts:
+        - {source: ./runtime-data, target: /var/lib/python-mount-app, mode: rw}
+        - {source: ./runtime-message.txt, target: /etc/python-mount-message, readonly: true}
+      autostart: false

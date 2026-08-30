@@ -1,0 +1,21 @@
+version: 2
+name: bocker-language-node-mount-e2e
+network: nat
+stages:
+  - name: builder
+    from: debian/13
+    packages: [nodejs]
+    workdir: /src
+    files: {/src/: [app.js]}
+    commands:
+      - [mkdir, -p, /out]
+      - [cp, app.js, /out/node-mount-app.js]
+  - from: debian/13
+    packages: [nodejs]
+    artifacts: {builder: {/out/node-mount-app.js: /usr/local/lib/node-mount-app.js}}
+    runtime:
+      entrypoint: [node, /usr/local/lib/node-mount-app.js]
+      mounts:
+        - {source: ./runtime-data, target: /var/lib/node-mount-app, mode: rw}
+        - {source: ./runtime-message.txt, target: /etc/node-mount-message, readonly: true}
+      autostart: false

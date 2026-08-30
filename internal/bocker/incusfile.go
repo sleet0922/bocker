@@ -27,6 +27,7 @@ type Incusfile struct {
 	Entrypoint []string
 	Cmd        []string
 	Env        []EnvSpec
+	Mounts     []RuntimeMount
 }
 
 // Stage 表示一个构建阶段 (FROM ... AS ...)。
@@ -41,6 +42,16 @@ type Stage struct {
 	Autostart       *bool       // AUTOSTART
 	Entrypoint      []string    // ENTRYPOINT executable and fixed arguments
 	Cmd             []string    // CMD executable/arguments or default ENTRYPOINT arguments
+	Mounts          []RuntimeMount
+}
+
+// RuntimeMount describes a host path mounted into the container created from
+// a built image. Source is normalized to an absolute host path while parsing
+// the Incusfile; Target is an absolute path inside the container.
+type RuntimeMount struct {
+	Source string `json:"source"`
+	Target string `json:"target"`
+	Mode   string `json:"mode"`
 }
 
 // BuildStep 是一个有序的 YAML 构建步骤。
@@ -219,12 +230,12 @@ func splitImageRemote(ref string) (remote, image string) {
 func validateFinalStageRuntimeDirectives(stages []Stage) error {
 	for i := 0; i < len(stages)-1; i++ {
 		stage := stages[i]
-		if len(stage.Exposes) > 0 || stage.Domain != "" || stage.Autostart != nil || len(stage.Entrypoint) > 0 || len(stage.Cmd) > 0 {
+		if len(stage.Exposes) > 0 || stage.Domain != "" || stage.Autostart != nil || len(stage.Entrypoint) > 0 || len(stage.Cmd) > 0 || len(stage.Mounts) > 0 {
 			label := stage.Name
 			if label == "" {
 				label = strconv.Itoa(i)
 			}
-			return fmt.Errorf("阶段 %q 包含仅允许在最终阶段使用的运行时指令 (EXPOSE DOMAIN AUTOSTART ENTRYPOINT CMD)", label)
+			return fmt.Errorf("阶段 %q 包含仅允许在最终阶段使用的运行时指令 (EXPOSE DOMAIN AUTOSTART ENTRYPOINT CMD MOUNTS)", label)
 		}
 	}
 	if len(stages) > 0 {

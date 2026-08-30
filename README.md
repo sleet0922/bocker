@@ -44,6 +44,9 @@ stages:
       env: {APP_ENV: production}
       entrypoint: [/usr/local/bin/app]
       expose: [8080, 8081/udp]
+      mounts:
+        - {source: ./data, target: /var/lib/app, mode: rw}
+        - {source: ./app.conf, target: /etc/app.conf, readonly: true}
       autostart: true
 ```
 
@@ -85,7 +88,16 @@ commands:
 
 argv commands never invoke a shell. Use `shell` only for pipelines, redirection, conditionals or several tightly-related setup operations. `${NAME}` references declared `args`, stage `env`, and captured command output; `$${NAME}` emits a literal `${NAME}`.
 
-The final stage may contain `runtime` with `env`, `entrypoint`, `cmd`, `expose` (`PORT` or `PORT/udp`), `domain`, and `autostart`. Runtime directives are rejected in builder stages. `tools` is also rejected in the final stage.
+The final stage may contain `runtime` with `env`, `entrypoint`, `cmd`, `expose` (`PORT` or `PORT/udp`), `mounts`, `domain`, and `autostart`. Runtime directives are rejected in builder stages. `tools` is also rejected in the final stage.
+
+`runtime.mounts` declares host paths to attach when `bocker image run` creates the
+container. Each item requires an absolute, non-root container `target`; `source` may be an
+absolute host path or a path relative to the Incusfile directory. `mode` is
+`rw` (the default) or `ro`. As an alternative, use `readonly: true|false`.
+Sources must exist when the image is run and must be a regular file or directory;
+Incus detects the source type and creates the target with the matching
+file/directory type. Mounts are stored in image metadata, so running an image
+later preserves the declaration.
 
 ## Validation and tests
 
@@ -110,5 +122,5 @@ The GUI package embeds the matching CLI version. Release publication is intentio
 make release
 git commit -am 'Release Bocker Incusfile v2'
 git push origin HEAD
-make publish-release PUBLISH=1 VERSION=3.3.0
+make publish-release PUBLISH=1 VERSION=3.3.5
 ```

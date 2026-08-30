@@ -1,7 +1,9 @@
 package bocker
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 )
 
@@ -80,7 +82,7 @@ func CmdSet(args []string) error {
 	options := []string{
 		"域名映射",
 		"端口映射",
-		"目录挂载",
+		"文件或目录挂载",
 		"开机自启动",
 		"网络模式",
 	}
@@ -111,26 +113,30 @@ func CmdSet(args []string) error {
 			return cmdSetPortRemoveInteractive(client, ct)
 		}
 	case 2:
-		action := selectMenu([]string{"添加目录挂载", "删除目录挂载"}, "选择挂载操作")
-		if action == 1 {
+		action := selectMenu([]string{"添加文件或目录挂载", "查看挂载", "修改挂载模式", "删除文件或目录挂载"}, "选择挂载操作")
+		switch action {
+		case 0:
+			source := prompt("宿主机绝对路径: ")
+			target := prompt("容器内绝对路径: ")
+			mode := strings.ToLower(prompt("模式 (ro/rw，默认 rw): "))
+			if mode == "" {
+				mode = "rw"
+			}
+			readonly, err := parseMountMode(mode)
+			if err != nil {
+				return err
+			}
+			if err := client.AddMount(name, source, target, readonly); err != nil {
+				return err
+			}
+			fmt.Printf("✔ 已添加或更新挂载: %s -> %s (%s)\n", source, target, mode)
+		case 1:
+			return cmdSetMount(client, ct, []string{"list"})
+		case 2:
+			return cmdSetMountUpdateInteractive(client, ct)
+		case 3:
 			return cmdSetMountRemoveInteractive(client, ct)
 		}
-		if action != 0 {
-			return nil
-		}
-		source := prompt("宿主机绝对路径: ")
-		target := prompt("容器内绝对路径: ")
-		mode := strings.ToLower(prompt("模式 (ro/rw，默认 rw): "))
-		if mode == "" {
-			mode = "rw"
-		}
-		if mode != "ro" && mode != "rw" {
-			return fmt.Errorf("挂载模式必须是 ro 或 rw")
-		}
-		if err := client.AddMount(name, source, target, mode == "ro"); err != nil {
-			return err
-		}
-		fmt.Printf("✔ 已添加挂载: %s -> %s (%s)\n", source, target, mode)
 	case 3:
 		action := selectMenu([]string{"开启开机自启动", "关闭开机自启动"}, "选择自启动操作")
 		if action < 0 {
@@ -176,7 +182,11 @@ func cmdSetMountRemoveInteractive(client *IncusClient, ct *Container) error {
 		if m.Readonly {
 			mode = "ro"
 		}
-		options = append(options, fmt.Sprintf("%s -> %s (%s)", m.Source, m.Target, mode))
+		label := fmt.Sprintf("%s -> %s (%s)", m.Source, m.Target, mode)
+		if m.Inherited {
+			label += " [profile]"
+		}
+		options = append(options, label)
 	}
 	choice := selectMenu(options, "选择要删除的挂载 (↑↓ 选择, Enter 确认, q 退出)")
 	if choice < 0 || choice >= len(mounts) {
@@ -186,6 +196,43 @@ func cmdSetMountRemoveInteractive(client *IncusClient, ct *Container) error {
 		return err
 	}
 	fmt.Printf("✔ 已删除挂载: %s\n", mounts[choice].Name)
+	return nil
+}
+
+func cmdSetMountUpdateInteractive(client *IncusClient, ct *Container) error {
+	mounts, err := client.ListMounts(ct.Name)
+	if err != nil {
+		return err
+	}
+	if len(mounts) == 0 {
+		fmt.Println("该容器未配置挂载。")
+		return nil
+	}
+	options := make([]string, 0, len(mounts))
+	for _, m := range mounts {
+		mode := "rw"
+		if m.Readonly {
+			mode = "ro"
+		}
+		label := fmt.Sprintf("%s -> %s (%s)", m.Source, m.Target, mode)
+		if m.Inherited {
+			label += " [profile]"
+		}
+		options = append(options, label)
+	}
+	choice := selectMenu(options, "选择要修改模式的挂载 (↑↓ 选择, Enter 确认, q 退出)")
+	if choice < 0 || choice >= len(mounts) {
+		return nil
+	}
+	mode := strings.ToLower(prompt("模式 (ro/rw): "))
+	readonly, err := parseMountMode(mode)
+	if err != nil {
+		return err
+	}
+	if err := client.UpdateMount(ct.Name, mounts[choice].Name, readonly); err != nil {
+		return err
+	}
+	fmt.Printf("✔ 已更新挂载模式: %s (%s)\n", mounts[choice].Name, mode)
 	return nil
 }
 
@@ -217,24 +264,33 @@ func cmdSetPortRemoveInteractive(client *IncusClient, ct *Container) error {
 }
 
 func cmdSetMount(client *IncusClient, ct *Container, args []string) error {
-	if len(args) == 0 || args[0] == "list" {
-		if len(args) > 1 {
-			return fmt.Errorf("用法: bocker container set %s mount list", ct.Name)
+	if len(args) == 0 || strings.EqualFold(args[0], "list") {
+		listArgs := args
+		if len(args) > 0 {
+			listArgs = args[1:]
+		}
+		jsonOutput, err := parseJSONOutputOption(listArgs)
+		if err != nil {
+			return fmt.Errorf("用法: bocker container set %s mount list [--json]: %w", ct.Name, err)
 		}
 		mounts, err := client.ListMounts(ct.Name)
 		if err != nil {
 			return err
+		}
+		if jsonOutput {
+			return json.NewEncoder(os.Stdout).Encode(mounts)
 		}
 		if len(mounts) == 0 {
 			fmt.Println("该容器未配置挂载。")
 			return nil
 		}
 		for _, m := range mounts {
-			mode := "rw"
-			if m.Readonly {
-				mode = "ro"
+			mode := mountModeLabel(m.Readonly)
+			profile := ""
+			if m.Inherited {
+				profile = " [profile]"
 			}
-			fmt.Printf("%s: %s -> %s (%s)\n", m.Name, m.Source, m.Target, mode)
+			fmt.Printf("%s: %s -> %s (%s)%s\n", m.Name, m.Source, m.Target, mode, profile)
 		}
 		return nil
 	}
@@ -247,13 +303,28 @@ func cmdSetMount(client *IncusClient, ct *Container, args []string) error {
 		if len(args) == 4 {
 			mode = strings.ToLower(args[3])
 		}
-		if mode != "ro" && mode != "rw" {
-			return fmt.Errorf("挂载模式必须是 ro 或 rw")
-		}
-		if err := client.AddMount(ct.Name, args[1], args[2], mode == "ro"); err != nil {
+		readonly, err := parseMountMode(mode)
+		if err != nil {
 			return err
 		}
-		fmt.Printf("✔ 已添加挂载: %s -> %s (%s)\n", args[1], args[2], mode)
+		if err := client.AddMount(ct.Name, args[1], args[2], readonly); err != nil {
+			return err
+		}
+		fmt.Printf("✔ 已添加或更新挂载: %s -> %s (%s)\n", args[1], args[2], mode)
+		return nil
+	case "update":
+		if len(args) != 3 {
+			return fmt.Errorf("用法: bocker container set %s mount update <挂载名称> <ro|rw>", ct.Name)
+		}
+		mode := strings.ToLower(args[2])
+		readonly, err := parseMountMode(mode)
+		if err != nil {
+			return err
+		}
+		if err := client.UpdateMount(ct.Name, args[1], readonly); err != nil {
+			return err
+		}
+		fmt.Printf("✔ 已更新挂载模式: %s (%s)\n", args[1], mode)
 		return nil
 	case "rm", "remove":
 		if len(args) != 2 {
@@ -265,8 +336,26 @@ func cmdSetMount(client *IncusClient, ct *Container, args []string) error {
 		fmt.Printf("✔ 已删除挂载: %s\n", args[1])
 		return nil
 	default:
-		return fmt.Errorf("用法: bocker container set %s mount list|add|rm", ct.Name)
+		return fmt.Errorf("用法: bocker container set %s mount list|add|update|rm", ct.Name)
 	}
+}
+
+func parseMountMode(mode string) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "ro":
+		return true, nil
+	case "rw":
+		return false, nil
+	default:
+		return false, fmt.Errorf("挂载模式必须是 ro 或 rw")
+	}
+}
+
+func mountModeLabel(readonly bool) string {
+	if readonly {
+		return "ro"
+	}
+	return "rw"
 }
 
 // orNA 空值显示为 N/A。

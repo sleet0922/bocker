@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -129,6 +131,55 @@ type v2Runtime struct {
 	Expose     []string          `yaml:"expose"`
 	Domain     string            `yaml:"domain"`
 	Autostart  *bool             `yaml:"autostart"`
+	Mounts     []v2Mount         `yaml:"mounts"`
+}
+
+// v2Mount accepts the explicit runtime mount form:
+//
+//   - source: ./data
+//     target: /var/lib/app
+//     mode: ro
+//
+// `readonly: true|false` is accepted as a spelling of mode for callers that
+// prefer a boolean. Supplying both fields is rejected to keep the resulting
+// configuration unambiguous.
+type v2Mount struct {
+	Source   string
+	Target   string
+	Mode     string
+	Readonly *bool
+}
+
+func (m *v2Mount) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind != yaml.MappingNode {
+		return fmt.Errorf("runtime.mounts 项必须是 source/target 映射")
+	}
+	allowed := map[string]bool{"source": true, "target": true, "mode": true, "readonly": true}
+	seen := make(map[string]bool, len(node.Content)/2)
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		key := node.Content[i].Value
+		if !allowed[key] {
+			return fmt.Errorf("runtime.mounts 项包含未知字段 %q", key)
+		}
+		if seen[key] {
+			return fmt.Errorf("runtime.mounts 项字段 %q 重复", key)
+		}
+		seen[key] = true
+	}
+	var raw struct {
+		Source   string `yaml:"source"`
+		Target   string `yaml:"target"`
+		Mode     string `yaml:"mode"`
+		Readonly *bool  `yaml:"readonly"`
+	}
+	if err := node.Decode(&raw); err != nil {
+		return err
+	}
+	if seen["mode"] && seen["readonly"] {
+		return fmt.Errorf("runtime.mounts 项不能同时设置 mode 和 readonly")
+	}
+	m.Source, m.Target, m.Mode, m.Readonly = raw.Source, raw.Target, raw.Mode, raw.Readonly
+	return nil
 }
 
 func parseV2BuildFile(filePath string, overrides map[string]string) (*Incusfile, error) {
@@ -214,6 +265,10 @@ func parseV2BuildFile(filePath string, overrides map[string]string) (*Incusfile,
 	last := &f.Stages[len(f.Stages)-1]
 	f.From, f.Steps, f.Exposes, f.Domain, f.Autostart = last.From, last.Steps, last.Exposes, last.Domain, last.Autostart
 	f.Entrypoint, f.Cmd = append([]string(nil), last.Entrypoint...), append([]string(nil), last.Cmd...)
+	f.Mounts = append([]RuntimeMount(nil), last.Mounts...)
+	if err := validateRuntimeMounts(f.Mounts); err != nil {
+		return nil, fmt.Errorf("%s: stages[%d].runtime: %w", filePath, len(f.Stages)-1, err)
+	}
 	for _, step := range last.Steps {
 		if step.Kind == "ENV" {
 			f.Env = append(f.Env, step.Env)
@@ -564,7 +619,81 @@ func applyV2Runtime(stage *Stage, runtime *v2Runtime, values map[string]string, 
 	if err := appendV2Env(stage, runtime.Env, values, prefix); err != nil {
 		return err
 	}
+	if err := appendV2RuntimeMounts(stage, runtime.Mounts, values, filePath, prefix); err != nil {
+		return err
+	}
 	return nil
+}
+
+func appendV2RuntimeMounts(stage *Stage, mounts []v2Mount, values map[string]string, filePath, prefix string) error {
+	if len(mounts) == 0 {
+		return nil
+	}
+	seenTargets := make(map[string]int, len(mounts))
+	for index, source := range mounts {
+		mount, err := normalizeV2RuntimeMount(source, values, filePath, prefix, index)
+		if err != nil {
+			return err
+		}
+		if previous, ok := seenTargets[mount.Target]; ok {
+			return fmt.Errorf("%s.mounts[%d].target %q 与 mounts[%d] 重复", prefix, index, mount.Target, previous)
+		}
+		seenTargets[mount.Target] = index
+		stage.Mounts = append(stage.Mounts, mount)
+	}
+	return nil
+}
+
+func normalizeV2RuntimeMount(source v2Mount, values map[string]string, filePath, prefix string, index int) (RuntimeMount, error) {
+	label := fmt.Sprintf("%s.mounts[%d]", prefix, index)
+	hostSource, err := expandBuildArgReferences(strings.TrimSpace(source.Source), values, true)
+	if err != nil {
+		return RuntimeMount{}, fmt.Errorf("%s.source: %w", label, err)
+	}
+	if hostSource == "" {
+		return RuntimeMount{}, fmt.Errorf("%s.source 不能为空", label)
+	}
+	// Relative sources are resolved against the Incusfile directory so builds
+	// remain independent of the caller's current working directory.
+	if !filepath.IsAbs(hostSource) {
+		hostSource = filepath.Join(filepath.Dir(filePath), hostSource)
+	}
+	hostSource, err = filepath.Abs(filepath.Clean(hostSource))
+	if err != nil {
+		return RuntimeMount{}, fmt.Errorf("%s.source 路径解析失败: %w", label, err)
+	}
+
+	target, err := expandBuildArgReferences(strings.TrimSpace(source.Target), values, true)
+	if err != nil {
+		return RuntimeMount{}, fmt.Errorf("%s.target: %w", label, err)
+	}
+	if target == "" || !path.IsAbs(target) {
+		return RuntimeMount{}, fmt.Errorf("%s.target 必须是绝对容器路径", label)
+	}
+	target = path.Clean(target)
+	if target == "/" {
+		return RuntimeMount{}, fmt.Errorf("%s.target 不能是容器根路径 / (会与 root 设备冲突)", label)
+	}
+
+	mode, err := expandBuildArgReferences(strings.TrimSpace(source.Mode), values, true)
+	if err != nil {
+		return RuntimeMount{}, fmt.Errorf("%s.mode: %w", label, err)
+	}
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if source.Readonly != nil {
+		if *source.Readonly {
+			mode = "ro"
+		} else {
+			mode = "rw"
+		}
+	}
+	if mode == "" {
+		mode = "rw"
+	}
+	if mode != "ro" && mode != "rw" {
+		return RuntimeMount{}, fmt.Errorf("%s.mode 必须是 ro 或 rw", label)
+	}
+	return RuntimeMount{Source: hostSource, Target: target, Mode: mode}, nil
 }
 
 func parseV2Expose(value string) (int, string, error) {
