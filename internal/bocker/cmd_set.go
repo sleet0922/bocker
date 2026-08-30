@@ -82,6 +82,8 @@ func CmdSet(args []string) error {
 		"取消域名映射",
 		"端口映射",
 		"取消端口映射",
+		"添加目录挂载",
+		"删除目录挂载",
 		"开机自启动",
 		"关闭开机自启动",
 		"网络模式",
@@ -108,16 +110,32 @@ func CmdSet(args []string) error {
 		// 直接进入“取消端口映射”流程：列出当前映射并选择移除
 		return cmdSetPortRemoveInteractive(client, ct)
 	case 4:
+		source := prompt("宿主机绝对路径: ")
+		target := prompt("容器内绝对路径: ")
+		mode := strings.ToLower(prompt("模式 (ro/rw，默认 rw): "))
+		if mode == "" {
+			mode = "rw"
+		}
+		if mode != "ro" && mode != "rw" {
+			return fmt.Errorf("挂载模式必须是 ro 或 rw")
+		}
+		if err := client.AddMount(name, source, target, mode == "ro"); err != nil {
+			return err
+		}
+		fmt.Printf("✔ 已添加挂载: %s -> %s (%s)\n", source, target, mode)
+	case 5:
+		return cmdSetMountRemoveInteractive(client, ct)
+	case 6:
 		if err := client.SetBootAutostart(name, true); err != nil {
 			return err
 		}
 		fmt.Printf("✔ 容器 %s 已开启开机自启动\n", name)
-	case 5:
+	case 7:
 		if err := client.SetBootAutostart(name, false); err != nil {
 			return err
 		}
 		fmt.Printf("✔ 容器 %s 已关闭开机自启动\n", name)
-	case 6:
+	case 8:
 		if strings.EqualFold(ct.Status, "Running") {
 			return fmt.Errorf("容器 %s 正在运行，请先 stop 后再切换网络", name)
 		}
@@ -130,6 +148,34 @@ func CmdSet(args []string) error {
 		}
 		fmt.Printf("✔ 容器 %s 网络已设置为 %s\n", name, mode)
 	}
+	return nil
+}
+
+func cmdSetMountRemoveInteractive(client *IncusClient, ct *Container) error {
+	mounts, err := client.ListMounts(ct.Name)
+	if err != nil {
+		return err
+	}
+	if len(mounts) == 0 {
+		fmt.Println("该容器未配置挂载。")
+		return nil
+	}
+	options := make([]string, 0, len(mounts))
+	for _, m := range mounts {
+		mode := "rw"
+		if m.Readonly {
+			mode = "ro"
+		}
+		options = append(options, fmt.Sprintf("%s -> %s (%s)", m.Source, m.Target, mode))
+	}
+	choice := selectMenu(options, "选择要删除的挂载 (↑↓ 选择, Enter 确认, q 退出)")
+	if choice < 0 || choice >= len(mounts) {
+		return nil
+	}
+	if err := client.RemoveMount(ct.Name, mounts[choice].Name); err != nil {
+		return err
+	}
+	fmt.Printf("✔ 已删除挂载: %s\n", mounts[choice].Name)
 	return nil
 }
 
