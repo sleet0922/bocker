@@ -61,8 +61,9 @@ Top-level fields:
 Bocker enables Incus managed DNS on its private networks. Containers resolve
 each other as `<container-name>.bocker`; records follow container lifecycle
 and IP changes. Use the container name as the service name instead of an IP.
-`runtime.domain` remains the host-side `/etc/hosts` mapping for a chosen
-external name, and is intentionally separate from internal service discovery.
+`runtime.domain` remains the host-side IPv4-only `/etc/hosts` mapping for a
+chosen external name, and is intentionally separate from internal service
+discovery. Runtime port mappings accept both IPv4 and IPv6.
 
 ## Stage intent
 

@@ -243,11 +243,11 @@ func portFamilyLabel(m PortMapping) string {
 //
 // 实现说明：bocker 的 bridge 容器使用局域网直连网卡，Incus 守护进程不跟踪该模式的
 // IP 地址（无 volatile.<nic>.last_state.ip_addresses），因此 nat=true 的 proxy 设备
-// 无法工作。这里改用非 NAT 的用户态 proxy，并在 connect 中写入容器当前 IPv4。
+// 无法工作。这里改用非 NAT 的用户态 proxy，并在 connect 中写入容器当前 IP。
 // bocker 已经在宿主机侧创建了 bridge shim（bocker-shim0），宿主机可以直达容器 IP。
 //
-// 容器运行时立即生效；容器未运行或未获取到 IPv4 时返回错误。
-// 容器重启后若 IPv4 发生变化，CmdStart 会调用 RefreshPortMappings 自动刷新。
+// [::] wildcard listener 接收双栈流量，代理后端优先使用容器 IPv4。容器重启后若
+// IP 发生变化，CmdStart 会调用 RefreshPortMappings 刷新并迁移旧的 IPv4-only listener。
 func (c *IncusClient) AddPortMapping(name string, hostPort, containerPort int, protocol string) error {
 	if err := c.ready(); err != nil {
 		return err
@@ -276,17 +276,16 @@ func (c *IncusClient) AddPortMapping(name string, hostPort, containerPort int, p
 
 func portProxyDevice(protocol string, hostPort, containerPort int, ipv4, ipv6 string) map[string]string {
 	address := ipv4
-	listen := fmt.Sprintf("%s:0.0.0.0:%d", protocol, hostPort)
 	if address == "" {
 		address = ipv6
-		listen = fmt.Sprintf("%s:[::]:%d", protocol, hostPort)
 	}
+	listen := fmt.Sprintf("%s:[::]:%d", protocol, hostPort)
 	return map[string]string{"type": "proxy", "listen": listen, "connect": proxyEndpoint(protocol, address, containerPort)}
 }
 
 // RefreshPortMappings 在容器启动后刷新所有 bocker 管理的端口映射的 connect 地址，
-// 使其指向容器当前的 IPv4。用于应对 DHCP 重新分配导致 IP 变化的场景。
-// 若容器无 IPv4 或没有端口映射，则不做任何操作。
+// 使其优先指向容器当前的 IPv4。用于应对 DHCP 重新分配导致 IP 变化的场景。
+// 若容器没有 IP 或没有端口映射，则不做任何操作。
 func (c *IncusClient) RefreshPortMappings(name string) (int, error) {
 	if err := c.ready(); err != nil {
 		return 0, err
@@ -304,7 +303,7 @@ func (c *IncusClient) RefreshPortMappings(name string) (int, error) {
 	changed := false
 	refreshed := 0
 	for devName, dev := range full.Devices {
-		_, proto, family, ok := parsePortDeviceNameWithFamily(devName)
+		hostPort, proto, _, ok := parsePortDeviceNameWithFamily(devName)
 		if !ok || dev["type"] != "proxy" {
 			continue
 		}
@@ -313,17 +312,26 @@ func (c *IncusClient) RefreshPortMappings(name string) (int, error) {
 			continue
 		}
 		address := ipv4
-		if address == "" && (family == "v6" || strings.Contains(dev["listen"], ":[::]:")) {
+		if address == "" {
 			address = ipv6
 		}
 		if address == "" {
 			continue
 		}
+		deviceChanged := false
+		newListen := fmt.Sprintf("%s:[::]:%d", proto, hostPort)
+		if dev["listen"] != newListen {
+			dev["listen"] = newListen
+			deviceChanged = true
+		}
 		newConnect := proxyEndpoint(proto, address, port)
-		if dev["connect"] == newConnect {
+		if dev["connect"] != newConnect {
+			dev["connect"] = newConnect
+			deviceChanged = true
+		}
+		if !deviceChanged {
 			continue
 		}
-		dev["connect"] = newConnect
 		full.Devices[devName] = dev
 		changed = true
 		refreshed++

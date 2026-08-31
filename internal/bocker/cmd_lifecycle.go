@@ -67,11 +67,7 @@ func CmdStart(name string) error {
 	if ip == "" {
 		return fmt.Errorf("容器 %s 未获取到 IPv4，无法更新域名 %s", name, domain)
 	}
-	addresses := waitForIPAddresses(client, name, 5, true)
-	if len(addresses) == 0 {
-		addresses = []string{ip}
-	}
-	if err := updateHostsAddresses(name, domain, addresses); err != nil {
+	if err := updateHosts(name, domain, ip); err != nil {
 		return fmt.Errorf("更新 /etc/hosts 失败: %w", err)
 	}
 	fmt.Printf("✔ 已更新 /etc/hosts: %s -> %s\n", domain, ip)
