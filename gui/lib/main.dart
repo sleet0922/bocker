@@ -2267,7 +2267,7 @@ class _StatusChip extends StatelessWidget {
 class BockerCommand {
   BockerCommand();
 
-  Process? _activeProcess;
+  final Set<Process> _activeProcesses = <Process>{};
 
   String get userHomeDirectory {
     final home = Platform.environment['HOME']?.trim();
@@ -2288,7 +2288,9 @@ class BockerCommand {
   }
 
   void cancelActive() {
-    _activeProcess?.kill(ProcessSignal.sigterm);
+    for (final process in List<Process>.of(_activeProcesses)) {
+      process.kill(ProcessSignal.sigterm);
+    }
   }
 
   Future<CommandResult> openShell(String containerName) async {
@@ -2348,6 +2350,7 @@ class BockerCommand {
     ValueChanged<String>? onOutput,
   }) async {
     Process? process;
+    Timer? outputTimer;
     try {
       process = await Process.start(
         _binary,
@@ -2355,9 +2358,20 @@ class BockerCommand {
         runInShell: false,
         workingDirectory: workingDirectory,
       );
-      _activeProcess = process;
+      _activeProcesses.add(process);
       final output = StringBuffer();
       const maxOutput = 1024 * 1024;
+      const outputInterval = Duration(milliseconds: 75);
+      var outputDirty = false;
+
+      void publishOutput() {
+        outputTimer?.cancel();
+        outputTimer = null;
+        if (!outputDirty) return;
+        outputDirty = false;
+        onOutput?.call(output.toString());
+      }
+
       void appendOutput(String chunk) {
         output.write(chunk);
         if (output.length > maxOutput) {
@@ -2367,7 +2381,8 @@ class BockerCommand {
             ..write('[较早输出已截断]\n')
             ..write(text.substring(text.length - maxOutput));
         }
-        onOutput?.call(output.toString());
+        outputDirty = true;
+        outputTimer ??= Timer(outputInterval, publishOutput);
       }
 
       final stdoutDone = process.stdout
@@ -2378,11 +2393,13 @@ class BockerCommand {
           .forEach(appendOutput);
       final exitCode = await process.exitCode;
       await Future.wait([stdoutDone, stderrDone]);
+      publishOutput();
       return CommandResult(exitCode == 0, output.toString().trim(), exitCode);
     } on ProcessException catch (error) {
       return CommandResult(false, '无法启动 $_binary: ${error.message}', -1);
     } finally {
-      if (identical(_activeProcess, process)) _activeProcess = null;
+      outputTimer?.cancel();
+      if (process != null) _activeProcesses.remove(process);
     }
   }
 

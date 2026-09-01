@@ -38,3 +38,17 @@ func TestFirstRouteDevSkipsBockerVirtualInterfaces(t *testing.T) {
 		t.Fatalf("firstRouteDev() = %q, want ens18", got)
 	}
 }
+
+func TestFirstRouteDevPrefersLowestMetric(t *testing.T) {
+	routes := "default via 192.0.2.1 dev eth0 metric 200\ndefault via 198.51.100.1 dev eth1 metric 50\n"
+	if got := firstRouteDev(routes); got != "eth1" {
+		t.Fatalf("firstRouteDev() = %q, want eth1", got)
+	}
+}
+
+func TestFirstRouteDevDefaultsUnspecifiedMetricToZero(t *testing.T) {
+	routes := "default via 192.0.2.1 dev eth0 metric 100\ndefault via 198.51.100.1 dev eth1\n"
+	if got := firstRouteDev(routes); got != "eth1" {
+		t.Fatalf("firstRouteDev() = %q, want eth1", got)
+	}
+}

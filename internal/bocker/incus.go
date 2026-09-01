@@ -154,19 +154,27 @@ func defaultIPv4RouteParent() (string, error) {
 }
 
 func firstRouteDev(output string) string {
+	bestMetric := -1
+	bestDev := ""
 	for _, line := range strings.Split(output, "\n") {
 		fields := strings.Fields(line)
+		metric := 0
+		dev := ""
 		for i, field := range fields {
-			if field != "dev" || i+1 >= len(fields) {
-				continue
+			if field == "metric" && i+1 < len(fields) {
+				if parsed, parseErr := strconv.Atoi(fields[i+1]); parseErr == nil && parsed >= 0 {
+					metric = parsed
+				}
 			}
-			dev := strings.TrimSpace(fields[i+1])
-			if dev != "" && dev != "lo" && dev != defaultHostShimName && dev != bridgeNetworkName {
-				return dev
+			if field == "dev" && i+1 < len(fields) {
+				dev = strings.TrimSpace(fields[i+1])
 			}
 		}
+		if dev != "" && dev != "lo" && dev != defaultHostShimName && dev != bridgeNetworkName && (bestMetric < 0 || metric < bestMetric) {
+			bestMetric, bestDev = metric, dev
+		}
 	}
-	return ""
+	return bestDev
 }
 
 func linkExists(name string) bool {

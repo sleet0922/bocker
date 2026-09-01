@@ -114,6 +114,31 @@ func TestV2RejectsOldShapeAndInvalidSchema(t *testing.T) {
 	}
 }
 
+func TestReadBuildFileRejectsOversizedRegularFile(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "Incusfile")
+	f, err := os.Create(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(maxIncusfileBytes + 1); err != nil {
+		_ = f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readBuildFile(file); err == nil || !strings.Contains(err.Error(), "超过上限") {
+		t.Fatalf("readBuildFile oversized regular file error = %v", err)
+	}
+}
+
+func TestReadBuildFileRejectsOversizedStream(t *testing.T) {
+	stream := strings.NewReader(strings.Repeat("x", maxIncusfileBytes+1))
+	if _, err := readBuildFileStream(stream, "stream"); err == nil || !strings.Contains(err.Error(), "超过上限") {
+		t.Fatalf("readBuildFileStream oversized input error = %v", err)
+	}
+}
+
 func TestV2RealProjectFixturesParse(t *testing.T) {
 	root := filepath.Join("..", "..", "testdata")
 	projects := []string{

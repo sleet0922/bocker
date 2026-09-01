@@ -4,9 +4,14 @@ package bocker
 
 import (
 	"bufio"
+	"io"
+	"net"
 	"os"
+	"os/exec"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 func TestShouldUsePrivilegedBroker(t *testing.T) {
@@ -67,5 +72,82 @@ func TestAllowedBrokerEnvironment(t *testing.T) {
 	}
 	if allowedBrokerEnvironment("BOCKER_STATE_DIR") {
 		t.Fatal("state directory must not be overridden through the privileged broker")
+	}
+}
+
+func TestBockerControlPeerIdentityUsesKernelCredentials(t *testing.T) {
+	dir := t.TempDir()
+	listener, err := net.Listen("unix", dir+"/control.socket")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		connection, _ := listener.Accept()
+		accepted <- connection
+	}()
+	client, err := net.Dial("unix", listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	server := <-accepted
+	defer server.Close()
+	identity, err := bockerControlPeerIdentity(server)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if identity.PID != os.Getpid() || identity.UID != os.Getuid() || identity.GID != os.Getgid() {
+		t.Fatalf("peer identity = %#v, want pid=%d uid=%d gid=%d", identity, os.Getpid(), os.Getuid(), os.Getgid())
+	}
+}
+
+func TestForwardBockerControlInputDetectsDisconnect(t *testing.T) {
+	server, client := net.Pipe()
+	defer server.Close()
+	defer client.Close()
+	disconnected := make(chan struct{})
+	go func() {
+		forwardBockerControlInput(io.Discard, server, func() { close(disconnected) })
+	}()
+	_ = client.Close()
+	select {
+	case <-disconnected:
+	case <-time.After(time.Second):
+		t.Fatal("socket disconnect was not detected")
+	}
+}
+
+func TestPipeCommandStopsWhenClientDisconnects(t *testing.T) {
+	server, client := net.Pipe()
+	defer server.Close()
+	command := exec.Command("/bin/sh", "-c", "exec sleep 30")
+	result := make(chan *os.ProcessState, 1)
+	go func() {
+		state, _ := runBockerPipeCommand(server, command, server, io.Discard)
+		result <- state
+	}()
+	_ = client.Close()
+	select {
+	case state := <-result:
+		if state == nil || state.Success() {
+			t.Fatalf("disconnected command exited successfully: state=%v", state)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("broker command remained running after client disconnect")
+	}
+}
+
+func TestKillBockerCommandKillsProcessGroup(t *testing.T) {
+	command := exec.Command("/bin/sh", "-c", "exec sleep 30")
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	killBockerCommand(command)
+	state, err := command.Process.Wait()
+	if err != nil || state == nil || state.Success() {
+		t.Fatalf("killed command state=%v err=%v", state, err)
 	}
 }

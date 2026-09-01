@@ -6,7 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/lxc/incus/v7/shared/api"
 )
@@ -81,7 +83,36 @@ func validateMountPaths(source, target string) (string, string, error) {
 	if !info.IsDir() && !info.Mode().IsRegular() {
 		return "", "", fmt.Errorf("挂载源必须是普通文件或目录: %s", source)
 	}
+	if err := authorizeMountSourceForCaller(source, info); err != nil {
+		return "", "", err
+	}
 	return source, target, nil
+}
+
+// A root broker validates the source on behalf of an unprivileged caller.
+// Requiring ownership of the final source prevents a caller from handing the
+// privileged daemon arbitrary root-owned host paths (the direct root path is
+// intentionally unchanged for administration and service operations).
+func authorizeMountSourceForCaller(source string, info os.FileInfo) error {
+	uidText := strings.TrimSpace(os.Getenv(callerUIDEnv))
+	if uidText == "" {
+		return nil
+	}
+	uid, err := strconv.Atoi(uidText)
+	if err != nil || uid < 0 {
+		return fmt.Errorf("挂载调用者身份无效")
+	}
+	if uid == 0 {
+		return nil
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return fmt.Errorf("无法验证挂载源所有者: %s", source)
+	}
+	if uint64(stat.Uid) != uint64(uid) {
+		return fmt.Errorf("挂载源必须归当前调用用户所有: %s", source)
+	}
+	return nil
 }
 
 func normalizedMountPath(value string) string {

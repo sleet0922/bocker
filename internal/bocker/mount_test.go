@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/lxc/incus/v7/shared/api"
@@ -89,6 +91,26 @@ func TestValidateMountPathsRequiresRegularFileOrDirectory(t *testing.T) {
 	}
 	if _, _, err := validateMountPaths(filepath.Join(dir, "missing"), "/data"); err == nil {
 		t.Fatal("missing source unexpectedly accepted")
+	}
+}
+
+func TestValidateMountPathsRejectsSourcesNotOwnedByBrokerCaller(t *testing.T) {
+	dir := t.TempDir()
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		t.Skip("file ownership metadata unavailable")
+	}
+	t.Setenv(callerUIDEnv, strconv.FormatUint(uint64(stat.Uid)+1, 10))
+	if _, _, err := validateMountPaths(dir, "/data"); err == nil || !strings.Contains(err.Error(), "归当前调用用户所有") {
+		t.Fatalf("foreign-owned mount source error = %v", err)
+	}
+	t.Setenv(callerUIDEnv, strconv.FormatUint(uint64(stat.Uid), 10))
+	if _, _, err := validateMountPaths(dir, "/data"); err != nil {
+		t.Fatalf("caller-owned mount source rejected: %v", err)
 	}
 }
 

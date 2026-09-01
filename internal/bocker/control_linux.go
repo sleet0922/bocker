@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/creack/pty"
+	"golang.org/x/sys/unix"
 	"golang.org/x/term"
 )
 
@@ -51,6 +52,12 @@ type bockerControlResponse struct {
 	Output   string `json:"output"`
 	ExitCode int    `json:"exitCode"`
 	Done     bool   `json:"done,omitempty"`
+}
+
+type bockerPeerIdentity struct {
+	PID int
+	UID int
+	GID int
 }
 
 type bockerControlServer struct {
@@ -119,6 +126,11 @@ func (s *bockerControlServer) Close() {
 
 func handleBockerControlConnection(connection net.Conn) {
 	defer connection.Close()
+	peer, err := bockerControlPeerIdentity(connection)
+	if err != nil {
+		writeBockerControlResponse(connection, bockerControlResponse{Output: "验证 Bocker 控制请求身份失败: " + err.Error(), ExitCode: 1})
+		return
+	}
 	_ = connection.SetReadDeadline(time.Now().Add(controlRequestTimeout))
 	reader := bufio.NewReaderSize(connection, 64*1024)
 	line, err := readBockerControlRequest(reader)
@@ -150,8 +162,10 @@ func handleBockerControlConnection(connection net.Conn) {
 	command := exec.Command(binary, request.Arguments...)
 	command.Dir = request.WorkingDirectory
 	command.Env = append(os.Environ(), privilegedChildEnv+"=1")
-	command.Env = setControlEnvironmentValue(command.Env, callerUIDEnv, strconv.Itoa(request.CallerUID))
-	command.Env = setControlEnvironmentValue(command.Env, callerGIDEnv, strconv.Itoa(request.CallerGID))
+	// The legacy request fields remain accepted for wire compatibility, but are
+	// untrusted. Kernel-authenticated Unix peer credentials are authoritative.
+	command.Env = setControlEnvironmentValue(command.Env, callerUIDEnv, strconv.Itoa(peer.UID))
+	command.Env = setControlEnvironmentValue(command.Env, callerGIDEnv, strconv.Itoa(peer.GID))
 	for key, value := range request.Environment {
 		if !allowedBrokerEnvironment(key) {
 			continue
@@ -163,9 +177,7 @@ func handleBockerControlConnection(connection net.Conn) {
 	// forwarding writes fail. Kill the child so a build or shell cannot
 	// become an orphan that keeps running (and holding sockets) forever.
 	stream.onWriteError = func() {
-		if command.Process != nil {
-			_ = command.Process.Kill()
-		}
+		killBockerCommand(command)
 	}
 	var processState *os.ProcessState
 	if request.Terminal {
@@ -182,6 +194,31 @@ func handleBockerControlConnection(connection net.Conn) {
 		response.Output = err.Error()
 	}
 	writeBockerControlResponse(connection, response)
+}
+
+func bockerControlPeerIdentity(connection net.Conn) (bockerPeerIdentity, error) {
+	syscallConnection, ok := connection.(syscall.Conn)
+	if !ok {
+		return bockerPeerIdentity{}, fmt.Errorf("控制连接不是 Unix socket")
+	}
+	rawConnection, err := syscallConnection.SyscallConn()
+	if err != nil {
+		return bockerPeerIdentity{}, err
+	}
+	var credentials *unix.Ucred
+	var socketErr error
+	if err := rawConnection.Control(func(fd uintptr) {
+		credentials, socketErr = unix.GetsockoptUcred(int(fd), unix.SOL_SOCKET, unix.SO_PEERCRED)
+	}); err != nil {
+		return bockerPeerIdentity{}, err
+	}
+	if socketErr != nil {
+		return bockerPeerIdentity{}, socketErr
+	}
+	if credentials == nil || credentials.Pid <= 0 {
+		return bockerPeerIdentity{}, fmt.Errorf("控制连接缺少有效的对端凭据")
+	}
+	return bockerPeerIdentity{PID: int(credentials.Pid), UID: int(credentials.Uid), GID: int(credentials.Gid)}, nil
 }
 
 func readBockerControlRequest(reader *bufio.Reader) ([]byte, error) {
@@ -202,6 +239,7 @@ func readBockerControlRequest(reader *bufio.Reader) ([]byte, error) {
 }
 
 func runBockerPipeCommand(connection net.Conn, command *exec.Cmd, reader io.Reader, stream io.Writer) (*os.ProcessState, error) {
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	stdin, err := command.StdinPipe()
 	if err != nil {
 		return nil, fmt.Errorf("创建 Bocker 控制 stdin 失败: %w", err)
@@ -223,11 +261,18 @@ func runBockerPipeCommand(connection net.Conn, command *exec.Cmd, reader io.Read
 		_ = stderr.Close()
 		return nil, fmt.Errorf("启动 Bocker 控制命令失败: %w", err)
 	}
+	processDone := make(chan struct{})
 	var outputWG sync.WaitGroup
 	outputWG.Add(3)
 	go func() {
 		defer outputWG.Done()
-		_, _ = io.Copy(stdin, reader)
+		forwardBockerControlInput(stdin, reader, func() {
+			select {
+			case <-processDone:
+			default:
+				killBockerCommand(command)
+			}
+		})
 		_ = stdin.Close()
 	}()
 	go func() {
@@ -241,6 +286,7 @@ func runBockerPipeCommand(connection net.Conn, command *exec.Cmd, reader io.Read
 		_ = stderr.Close()
 	}()
 	processState, waitErr := command.Process.Wait()
+	close(processDone)
 	closeBockerControlInput(connection)
 	_ = stdin.Close()
 	outputWG.Wait()
@@ -264,21 +310,58 @@ func runBockerTerminalCommand(connection net.Conn, command *exec.Cmd, reader io.
 		_ = slave.Close()
 		return nil, fmt.Errorf("启动 Bocker 控制终端命令失败: %w", err)
 	}
+	processDone := make(chan struct{})
 	var outputWG sync.WaitGroup
 	outputWG.Add(2)
 	go func() {
 		defer outputWG.Done()
-		_, _ = io.Copy(master, reader)
+		forwardBockerControlInput(master, reader, func() {
+			select {
+			case <-processDone:
+			default:
+				killBockerCommand(command)
+			}
+		})
 	}()
 	go func() {
 		defer outputWG.Done()
 		_, _ = io.Copy(stream, master)
 	}()
 	processState, waitErr := command.Process.Wait()
+	close(processDone)
 	closeBockerControlInput(connection)
 	_ = slave.Close()
 	outputWG.Wait()
 	return processState, waitErr
+}
+
+func forwardBockerControlInput(destination io.Writer, source io.Reader, onDisconnect func()) {
+	buffer := make([]byte, 32*1024)
+	writeInput := true
+	for {
+		count, readErr := source.Read(buffer)
+		if count > 0 && writeInput {
+			if _, err := destination.Write(buffer[:count]); err != nil {
+				// Keep reading after child stdin closes so socket EOF still kills it.
+				writeInput = false
+			}
+		}
+		if readErr != nil {
+			if onDisconnect != nil {
+				onDisconnect()
+			}
+			return
+		}
+	}
+}
+
+func killBockerCommand(command *exec.Cmd) {
+	if command == nil || command.Process == nil {
+		return
+	}
+	if err := unix.Kill(-command.Process.Pid, unix.SIGKILL); err != nil {
+		_ = command.Process.Kill()
+	}
 }
 
 func brokerTerminalSize(environment map[string]string) (int, int) {

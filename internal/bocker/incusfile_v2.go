@@ -13,6 +13,12 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// maxIncusfileBytes bounds the amount of YAML accepted from an Incusfile.
+// Incusfiles are configuration documents, not payload containers; 8 MiB is
+// generous for embedded scripts while preventing regular files and streams
+// from causing unbounded daemon memory growth.
+const maxIncusfileBytes = 8 << 20
+
 // Incusfile v2 deliberately describes a stage by intent rather than by a
 // long list of mutually-exclusive step objects. The normalized BuildStep IR
 // remains ordered so the executor does not need to know about YAML layout.
@@ -281,9 +287,24 @@ func parseV2BuildFile(filePath string, overrides map[string]string) (*Incusfile,
 }
 
 func readBuildFile(filePath string) ([]byte, error) {
-	data, err := os.ReadFile(filePath)
+	f, err := os.Open(filePath)
 	if err != nil {
 		return nil, fmt.Errorf("读取 %s 失败: %w", filePath, err)
+	}
+	defer f.Close()
+	if info, statErr := f.Stat(); statErr == nil && info.Mode().IsRegular() && info.Size() > maxIncusfileBytes {
+		return nil, fmt.Errorf("读取 %s 失败: 文件大小 %d 字节超过上限 %d 字节", filePath, info.Size(), maxIncusfileBytes)
+	}
+	return readBuildFileStream(f, filePath)
+}
+
+func readBuildFileStream(r io.Reader, filePath string) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(r, maxIncusfileBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("读取 %s 失败: %w", filePath, err)
+	}
+	if len(data) > maxIncusfileBytes {
+		return nil, fmt.Errorf("读取 %s 失败: 内容超过上限 %d 字节", filePath, maxIncusfileBytes)
 	}
 	return data, nil
 }
