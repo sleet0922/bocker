@@ -1,0 +1,22 @@
+name: bocker_mobile
+description: "Bocker 容器管理手机客户端：通过 SSH 远程管理 Bocker 主机上的容器、镜像与模板。"
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.13.2
+
+dependencies:
+  flutter:
+    sdk: flutter
+  dartssh2: ^2.3.2
+  shared_preferences: ^2.3.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
