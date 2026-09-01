@@ -2,7 +2,7 @@ name: bocker_mobile
 description: "Bocker 容器管理手机客户端：通过 SSH 远程管理 Bocker 主机上的容器、镜像与模板。"
 publish_to: 'none'
 
-version: 1.0.0+1
+version: 1.1.0+1
 
 environment:
   sdk: ^3.13.2

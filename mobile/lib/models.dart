@@ -79,6 +79,28 @@ class ImageTemplate {
   final String image;
 }
 
+/// 容器挂载（对应 `bocker container set <name> mount list --json`）。
+class MountInfo {
+  const MountInfo({
+    required this.name,
+    required this.source,
+    required this.target,
+    required this.readonly,
+    required this.inherited,
+  });
+
+  final String name;
+  final String source;
+  final String target;
+  final bool readonly;
+  final bool inherited;
+
+  String get modeLabel => readonly ? 'ro' : 'rw';
+
+  String get displayLabel =>
+      '$source -> $target ($modeLabel)${inherited ? ' [镜像继承]' : ''}';
+}
+
 List<ContainerInfo> parseContainers(String output) {
   try {
     final decoded = jsonDecode(output);
@@ -127,6 +149,24 @@ List<ImageTemplate> parseImageTemplates(String output) {
         distro: jsonText(item, 'distro'),
         release: jsonText(item, 'release'),
         image: jsonText(item, 'image'),
+      );
+    }).toList();
+  } catch (_) {
+    return const [];
+  }
+}
+
+List<MountInfo> parseMounts(String output) {
+  try {
+    final decoded = jsonDecode(output);
+    if (decoded is! List) return const [];
+    return decoded.whereType<Map>().map((item) {
+      return MountInfo(
+        name: jsonText(item, 'name'),
+        source: jsonText(item, 'source'),
+        target: jsonText(item, 'target'),
+        readonly: item['readonly'] == true,
+        inherited: item['inherited'] == true,
       );
     }).toList();
   } catch (_) {

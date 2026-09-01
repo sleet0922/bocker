@@ -5,6 +5,7 @@ import 'images_page.dart';
 import 'settings_page.dart';
 import 'ssh_service.dart';
 import 'templates_page.dart';
+import 'terminal_page.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key, required this.service});
@@ -21,7 +22,7 @@ class _HomePageState extends State<HomePage> {
   final _imagesKey = GlobalKey<ImagesPageState>();
   final _templatesKey = GlobalKey<TemplatesPageState>();
 
-  static const _titles = ['容器', '镜像', '模板', '设置'];
+  static const _titles = ['容器', '镜像', '模板', '终端', '设置'];
 
   void _select(int index) {
     setState(() => _index = index);
@@ -75,6 +76,7 @@ class _HomePageState extends State<HomePage> {
           ContainersPage(key: _containersKey, service: widget.service),
           ImagesPage(key: _imagesKey, service: widget.service),
           TemplatesPage(key: _templatesKey, service: widget.service),
+          TerminalPage(service: widget.service),
           SettingsPage(service: widget.service),
         ],
       ),
@@ -96,6 +98,11 @@ class _HomePageState extends State<HomePage> {
             icon: Icon(Icons.cloud_download_outlined),
             selectedIcon: Icon(Icons.cloud_download),
             label: '模板',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.terminal_outlined),
+            selectedIcon: Icon(Icons.terminal),
+            label: '终端',
           ),
           NavigationDestination(
             icon: Icon(Icons.settings_outlined),

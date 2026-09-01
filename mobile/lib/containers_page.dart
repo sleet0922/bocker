@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'container_detail_page.dart';
 import 'models.dart';
 import 'ssh_service.dart';
 import 'widgets.dart';
@@ -105,118 +106,16 @@ class ContainersPageState extends State<ContainersPage> {
     );
   }
 
-  void _showDetails(ContainerInfo container) {
-    showModalBottomSheet<void>(
-      context: context,
-      showDragHandle: true,
-      isScrollControlled: true,
-      builder: (sheetContext) {
-        final colors = Theme.of(sheetContext).colorScheme;
-        Widget row(String label, String value) => Padding(
-          padding: const EdgeInsets.symmetric(vertical: 4),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              SizedBox(
-                width: 76,
-                child: Text(
-                  label,
-                  style: TextStyle(color: colors.onSurfaceVariant),
-                ),
-              ),
-              Expanded(child: Text(value.isEmpty ? '-' : value)),
-            ],
-          ),
-        );
-        return SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        container.name,
-                        style: Theme.of(sheetContext).textTheme.titleLarge,
-                      ),
-                    ),
-                    _StatusChip(status: container.status),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                row('状态', container.status),
-                row('IPv4', container.ipv4),
-                row('IPv6', container.ipv6),
-                row('网络', container.network),
-                row('内存', container.memory),
-                row('域名', container.domain),
-                row('自启动', container.autostart),
-                row('端口', container.ports.isEmpty ? '-' : container.ports.split(', ').join('\n')),
-                const SizedBox(height: 16),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: [
-                    if (!container.isRunning)
-                      FilledButton.icon(
-                        onPressed: () {
-                          Navigator.of(sheetContext).pop();
-                          _runAction('启动容器', [
-                            'container',
-                            'start',
-                            container.name,
-                          ]);
-                        },
-                        icon: const Icon(Icons.play_arrow),
-                        label: const Text('启动'),
-                      ),
-                    if (container.isRunning)
-                      FilledButton.icon(
-                        onPressed: () {
-                          Navigator.of(sheetContext).pop();
-                          _runAction('停止容器', [
-                            'container',
-                            'stop',
-                            container.name,
-                          ]);
-                        },
-                        icon: const Icon(Icons.stop),
-                        label: const Text('停止'),
-                      ),
-                    FilledButton.icon(
-                      onPressed: () {
-                        Navigator.of(sheetContext).pop();
-                        _runAction('重启容器', [
-                          'container',
-                          'restart',
-                          container.name,
-                        ]);
-                      },
-                      icon: const Icon(Icons.refresh),
-                      label: const Text('重启'),
-                    ),
-                    OutlinedButton.icon(
-                      style: OutlinedButton.styleFrom(
-                        foregroundColor: colors.error,
-                      ),
-                      onPressed: () {
-                        Navigator.of(sheetContext).pop();
-                        _confirmRemove(container);
-                      },
-                      icon: const Icon(Icons.delete_outline),
-                      label: const Text('删除'),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-        );
-      },
+  Future<void> _openDetails(ContainerInfo container) async {
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => ContainerDetailPage(
+          service: widget.service,
+          containerName: container.name,
+        ),
+      ),
     );
+    refresh();
   }
 
   @override
@@ -307,7 +206,7 @@ class ContainersPageState extends State<ContainersPage> {
                     const PopupMenuItem(value: 'remove', child: Text('删除')),
                   ],
                 ),
-                onTap: () => _showDetails(container),
+                onTap: () => _openDetails(container),
               ),
             ),
         ],
@@ -323,43 +222,5 @@ class ContainersPageState extends State<ContainersPage> {
     ];
     if (parts.isEmpty) return container.status;
     return parts.join(' · ');
-  }
-}
-
-class _StatusChip extends StatelessWidget {
-  const _StatusChip({required this.status});
-
-  final String status;
-
-  Color _color(BuildContext context) {
-    final value = status.toLowerCase();
-    final colors = Theme.of(context).colorScheme;
-    if (value == 'running') return Colors.green;
-    if (value == 'stopped') return colors.outline;
-    if (value == 'frozen') return Colors.lightBlue;
-    if (value.contains('fail') || value.contains('error')) {
-      return colors.error;
-    }
-    return colors.secondary;
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final color = _color(context);
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.15),
-        borderRadius: BorderRadius.circular(999),
-      ),
-      child: Text(
-        status,
-        style: TextStyle(
-          color: color,
-          fontSize: 12,
-          fontWeight: FontWeight.w600,
-        ),
-      ),
-    );
   }
 }

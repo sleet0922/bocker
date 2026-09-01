@@ -177,6 +177,28 @@ class SshService {
     return CommandResult(exitCode == 0, output.toString().trim(), exitCode);
   }
 
+  /// 以 PTY 模式启动一个交互式 bocker 会话（如 container shell），
+  /// 返回原始 SSHSession，由调用方管理输入输出与关闭。
+  Future<SSHSession> openPtySession(
+    List<String> args, {
+    int width = 80,
+    int height = 24,
+  }) async {
+    final client = _client;
+    if (client == null || _clientClosed) {
+      throw Exception('与服务器的连接已断开，请重新连接');
+    }
+    final command = _buildCommand(args);
+    try {
+      return await client.execute(
+        command,
+        pty: SSHPtyConfig(type: 'xterm', width: width, height: height),
+      );
+    } on SSHError catch (error) {
+      throw Exception('打开交互会话失败：$error');
+    }
+  }
+
   /// 解析远程 bocker 可执行文件位置并取回版本号。
   Future<String> _resolveVersion() async {
     var result = await _executeDirect(

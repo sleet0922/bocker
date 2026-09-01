@@ -39,6 +39,26 @@ void main() {
     expect(templates[1].release, '24.04');
   });
 
+  test('parseMounts 解析挂载 JSON', () {
+    const json =
+        '[{"name":"mount-abc","source":"/data/www","target":"/var/www","readonly":true,"inherited":false},'
+        '{"name":"mount-def","source":"/opt/conf","target":"/etc/conf","readonly":false,"inherited":true}]';
+    final mounts = parseMounts(json);
+    expect(mounts.length, 2);
+    expect(mounts[0].name, 'mount-abc');
+    expect(mounts[0].readonly, isTrue);
+    expect(mounts[0].modeLabel, 'ro');
+    expect(mounts[0].displayLabel, '/data/www -> /var/www (ro)');
+    expect(mounts[1].readonly, isFalse);
+    expect(mounts[1].inherited, isTrue);
+    expect(mounts[1].displayLabel.contains('[镜像继承]'), isTrue);
+  });
+
+  test('parseMounts 容错非法输出', () {
+    expect(parseMounts('not json'), isEmpty);
+    expect(parseMounts('[]'), isEmpty);
+  });
+
   test('isValidBockerName 命名规则', () {
     expect(isValidBockerName('web-01'), isTrue);
     expect(isValidBockerName('a'), isTrue);
